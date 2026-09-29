@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "breeze"
+version = "0.1.0"
+description = "Token-efficient coding agent"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "pydantic>=2.0",
+    "litellm>=1.40",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+breeze = "breeze.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ─── Ruff：lint + format ───
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".git", ".venv", "__pycache__", "build", "dist", ".ruff_cache", ".pytest_cache"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "N",    # pep8-naming
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "PTH",  # flake8-use-pathlib
+    "RET",  # flake8-return
+    "ARG",  # flake8-unused-arguments
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["breeze"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ─── pytest ───
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
