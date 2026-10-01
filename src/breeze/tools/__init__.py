@@ -1,5 +1,5 @@
 """Breeze 工具包。"""
 
-from breeze.tools import registry
+from breeze.tools import fs, registry
 
-__all__ = ["registry"]
+__all__ = ["fs", "registry"]
