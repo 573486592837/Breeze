@@ -4,9 +4,12 @@ run_shell 通过可执行文件白名单、子命令白名单、shell=False 和 
 在可控范围内为 Agent 提供命令执行能力。
 """
 
+import os
+import re
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
@@ -40,6 +43,71 @@ ALLOWED_GIT_SUBCOMMANDS: frozenset[str] = frozenset(
 )
 
 ALLOWED_PYTHON_MODULES: frozenset[str] = frozenset({"pytest", "ruff", "unittest"})
+
+FORBIDDEN_GIT_OPTIONS: frozenset[str] = frozenset(
+    {
+        "--no-index",
+        "--exec-path",
+        "-c",
+        "--git-dir",
+        "--work-tree",
+        "--namespace",
+    }
+)
+
+FORBIDDEN_RG_OPTIONS: frozenset[str] = frozenset(
+    {
+        "--pre",
+        "--pre-glob",
+        "--hostname-bin",
+        "--sort",
+        "--sortr",
+        "--engine",
+        "--follow",
+        "-L",
+        "--search-zip",
+        "-z",
+        "--decompress",
+        "--unrestricted",
+        "-u",
+        "--no-ignore",
+        "--no-ignore-parent",
+        "--no-ignore-vcs",
+        "--no-ignore-dot",
+        "--no-ignore-global",
+        "--no-ignore-files",
+        "--type-add",
+        "--type-clear",
+    }
+)
+
+
+def _stripquotes(token: str) -> str:
+    """去掉 token 两端成对的引号。
+
+    Args:
+        token: 单个命令 token。
+
+    Returns:
+        去掉外层引号后的 token。无成对引号时原样返回。
+    """
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+        return token[1:-1]
+    return token
+
+
+def _split_command(command: str) -> list[str]:
+    """按平台选择分词模式，并统一去引号。
+
+    Args:
+        command: 原始命令行字符串。
+
+    Returns:
+        token 列表，已去引号。
+    """
+    posix = os.name != "nt"
+    raw = shlex.split(command, posix=posix)
+    return [_stripquotes(t) for t in raw]
 
 
 @register(
@@ -94,7 +162,7 @@ def run_shell(
     Raises:
         ValueError: 命令为空、不在白名单、或 cwd 越界。
     """
-    tokens = shlex.split(command, posix=True)
+    tokens = _split_command(command)
     if not tokens:
         raise ValueError("Command is empty.")
 
@@ -138,8 +206,6 @@ def _check_allowed(tokens: list[str]) -> None:
         ValueError: 可执行文件或子命令不在白名单。
     """
     exe = tokens[0].lower()
-    # Windows 上 shlex.split(posix=False) 会保留引号，去除两侧引号
-    exe = exe.strip("\"'")
 
     if exe not in ALLOWED_EXECUTABLES:
         raise ValueError(f"Executable not allowed: {exe}")
@@ -150,16 +216,96 @@ def _check_allowed(tokens: list[str]) -> None:
     if exe == "git":
         if len(tokens) < 2:
             raise ValueError("Git command requires a subcommand.")
-        sub = tokens[1].strip("\"'").lower()
+        sub = tokens[1].lower()
         if sub not in ALLOWED_GIT_SUBCOMMANDS:
-            raise ValueError(f"Git subcommand not allowed: {sub}")
+            raise ValueError(f"Git subcommand forbidden: {sub}")
 
     if exe in {"python", "python3"}:
         if len(tokens) < 3 or tokens[1] != "-m":
             raise ValueError("Python command must use '-m <module>'.")
-        module = tokens[2].strip("\"'").lower()
+        module = tokens[2].lower()
         if module not in ALLOWED_PYTHON_MODULES:
             raise ValueError(f"Python module not allowed: {module}")
+
+    _check_options(tokens, exe)
+    _check_paths(tokens, exe)
+
+
+def _check_options(tokens: list[str], exe: str) -> None:
+    """检查命令的选项是否在黑名单内。
+
+    Args:
+        tokens: 拆分后的命令参数。
+        exe: 已归一化的可执行文件名。
+
+    Raises:
+        ValueError: 使用了被禁止的选项。
+    """
+    if exe == "git":
+        forbidden = FORBIDDEN_GIT_OPTIONS
+    elif exe == "rg":
+        forbidden = FORBIDDEN_RG_OPTIONS
+    else:
+        return
+
+    for token in tokens[1:]:
+        if not token.startswith("-"):
+            continue
+        opt = token.split("=", 1)[0]
+        if opt in forbidden:
+            raise ValueError(f"{exe} option is forbidden: {opt}")
+
+
+def _check_paths(tokens: list[str], exe: str) -> None:
+    """检查参数中的路径是否越界。
+
+    跳过以 '-' 开头的选项。对 git 跳过子命令位置。
+
+    Args:
+        tokens: 拆分后的命令参数。
+        exe: 已归一化的可执行文件名。
+
+    Raises:
+        ValueError: 参数中包含绝对路径或路径遍历序列。
+    """
+    start = 2 if exe == "git" else 1
+    for token in tokens[start:]:
+        if not token or token.startswith("-"):
+            continue
+
+        if _is_absolute_like(token):
+            raise ValueError(f"Absolute paths are not allowed: {token}")
+
+        segments = re.split(r"[/\\:]", token)
+        if ".." in segments:
+            raise ValueError(f"Path traversal is not allowed: {token}")
+
+
+def _is_absolute_like(token: str) -> bool:
+    """判断 token 是否表现为绝对路径。
+
+    覆盖以下形式：
+    - C:/foo、C:\\foo —— 标准 Windows 绝对路径
+    - /etc/passwd     —— POSIX 根路径
+    - \\\\server\\share —— UNC 路径
+    - HEAD:C:/foo     —— rev:path 语法中嵌入盘符
+    - HEAD:/etc/passwd —— rev:path 语法中嵌入根路径
+
+    Args:
+        token: 单个命令参数。
+
+    Returns:
+        若表现为绝对路径则返回 True。
+    """
+    if Path(token).is_absolute():
+        return True
+    if token.startswith("/") or token.startswith("\\"):
+        return True
+    # 任意位置出现盘符后跟分隔符
+    if re.search(r"[A-Za-z]:[/\\]", token):
+        return True
+    # 冒号后紧跟分隔符，覆盖 rev:path 语法
+    return bool(re.search(r":[/\\]", token))
 
 
 def _render(
