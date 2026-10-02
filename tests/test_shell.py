@@ -1,0 +1,378 @@
+"""shell 模块的单元测试。
+
+所有执行类测试均通过 monkeypatch 替换 subprocess.run，
+避免真实调用子进程，保证测试快速、稳定、与环境无关。
+"""
+
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from breeze.config import settings
+from breeze.tools import registry
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """把 settings.repo_root 指向临时目录。"""
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+    return root
+
+
+@pytest.fixture
+def whitelisted_which(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "breeze.tools.shell.shutil.which",
+        lambda name: f"/fake/{name}",
+    )
+
+
+@pytest.fixture
+def fake_run(
+    monkeypatch: pytest.MonkeyPatch,
+    whitelisted_which: None,
+) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    def _fake(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="hello\n", stderr="")
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _fake)
+    return captured
+
+
+# ─── 参数校验：命令解析 ───
+
+
+def test_run_shell_empty_command(repo: Path) -> None:
+    """空命令或纯空白应抛 ValueError。"""
+    for cmd in ["", "   ", "\t\n"]:
+        with pytest.raises(ValueError, match="Command is empty."):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_non_whitelisted_executable(repo: Path) -> None:
+    """非白名单可执行文件应被拒。"""
+    for cmd in ["curl http://example.com", "bash -c ls", "powershell Get_ChildItem"]:
+        with pytest.raises(ValueError, match="Executable not allowed"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_unix_only_commands(repo: Path) -> None:
+    """Windows 上无独立可执行文件的命令应被拒。"""
+    for cmd in ["echo hello", "ls -la", "cat file.txt", "head -n 1 f", "tail -n 1 f", "wc -l f"]:
+        with pytest.raises(ValueError, match="Executable not allowed"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_git_without_subcommand(repo: Path) -> None:
+    """只有 'git' 无子命令应被拒。"""
+    with pytest.raises(ValueError, match="Git command requires a subcommand."):
+        registry.execute("run_shell", {"command": "git"})
+
+
+def test_run_shell_rejects_git_write_subcommands(repo: Path) -> None:
+    """git 写操作子命令应被拒。"""
+    for cmd in ["git push", "git commit -m x", "git reset --hard", "git checkout main", "git clean -fd"]:
+        with pytest.raises(ValueError, match="Git subcommand forbidden"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_allows_git_read_subcommands(repo: Path, fake_run: dict[str, Any]) -> None:
+    """git 只读子命令应通过校验。"""
+    for cmd in ["git status", "git diff", "git log", "git rev-parse HEAD"]:
+        out = registry.execute("run_shell", {"command": cmd})
+        assert "exit_code: 0" in out
+
+
+def test_run_shell_rejects_python_without_dash_m(repo: Path) -> None:
+    """python 未使用 -m 形式应被拒。"""
+    for cmd in ["python script.py", "python -c 'print(1)'", "python", "python -v"]:
+        with pytest.raises(ValueError, match="Python command must use '-m <module>'."):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_python_module_not_in_whitelist(repo: Path) -> None:
+    """python -m 后模块不在白名单应被拒。"""
+    for cmd in ["python -m http.server", "python -m pip install x", "python -m venv .venv"]:
+        with pytest.raises(ValueError, match="Python module not allowed:"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_allows_python_whitelisted_modules(repo: Path, fake_run: dict[str, Any]) -> None:
+    """python -m pytest / ruff / unittest 应通过校验。"""
+    for cmd in ["python -m pytest -q", "python -m ruff check .", "python -m unittest discover"]:
+        out = registry.execute("run_shell", {"command": cmd})
+        assert "exit_code: 0" in out
+
+
+# ─── 参数校验：cwd ───
+
+
+def test_run_shell_rejects_cwd_escape(repo: Path) -> None:
+    """cwd 越界应被 safe_path 拦截。"""
+    for cwd in ["..", "../", "src/../../"]:
+        with pytest.raises(ValueError, match="Path out of bounds:"):
+            registry.execute("run_shell", {"command": "git status", "cwd": cwd})
+
+
+def test_run_shell_rejects_cwd_not_dir(repo: Path) -> None:
+    """cwd 指向普通文件应被拒。"""
+    (repo / "file.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="Path is not a directory:"):
+        registry.execute("run_shell", {"command": "git status", "cwd": "file.txt"})
+
+
+# ─── 参数校验：可执行文件存在性 ───
+
+
+def test_run_shell_rejects_missing_executable(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """白名单内但 PATH 中不存在的可执行文件应被拒。"""
+    monkeypatch.setattr("breeze.tools.shell.shutil.which", lambda _name: None)
+    with pytest.raises(ValueError, match="Executable not found"):
+        registry.execute("run_shell", {"command": "git status"})
+
+
+# ─── 执行路径：成功 ───
+
+
+def test_run_shell_success_returns_stdout(repo: Path, fake_run: dict[str, Any]) -> None:
+    """成功执行应返回 exit_code 与 stdout。"""
+    out = registry.execute("run_shell", {"command": "git status"})
+
+    assert "exit_code: 0" in out
+    assert "hello" in out
+    assert "--- stdout ---" in out
+
+
+def test_run_shell_uses_shell_false(repo: Path, fake_run: dict[str, Any]) -> None:
+    """subprocess.run 必须以 shell=False 调用。"""
+    registry.execute("run_shell", {"command": "git status"})
+
+    assert fake_run["kwargs"]["shell"] is False
+    assert fake_run["cmd"] == ["git", "status"]
+
+
+def test_run_shell_passes_timeout(repo: Path, fake_run: dict[str, Any]) -> None:
+    """timeout 参数应传递给 subprocess.run。"""
+    registry.execute("run_shell", {"command": "git status", "timeout": 7})
+    assert fake_run["kwargs"]["timeout"] == 7
+
+
+def test_run_shell_cwd_resolved_to_repo(repo: Path, fake_run: dict[str, Any]) -> None:
+    """cwd 应解析为仓库内的绝对路径。"""
+    registry.execute("run_shell", {"command": "git status", "cwd": "."})
+    assert Path(fake_run["kwargs"]["cwd"]) == repo
+
+
+# ─── 执行路径：超时与错误 ───
+
+
+def test_run_shell_timeout_returns_structured_message(
+    repo: Path, whitelisted_which: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超时应返回结构化文本而非抛异常。"""
+
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _raise)
+
+    out = registry.execute("run_shell", {"command": "git status", "timeout": 1})
+    assert "exit_code: -1" in out
+    assert "Command timed out" in out
+
+
+def test_run_shell_file_not_found_returns_message(
+    repo: Path, whitelisted_which: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FileNotFoundError 应被包装为结构化文本。"""
+
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise FileNotFoundError("not found")
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _raise)
+
+    out = registry.execute("run_shell", {"command": "git status"})
+    assert "exit_code: -1" in out
+
+
+# ─── 执行路径：输出截断 ───
+
+
+def test_run_shell_truncates_stdout(repo: Path, whitelisted_which: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stdout 超过 max_bytes 应截断并提示。"""
+
+    def _fake(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout="x" * 500, stderr="")
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _fake)
+
+    out = registry.execute("run_shell", {"command": "git status", "max_bytes": 100})
+    assert "truncated" in out
+    assert "x" * 500 not in out
+
+
+def test_run_shell_truncates_stderr(repo: Path, whitelisted_which: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stderr 超过 max_bytes 应截断并提示。"""
+
+    def _fake(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="e" * 500)
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _fake)
+
+    out = registry.execute("run_shell", {"command": "git status", "max_bytes": 100})
+    assert "exit_code: 1" in out
+    assert "--- stderr ---" in out
+    assert "truncated" in out
+
+
+def test_run_shell_no_output(repo: Path, whitelisted_which: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """无输出时应给出明确提示。"""
+
+    def _fake(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("breeze.tools.shell.subprocess.run", _fake)
+
+    out = registry.execute("run_shell", {"command": "git status"})
+    assert "exit_code: 0" in out
+    assert "no output" in out
+
+
+# ─── 安全：rg 危险选项 ───
+
+
+def test_run_shell_rejects_rg_pre(repo: Path, whitelisted_which: None) -> None:
+    """rg --pre 可执行任意命令，必须被拒。"""
+    for cmd in [
+        "rg --pre=bash pattern .",
+        "rg --pre bash pattern .",
+        "rg --pre-glob=*.py --pre=cat pattern .",
+    ]:
+        with pytest.raises(ValueError, match="forbidden"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_rg_follow(repo: Path, whitelisted_which: None) -> None:
+    """rg --follow 可跟随符号链接逃逸仓库。"""
+    for cmd in ["rg --follow pattern .", "rg -L pattern ."]:
+        with pytest.raises(ValueError, match="forbidden"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_rg_unrestricted(repo: Path, whitelisted_which: None) -> None:
+    """rg 的 ignore 绕过选项应被拒。"""
+    for cmd in [
+        "rg -u pattern .",
+        "rg --unrestricted pattern .",
+        "rg --no-ignore pattern .",
+        "rg --no-ignore-vcs pattern .",
+    ]:
+        with pytest.raises(ValueError, match="forbidden"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_rg_hostname_bin(repo: Path, whitelisted_which: None) -> None:
+    """rg --hostname-bin 会执行外部命令。"""
+    with pytest.raises(ValueError, match="forbidden"):
+        registry.execute("run_shell", {"command": "rg --hostname-bin=calc pattern ."})
+
+
+def test_run_shell_allows_safe_rg_options(repo: Path, fake_run: dict[str, Any]) -> None:
+    """常用安全选项不应被误伤。"""
+    for cmd in [
+        "rg -n pattern .",
+        "rg --line-number --no-heading pattern .",
+        "rg -i pattern .",
+        "rg --glob '*.py' pattern .",
+        "rg --max-count 5 pattern .",
+    ]:
+        out = registry.execute("run_shell", {"command": cmd})
+        assert "exit_code: 0" in out
+
+
+# ─── 安全：git 危险选项 ───
+
+
+def test_run_shell_rejects_git_no_index(repo: Path, whitelisted_which: None) -> None:
+    """git diff --no-index 可读取仓库外任意文件。"""
+    with pytest.raises(ValueError, match="forbidden"):
+        registry.execute(
+            "run_shell",
+            {"command": "git diff --no-index a.txt b.txt"},
+        )
+
+
+def test_run_shell_rejects_git_config_injection(repo: Path, whitelisted_which: None) -> None:
+    """git -c 可注入配置。"""
+    with pytest.raises(ValueError, match="forbidden"):
+        registry.execute(
+            "run_shell",
+            {"command": "git -c core.pager=calc log"},
+        )
+
+
+def test_run_shell_rejects_git_git_dir(repo: Path, whitelisted_which: None) -> None:
+    """git --git-dir 可指向任意仓库。"""
+    for cmd in [
+        "git --git-dir=/tmp/other.git status",
+        "git --work-tree=/ status",
+    ]:
+        with pytest.raises(ValueError, match="forbidden"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+# ─── 安全：路径遍历与绝对路径 ───
+
+
+def test_run_shell_rejects_parent_traversal(repo: Path, whitelisted_which: None) -> None:
+    """参数中的 .. 路径遍历应被拒。"""
+    for cmd in [
+        "rg pattern ../outside",
+        "rg pattern src/../../outside",
+        "git show HEAD:../secret.txt",
+        "git log ../",
+    ]:
+        with pytest.raises(ValueError, match="Path traversal"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_absolute_paths(repo: Path, whitelisted_which: None) -> None:
+    """参数中的绝对路径应被拒。"""
+    import os
+
+    abs_path = "C:\\Windows\\System32" if os.name == "nt" else "/etc/passwd"
+    for cmd in [
+        f"rg pattern {abs_path}",
+        f"git show HEAD:{abs_path}",
+    ]:
+        with pytest.raises(ValueError, match="Absolute paths"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_rejects_git_rev_with_absolute_path(repo: Path, whitelisted_which: None) -> None:
+    """git 的 rev:path 语法中嵌入绝对路径应被拒。"""
+    for cmd in [
+        "git show HEAD:C:/Windows/System32",
+        "git show HEAD:C:\\Windows\\System32",
+        "git show HEAD:/etc/passwd",
+    ]:
+        with pytest.raises(ValueError, match="Absolute paths"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_allows_relative_paths(repo: Path, fake_run: dict[str, Any]) -> None:
+    """仓库内相对路径不应被误伤。"""
+    for cmd in [
+        "rg pattern src/",
+        "rg pattern src/breeze",
+        "git log src/",
+    ]:
+        out = registry.execute("run_shell", {"command": cmd})
+        assert "exit_code: 0" in out
