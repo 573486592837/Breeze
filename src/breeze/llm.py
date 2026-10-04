@@ -17,10 +17,15 @@ class LLMResponse:
 
 
 class LLMClient:
-    def __init__(self) -> None:
-        self.model = settings.model
-        self.api_key = settings.api_key
-        self.api_base = settings.api_base
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        api_base: str | None = None,
+    ) -> None:
+        self.model = model or settings.model
+        self.api_key = api_key or settings.api_key
+        self.api_base = api_base or settings.api_base
 
     def chat(
         self,
