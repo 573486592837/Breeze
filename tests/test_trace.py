@@ -1,0 +1,203 @@
+"""trace 模块的单元测试。"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from breeze.trace import RunTrace
+
+
+@pytest.fixture
+def trace_dir(tmp_path: Path) -> Path:
+    """返回临时追踪目录。"""
+    d = tmp_path / "traces"
+    d.mkdir()
+    return d
+
+
+def _read_events(path: Path) -> list[dict]:
+    """读取 JSONL 文件的所有事件。"""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_trace_creates_file(trace_dir: Path) -> None:
+    """初始化应创建 JSONL 文件，文件名含 run_id。"""
+    with RunTrace(trace_dir=trace_dir, run_id="abcd1234") as trace:
+        assert trace.path.exists()
+        assert "abcd1234" in trace.path.name
+
+    events = _read_events(trace.path)
+    assert events[0]["event"] == "run_start"
+    assert events[0]["run_id"] == "abcd1234"
+
+
+def test_trace_log_llm(trace_dir: Path) -> None:
+    """log_llm 应写入完整字段。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run1") as trace:
+        trace.log_llm(
+            step=0,
+            model="openai/Pro/deepseek-ai/DeepSeek-V3.2",
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            latency_ms=850.5,
+            content="我先查看文件结构",
+            tool_calls=[{"name": "list_files", "arguments": {"path": "."}}],
+        )
+
+    events = _read_events(trace.path)
+    llm_events = [e for e in events if e["event"] == "llm_call"]
+    assert len(llm_events) == 1
+
+    e = llm_events[0]
+    assert e["step"] == 0
+    assert e["prompt_tokens"] == 100
+    assert e["completion_tokens"] == 20
+    assert e["total_tokens"] == 120
+    assert e["latency_ms"] == 850.5
+    assert e["tool_calls"][0]["name"] == "list_files"
+
+
+def test_trace_log_tool(trace_dir: Path) -> None:
+    """log_tool 应写入完整字段。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run2") as trace:
+        trace.log_tool(
+            step=0,
+            tool="read_file",
+            arguments={"path": "README.md"},
+            result="# demo\n",
+            latency_ms=3.2,
+        )
+
+    events = _read_events(trace.path)
+    tool_events = [e for e in events if e["event"] == "tool_call"]
+    assert len(tool_events) == 1
+
+    e = tool_events[0]
+    assert e["tool"] == "read_file"
+    assert e["arguments"] == {"path": "README.md"}
+    assert e["result_preview"] == "# demo\n"
+    assert e["error"] is None
+
+
+def test_trace_log_tool_with_error(trace_dir: Path) -> None:
+    """log_tool 出错时应记录 error。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run3") as trace:
+        trace.log_tool(
+            step=1,
+            tool="run_shell",
+            arguments={"command": "git status"},
+            result=None,
+            latency_ms=1.0,
+            error="Executable not allowed: git",
+        )
+
+    events = _read_events(trace.path)
+    e = [ev for ev in events if ev["event"] == "tool_call"][0]
+    assert e["error"] == "Executable not allowed: git"
+
+
+def test_trace_log_error(trace_dir: Path) -> None:
+    """log_error 应写入 error 事件。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run4") as trace:
+        trace.log_error(step=2, message="LLM API 调用失败")
+
+    events = _read_events(trace.path)
+    err = [ev for ev in events if ev["event"] == "error"][0]
+    assert err["message"] == "LLM API 调用失败"
+    assert err["step"] == 2
+
+
+def test_trace_summary_counts(trace_dir: Path) -> None:
+    """summary 应累加 Token、调用次数与延迟。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run5") as trace:
+        trace.log_llm(0, "model-a", 100, 20, 120, 500.0)
+        trace.log_llm(1, "model-a", 200, 30, 230, 300.0)
+        trace.log_tool(0, "read_file", {"path": "a"}, "x", 10.0)
+        trace.log_tool(0, "read_file", {"path": "b"}, "y", 15.0)
+        trace.log_error(1, "boom")
+
+        s = trace.summary()
+        assert s["llm_calls"] == 2
+        assert s["tool_calls"] == 2
+        assert s["prompt_tokens"] == 300
+        assert s["completion_tokens"] == 50
+        assert s["total_tokens"] == 350
+        assert s["llm_latency_ms"] == 800.0
+        assert s["tool_latency_ms"] == 25.0
+        assert s["errors"] == 1
+
+
+def test_trace_summary_written_on_close(trace_dir: Path) -> None:
+    """close 应写入 run_summary 事件。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run6") as trace:
+        trace.log_llm(0, "m", 10, 5, 15, 100.0)
+
+    events = _read_events(trace.path)
+    summary = [e for e in events if e["event"] == "run_summary"]
+    assert len(summary) == 1
+    assert summary[0]["llm_calls"] == 1
+    assert summary[0]["total_tokens"] == 15
+
+
+def test_trace_close_is_idempotent(trace_dir: Path) -> None:
+    """重复 close 不应报错或重复写 summary。"""
+    trace = RunTrace(trace_dir=trace_dir, run_id="run7")
+    trace.log_llm(0, "m", 1, 1, 2, 1.0)
+    trace.close()
+    trace.close()
+
+    events = _read_events(trace.path)
+    summary = [e for e in events if e["event"] == "run_summary"]
+    assert len(summary) == 1
+
+
+def test_trace_result_preview_truncated(trace_dir: Path) -> None:
+    """result 超过 500 字符时应截断，加省略号。"""
+    big_result = "x" * 1000
+    with RunTrace(trace_dir=trace_dir, run_id="run8") as trace:
+        trace.log_tool(0, "read_file", {"path": "big"}, big_result, 1.0)
+
+    events = _read_events(trace.path)
+    e = [ev for ev in events if ev["event"] == "tool_call"][0]
+    assert e["result_preview"].endswith("...")
+    assert len(e["result_preview"]) == 503
+
+
+def test_trace_content_preview_truncated(trace_dir: Path) -> None:
+    """content 超过 500 字符时应截断。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run9") as trace:
+        trace.log_llm(0, "m", 1, 1, 2, 1.0, content="y" * 1000)
+
+    events = _read_events(trace.path)
+    e = [ev for ev in events if ev["event"] == "llm_call"][0]
+    assert e["content_preview"].endswith("...")
+    assert len(e["content_preview"]) == 503
+
+
+def test_trace_creates_missing_dir(tmp_path: Path) -> None:
+    """trace_dir 不存在时应自动创建。"""
+    target = tmp_path / "nested" / "traces"
+    assert not target.exists()
+
+    with RunTrace(trace_dir=target, run_id="run10"):
+        pass
+
+    assert target.exists()
+    assert any(target.iterdir())
+
+
+def test_trace_events_are_valid_jsonl(trace_dir: Path) -> None:
+    """每行应为合法 JSON，且 event 字段存在。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run11") as trace:
+        trace.log_llm(0, "m", 1, 1, 2, 1.0)
+        trace.log_tool(0, "t", {}, "r", 1.0)
+
+    raw = trace.path.read_text(encoding="utf-8").splitlines()
+    for line in raw:
+        obj = json.loads(line)
+        assert "event" in obj
+        assert "ts" in obj
+        assert obj["run_id"] == "run11"
