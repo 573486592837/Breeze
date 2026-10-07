@@ -4,7 +4,7 @@
 
 Breeze 是一个面向代码仓库的 CLI Agent，目标是在代码问答、检索、编辑、测试等任务中，以更少的 Token 完成同等或更好的任务。它不追求成为通用聊天助手，也不急于构建多 Agent 平台，而是聚焦代码场景，通过仓库地图、混合检索、上下文压缩、缓存与模型路由等机制，降低 LLM 调用成本，并让 Agent 的行为可观测、可评估、可迭代。
 
-当前状态：设计阶段 / 早期原型开发中。
+当前状态：v0.5.0 基线评估已完成，工具系统、ReAct Loop、CLI 与 trace 已可用。
 
 ---
 
@@ -96,3 +96,157 @@ Agent Loop
   +-- Sandbox
   |
   +-- Trace / Eval
+```
+
+---
+
+## Baseline
+
+Breeze v0.4.0 的朴素 ReAct Agent 在 20 个代码任务上的基线表现。所有后续优化均与该基线对比。
+
+| Metric | Value |
+|---|---|
+| Model | `openai/Pro/deepseek-ai/DeepSeek-V3.2` |
+| Success rate | **80.0%** (16/20) |
+| Avg tokens per task | **9,334.0** |
+| Avg LLM calls | 3.5 |
+| Avg tool calls | 2.5 |
+| Avg duration | 36.2s |
+| Errors | 1 |
+
+任务集覆盖四类：解释（explain）、定位（locate）、测试（test）、分析（analyze），每类 5 个。任务定义与成功标准见 [`tasks/baseline.yaml`](tasks/baseline.yaml)，完整数据见 [`reports/baseline_v1.md`](reports/baseline_v1.md)。
+
+### 失败案例分析
+
+4 个失败任务暴露出朴素 ReAct 的三类问题：
+
+| ID | 问题类型 | 具体表现 |
+|---|---|---|
+| e05 | 信息提取深度不足 | 读了 `llm.py`，但未注意到 `model` 需带 `openai/` 前缀才能让 LiteLLM 路由到硅基流动 |
+| a02 | 技术表述错误 | 把上下文 Token 增长描述为“指数增长”，实际应为线性 |
+| a03 | 先验知识编造 | 编造不存在的符号链接漏洞，未基于代码观察（`safe_path` 实际使用 `Path.resolve()`） |
+| a05 | 分析视角缺失 | 能描述现状，但未指出“这是优化点” |
+
+这三类问题是后续优化的直接目标：更强的检索、更聚焦的上下文、更明确的提示。
+
+### 优化目标
+
+**在成功率不下降的前提下，显著降低 `avg tokens per task`。** 当前 9,334 tokens/任务的构成中，大部分来自历史对话的重复传递，这是后续上下文压缩和检索要攻克的核心。
+
+---
+
+## 路线图
+
+| 版本 | 内容 | 状态 |
+|---|---|---|
+| v0.1.0 | 项目初始化、LLM 客户端 | 已完成 |
+| v0.2.0 | 工具注册、`list_files`、`read_file`、`grep` | 已完成 |
+| v0.3.0 | `run_shell` 与安全加固 | 已完成 |
+| v0.4.0 | Trace、ReAct Loop、CLI | 已完成 |
+| v0.5.0 | 20 个任务集与基线报告 | 已完成 |
+| v0.6.0 | repo map、混合检索、上下文压缩 | 计划中 |
+| v0.7.0 | 模型路由、语义缓存 | 计划中 |
+| v0.8.0 | 沙箱执行与权限模型 | 计划中 |
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.11
+- Miniconda 或类似环境管理工具
+- 硅基流动 API Key
+
+### 安装
+
+```bash
+git clone https://github.com/YOUR_USERNAME/breeze.git
+cd breeze
+conda create -n breeze python=3.11 -y
+conda activate breeze
+pip install -e ".[dev]"
+```
+
+### 配置
+
+复制 `.env.example` 为 `.env`，填入 API Key：
+
+```bash
+SILICONFLOW_API_KEY=sk-your-key-here
+BREEZE_MODEL=openai/Pro/deepseek-ai/DeepSeek-V3.2
+BREEZE_API_BASE=https://api.siliconflow.cn/v1
+LITELLM_LOCAL_MODEL_COST_MAP=True
+```
+
+### 使用
+
+```bash
+# 代码问答
+breeze ask "解释 src/breeze/tools/registry.py 的作用"
+
+# 限制步数
+breeze ask "找出 read_file 的实现位置" --max-steps 4
+
+# 只输出答案，不显示摘要
+breeze ask "运行 pytest 并总结结果" --quiet
+
+# 指定仓库
+breeze ask "解释主流程" --repo /path/to/other/repo
+```
+
+---
+
+## 评估
+
+```bash
+# 列出所有任务
+python scripts/eval.py --dry-run
+
+# 运行全部任务
+python scripts/eval.py
+
+# 运行单个任务
+python scripts/eval.py --task e01
+
+# 用假 LLM 验证脚本本身
+python scripts/eval.py --no-llm
+
+# 生成 Markdown 报告
+python scripts/report.py
+```
+
+输出：
+
+- `reports/baseline_v1.json`：机器可读的原始数据
+- `reports/baseline_v1.md`：人类可读的报告
+- `traces/*.jsonl`：每次运行的详细 trace
+
+---
+
+## 项目结构
+
+```text
+breeze/
+├── src/breeze/
+│   ├── agent.py          # ReAct 循环
+│   ├── cli.py            # CLI 入口
+│   ├── config.py         # 配置
+│   ├── eval.py           # 评估核心逻辑
+│   ├── llm.py            # LLM 客户端
+│   ├── trace.py          # JSONL trace
+│   └── tools/
+│       ├── registry.py   # 工具注册
+│       ├── safety.py     # 路径安全
+│       ├── fs.py         # list_files, read_file
+│       ├── search.py     # grep
+│       └── shell.py      # run_shell
+├── scripts/
+│   ├── eval.py           # 评估入口
+│   └── report.py         # 报告生成
+├── tasks/
+│   └── baseline.yaml     # 20 个基线任务
+├── tests/
+├── reports/
+└── traces/
+```
