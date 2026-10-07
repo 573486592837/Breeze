@@ -12,6 +12,10 @@ from typing import Any
 DEFAULT_MAX_RECENT_PAIRS = 3
 DEFAULT_ARGUMENTS_PREVIEW = 60
 
+DEFAULT_TOOL_RESULT_MAX_BYTES = 4000
+DEFAULT_TOOL_RESULT_HEAD_BYTES = 2000
+DEFAULT_TOOL_RESULT_TAIL_BYTES = 2000
+
 
 @dataclass
 class ContextConfig:
@@ -21,11 +25,17 @@ class ContextConfig:
         max_recent_pairs: 完整保留的最近轮数。
         arguments_preview: 摘要中工具参数的最大字符数。
         enable: 是否启用压缩。False 时 build 直接返回原列表。
+        tool_result_max_bytes: 单条工具结果的字节上限，超过则压缩。
+        tool_result_head_bytes: 压缩时保留的头部字节数。
+        tool_result_tail_bytes: 压缩时保留的尾部字节数。
     """
 
     max_recent_pairs: int = DEFAULT_MAX_RECENT_PAIRS
     arguments_preview: int = DEFAULT_ARGUMENTS_PREVIEW
     enable: bool = True
+    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
+    tool_result_head_bytes: int = DEFAULT_TOOL_RESULT_HEAD_BYTES
+    tool_result_tail_bytes: int = DEFAULT_TOOL_RESULT_TAIL_BYTES
 
 
 class ContextManager:
@@ -60,7 +70,11 @@ class ContextManager:
         rounds = self._split_rounds(body)
 
         if len(rounds) <= self.config.max_recent_pairs:
-            return list(messages)
+            result = list(head)
+            for rnd in rounds:
+                for msg in rnd:
+                    result.append(self._compact_tool_result(msg))
+            return result
 
         old_rounds = rounds[: -self.config.max_recent_pairs]
         recent_rounds = rounds[-self.config.max_recent_pairs :]
@@ -70,7 +84,8 @@ class ContextManager:
         result: list[dict[str, Any]] = list(head)
         result.append(summary)
         for rnd in recent_rounds:
-            result.extend(rnd)
+            for msg in rnd:
+                result.append(self._compact_tool_result(msg))
         return result
 
     def _split_rounds(self, body: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -126,6 +141,40 @@ class ContextManager:
 
         return {"role": "user", "content": "\n".join(lines)}
 
+    def _compact_tool_result(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """压缩单条 tool 消息的内容。
+
+        只处理 role=tool 且 content 为字符串且超过字节上限的情况。
+        其他消息原样返回。
+
+        Args:
+            msg: 一条消息。
+
+        Returns:
+            原始消息或压缩后的新消息。原始消息不会被修改。
+        """
+        if msg.get("role") != "tool":
+            return msg
+
+        content = msg.get("content")
+        if not isinstance(content, str):
+            return msg
+
+        encoded = content.encode("utf-8")
+        if len(encoded) <= self.config.tool_result_max_bytes:
+            return msg
+
+        head_bytes = _safe_head(encoded, self.config.tool_result_head_bytes)
+        tail_bytes = _safe_tail(encoded, self.config.tool_result_tail_bytes)
+        omitted = len(encoded) - len(head_bytes) - len(tail_bytes)
+
+        marker = f"\n\n... [{omitted} bytes omitted] ...\n\n"
+        compacted = head_bytes.decode("utf-8") + marker + tail_bytes.decode("utf-8")
+
+        new_msg = dict(msg)
+        new_msg["content"] = compacted
+        return new_msg
+
     @staticmethod
     def _extract_name(tool_call: Any) -> str:
         """兼容 dict 和对象形式的 tool_call。"""
@@ -154,3 +203,39 @@ class ContextManager:
         if len(text) <= limit:
             return text
         return text[:limit] + "..."
+
+
+def _safe_head(encoded: bytes, n: int) -> bytes:
+    """返回最多 n 字节，按 UTF-8 字符边界对齐。
+
+    Args:
+        encoded: UTF-8 编码的字节串。
+        n: 期望保留的头部字节数。
+
+    Returns:
+        边界对齐后的头部字节串。
+    """
+    if len(encoded) <= n:
+        return encoded
+    end = n
+    while end > 0 and (encoded[end] & 0xC0) == 0x80:
+        end -= 1
+    return encoded[:end]
+
+
+def _safe_tail(encoded: bytes, n: int) -> bytes:
+    """返回最多 n 字节，按 UTF-8 字符边界对齐。
+
+    Args:
+        encoded: UTF-8 编码的字节串。
+        n: 期望保留的尾部字节数。
+
+    Returns:
+        边界对齐后的尾部字节串。
+    """
+    if len(encoded) <= n:
+        return encoded
+    start = len(encoded) - n
+    while start < len(encoded) and (encoded[start] & 0xC0) == 0x80:
+        start += 1
+    return encoded[start:]
