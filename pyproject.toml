@@ -55,6 +55,7 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/breeze/cli.py" = ["B008"]
 "tests/*" = ["ARG001", "ARG002"]
+"scripts/*" = ["ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["breeze"]

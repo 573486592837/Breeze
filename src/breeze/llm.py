@@ -1,7 +1,10 @@
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import litellm  # noqa: E402
 
 from breeze.config import settings
 

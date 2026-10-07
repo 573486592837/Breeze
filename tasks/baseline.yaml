@@ -1,0 +1,146 @@
+# Breeze 基线任务集 v1
+#
+# 用途：建立朴素 ReAct Agent 的任务成功率与 Token 消耗基线。
+# 评分：人工 0/1 判定，依据 success_criteria。
+# 仓库：Breeze 自身。
+#
+# 字段说明：
+#   id               任务唯一标识
+#   type             任务类型：explain / locate / test / analyze
+#   question         传给 Agent 的问题
+#   success_criteria 人工判定成功的具体标准
+#   max_steps        该任务允许的最大循环步数
+#   notes            可选备注，供评估者参考
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  # ─── explain：解释类 ───
+
+  - id: e01
+    type: explain
+    question: "解释 src/breeze/tools/registry.py 中 register 装饰器的工作流程。"
+    success_criteria: "提到装饰器接收 name/description/parameters，检查重复注册，写入 TOOLS 字典，返回原函数。"
+    max_steps: 4
+
+  - id: e02
+    type: explain
+    question: "src/breeze/agent.py 中 Agent.run 的循环逻辑是什么？"
+    success_criteria: "提到最多 max_steps 步，每步调用 LLM，有 tool_calls 则执行并追加消息，无 tool_calls 则返回内容，接近上限时注入收尾提示。"
+    max_steps: 4
+
+  - id: e03
+    type: explain
+    question: "src/breeze/trace.py 的 RunTrace 如何累计 Token 统计？"
+    success_criteria: "提到 _Counters 数据类，log_llm 累加 prompt/completion/total tokens，summary 返回累计值。"
+    max_steps: 4
+
+  - id: e04
+    type: explain
+    question: "src/breeze/tools/safety.py 的 safe_path 如何防止路径逃逸？"
+    success_criteria: "提到 Path.resolve 解析路径，relative_to 判断是否在 root 内，越界抛 ValueError。"
+    max_steps: 4
+
+  - id: e05
+    type: explain
+    question: "src/breeze/llm.py 中 LLMClient.chat 如何调用硅基流动的模型？"
+    success_criteria: "提到使用 litellm.completion，model 带 openai/ 前缀，传入 api_key 和 api_base，返回 LLMResponse 含 usage。"
+    max_steps: 4
+
+  # ─── locate：定位类 ───
+
+  - id: l01
+    type: locate
+    question: "grep 工具的实现位于哪个文件？它如何处理没有 ripgrep 的环境？"
+    success_criteria: "指出 src/breeze/tools/search.py；提到 shutil.which 检测 rg，无 rg 时走 _grep_with_python 回退。"
+    max_steps: 6
+
+  - id: l02
+    type: locate
+    question: "哪些文件导入了 settings？分别用于什么目的？"
+    success_criteria: "至少指出 safety.py（读 repo_root）、llm.py（读 model/api_key/api_base）、shell.py 或 cli.py（读 repo_root）；说明用途。"
+    max_steps: 6
+
+  - id: l03
+    type: locate
+    question: "run_shell 的可执行文件白名单定义在哪里？包含哪些命令？"
+    success_criteria: "指出 src/breeze/tools/shell.py 中的 ALLOWED_EXECUTABLES；列出 git、pytest、rg、python、python3、where。"
+    max_steps: 6
+
+  - id: l04
+    type: locate
+    question: "Agent 在收到工具调用后，如何把结果追加到 messages？"
+    success_criteria: "指出 _execute_and_append 方法；说明以 role=tool、tool_call_id、content 追加。"
+    max_steps: 6
+
+  - id: l05
+    type: locate
+    question: "trace 文件的文件名是如何生成的？为什么不用冒号？"
+    success_criteria: "指出 RunTrace.__init__ 中 strftime(\"%Y%m%dT%H%M%S\")；说明 Windows 文件名不允许冒号。"
+    max_steps: 6
+
+  # ─── test：测试类 ───
+
+  - id: t01
+    type: test
+    question: "运行 pytest -q，报告测试数量与结果。"
+    success_criteria: "正确运行 pytest，报告通过数量，若无失败则说明全部通过。"
+    max_steps: 8
+
+  - id: t02
+    type: test
+    question: "运行 pytest tests/test_trace.py -v，列出所有测试名称。"
+    success_criteria: "运行指定文件，列出其中的测试函数名，数量与文件一致。"
+    max_steps: 8
+
+  - id: t03
+    type: test
+    question: "运行 pytest tests/test_agent.py -v，总结覆盖了哪些行为。"
+    success_criteria: "运行测试，总结覆盖点：消息流、多步工具调用、max_steps、异常路径、trace 集成。"
+    max_steps: 8
+
+  - id: t04
+    type: test
+    question: "运行 ruff check src/ tests/，报告是否存在问题。"
+    success_criteria: "正确运行 ruff，报告检查结果，无问题时说明通过。"
+    max_steps: 8
+
+  - id: t05
+    type: test
+    question: "运行 git status，报告当前工作区是否干净。"
+    success_criteria: "正确运行 git status，说明是否有未提交改动。"
+    max_steps: 8
+
+  # ─── analyze：分析类 ───
+
+  - id: a01
+    type: analyze
+    question: "src/breeze/tools/search.py 的 Python 回退实现有哪些性能隐患？"
+    success_criteria: "指出逐文件读取、无索引、大仓库慢、不跳过二进制文件等至少两点。"
+    max_steps: 6
+
+  - id: a02
+    type: analyze
+    question: "Agent 的 messages 列表在长任务中会无限增长，这会带来什么问题？"
+    success_criteria: "指出 Token 消耗随步数线性增长、可能超出上下文窗口、成本上升。"
+    max_steps: 6
+
+  - id: a03
+    type: analyze
+    question: "run_shell 的路径检查是否能拦截所有路径逃逸？举一个可能漏掉的例子。"
+    success_criteria: "指出至少一个边界情况，如符号链接、正则中的 ..、或 rev:path 的复杂形式。"
+    max_steps: 6
+
+  - id: a04
+    type: analyze
+    question: "RunTrace 每次事件都 flush，这对性能有什么影响？"
+    success_criteria: "指出磁盘 I/O 增加、可能拖慢高频写入；说明换来崩溃时的数据完整性。"
+    max_steps: 6
+
+  - id: a05
+    type: analyze
+    question: "如果 Agent 反复调用同一个工具且参数相同，当前实现会如何处理？"
+    success_criteria: "指出当前无去重机制，会重复执行并累加 Token；说明这是一个优化点。"
+    max_steps: 6
