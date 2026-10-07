@@ -13,7 +13,6 @@ import argparse
 import sys
 from pathlib import Path
 
-
 _SRC = Path(__file__).resolve().parent.parent / "src"
 if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))

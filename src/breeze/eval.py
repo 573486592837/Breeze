@@ -9,7 +9,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -219,7 +219,7 @@ def build_report(
         "version": metadata.get("version", 1),
         "repo": metadata.get("repo", "breeze"),
         "model": metadata.get("model", "unknown"),
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "summary": summarize(results),
         "results": [asdict(r) for r in results],
     }
@@ -253,15 +253,9 @@ def _merge_manual_grades(new_report: dict[str, Any], old_path: Path) -> None:
         if old_r.get("notes"):
             r["notes"] = old_r["notes"]
 
-    new_report["summary"]["success"] = sum(
-        1 for r in new_report["results"] if r["success"] is True
-    )
-    new_report["summary"]["failed"] = sum(
-        1 for r in new_report["results"] if r["success"] is False
-    )
-    new_report["summary"]["ungraded"] = sum(
-        1 for r in new_report["results"] if r["success"] is None
-    )
+    new_report["summary"]["success"] = sum(1 for r in new_report["results"] if r["success"] is True)
+    new_report["summary"]["failed"] = sum(1 for r in new_report["results"] if r["success"] is False)
+    new_report["summary"]["ungraded"] = sum(1 for r in new_report["results"] if r["success"] is None)
 
 
 def run_eval(
