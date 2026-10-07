@@ -315,3 +315,32 @@ def test_agent_disables_tools_on_last_step(trace: RunTrace, fake_tool: None) -> 
 
     last_tools = llm.calls[-1]["tools"]
     assert last_tools == []
+
+
+def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Agent 应在调用 LLM 前压缩 messages。"""
+    from breeze.context import ContextConfig, ContextManager
+
+    captured_lengths: list[int] = []
+
+    class RecordingLLM:
+        model = "recorder"
+
+        def __init__(self) -> None:
+            self.responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(5)] + [
+                _text("done")
+            ]
+
+        def chat(self, messages, tools=None, temperature=0.0):
+            captured_lengths.append(len(messages))
+            return self.responses.pop(0)
+
+    cm = ContextManager(ContextConfig(max_recent_pairs=1))
+    agent = Agent(llm=RecordingLLM(), trace=trace, max_steps=6, context=cm)
+    agent.run("go")
+
+    # 未压缩时长度会线性增长到 13 左右（6 轮 × 2 + 2 head + 注入提示）
+    # 压缩后应稳定在小范围内，由 head(2) + summary(1) + recent 轮决定
+    # max_recent_pairs=1 时 recent 轮最多 3 条（含收尾注入），上限为 6
+    assert max(captured_lengths) <= 7
+    assert len(captured_lengths) == 6

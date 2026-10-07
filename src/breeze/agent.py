@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from breeze.context import ContextManager
 from breeze.llm import LLMClient, LLMResponse
 from breeze.tools import registry
 from breeze.trace import RunTrace
@@ -48,6 +49,7 @@ class Agent:
         trace: RunTrace,
         max_steps: int = DEFAULT_MAX_STEPS,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        context: ContextManager | None = None,
     ) -> None:
         """初始化 Agent。
 
@@ -56,11 +58,13 @@ class Agent:
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
             system_prompt: 系统提示。
+            context: 上下文管理器，None 时使用默认配置。
         """
         self.llm = llm
         self.trace = trace
         self.max_steps = max_steps
         self.system_prompt = system_prompt
+        self.context = context or ContextManager()
 
     def run(self, question: str) -> str:
         """执行 Agent，返回最终答案。
@@ -98,9 +102,10 @@ class Agent:
                 )
 
             tools = registry.schemas() if remaining > 1 else []
+            llm_messages = self.context.build(messages)
 
             try:
-                resp, latency_ms = self._call_llm(messages, tools)
+                resp, latency_ms = self._call_llm(llm_messages, tools)
             except Exception as exc:
                 self.trace.log_error(step, f"LLM call failed: {exc}")
                 return f"LLM call failed: {exc}"

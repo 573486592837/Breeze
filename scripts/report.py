@@ -84,9 +84,7 @@ def render_markdown(report: dict) -> str:
 
     lines.append("## Per-task results")
     lines.append("")
-    lines.append(
-        "| ID | Type | Status | Tokens | LLM | Tool | Duration (ms) | Question |"
-    )
+    lines.append("| ID | Type | Status | Tokens | LLM | Tool | Duration (ms) | Question |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for r in results:
         lines.append(
@@ -105,7 +103,7 @@ def render_markdown(report: dict) -> str:
         lines.append("")
         lines.append(f"**Success criteria:** {r['success_criteria']}")
         lines.append("")
-        lines.append(f"**Answer:**")
+        lines.append("**Answer:**")
         lines.append("")
         lines.append(r["answer"])
         lines.append("")
