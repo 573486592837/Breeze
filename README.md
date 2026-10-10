@@ -4,7 +4,7 @@
 
 Breeze 是一个面向代码仓库的 CLI Agent，目标是在代码问答、检索、编辑、测试等任务中，以更少的 Token 完成同等或更好的任务。它不追求成为通用聊天助手，也不急于构建多 Agent 平台，而是聚焦代码场景，通过仓库地图、混合检索、上下文压缩、缓存与模型路由等机制，降低 LLM 调用成本，并让 Agent 的行为可观测、可评估、可迭代。
 
-当前状态：v0.5.0 基线评估已完成，工具系统、ReAct Loop、CLI 与 trace 已可用。
+当前状态：v0.6.0 — 工具系统、ReAct Loop、CLI、Trace 与基线评估已可用。
 
 ---
 
@@ -47,6 +47,7 @@ Breeze 当前不计划做：
 - 无沙箱、无限制地执行任意命令。
 - 只靠截断上下文来“优化” Token。
 - 没有评估集就宣称效果提升。
+- 当前阶段不支持代码编辑（写操作），仅支持只读任务。
 
 ---
 
@@ -63,39 +64,36 @@ Breeze 当前不计划做：
 
 ---
 
-## 核心架构（计划）
+## 核心架构
 
 ```text
-CLI
-  |
-  v
 Agent Loop
   |
   +-- Context Manager
-  |     +-- Repo Map
-  |     +-- Hybrid Retriever
-  |     +-- Rolling Summary
-  |     +-- Structured State
-  |     +-- Token Budget
+  |     +-- Repo Map                (已实现，效果待验证)
+  |     +-- Hybrid Retriever        (计划中)
+  |     +-- Rolling Summary         (已实现，低频触发)
+  |     +-- Structured State        (计划中)
+  |     +-- Token Budget            (已实现)
   |
   +-- LLM Router
-  |     +-- Small Model
+  |     +-- Small Model             (计划中)
   |     +-- Large Model
-  |     +-- Semantic Cache
+  |     +-- Semantic Cache          (计划中)
   |
   +-- Tool System
-  |     +-- list_files
-  |     +-- read_file
-  |     +-- grep
-  |     +-- repo_map
-  |     +-- apply_patch
-  |     +-- git_diff
-  |     +-- run_tests
-  |     +-- run_shell
+  |     +-- list_files              (已实现)
+  |     +-- read_file               (已实现)
+  |     +-- grep                    (已实现)
+  |     +-- repo_map                (已实现)
+  |     +-- run_shell               (已实现)
+  |     +-- apply_patch             (计划中)
+  |     +-- git_diff                (计划中)
+  |     +-- run_tests               (计划中)
   |
-  +-- Sandbox
+  +-- Sandbox                       (计划中)
   |
-  +-- Trace / Eval
+  +-- Trace / Eval                  (已实现)
 ```
 
 ---
@@ -133,6 +131,34 @@ Breeze v0.4.0 的朴素 ReAct Agent 在 20 个代码任务上的基线表现。�
 
 **在成功率不下降的前提下，显著降低 `avg tokens per task`。** 当前 9,334 tokens/任务的构成中，大部分来自历史对话的重复传递，这是后续上下文压缩和检索要攻克的核心。
 
+## Context Optimization
+
+v0.6.0 引入三项上下文优化：
+
+1. **repo_map 工具**：用 AST 提取符号，输出紧凑项目结构。
+2. **滑动窗口 + Token 预算**：保留最近 K 轮，旧轮压缩成结构化摘要。
+3. **工具结果压缩**：超过 4KB 的结果保留头尾，中间省略。
+4. **.gitignore 支持**：`list_files` 和 `repo_map` 忽略被 git 忽略的路径。
+
+### 效果对比
+
+| Metric | Baseline (v0.5.0) | Context (v0.6.0) | Change |
+|---|---|---|---|
+| Success rate | 80.0% (16/20) | **90.0% (18/20)** | +12.5% |
+| Avg tokens per task | 9,334.0 | 9,143.3 | -2.0% |
+| Avg LLM calls | 3.5 | 3.95 | +12.9% |
+| Avg tool calls | 2.5 | 2.95 | +18.0% |
+
+完整对比见 [`reports/context_v1.md`](reports/context_v1.md)。
+
+**结论：**
+
+- 成功率提升 2 个任务（a03 从失败转通过，模型不再编造漏洞）。
+- Token 变化在评估噪声范围内（同配置多次运行波动 ±20%）。
+- 压缩机制在当前短任务上低频触发（p90 prompt_tokens = 3,988），
+  主要价值预期在多轮、长任务场景。
+- `repo_map` 增加了 1 步探索，未减少 Token，需要后续重构或移除。
+
 ---
 
 ## 路线图
@@ -140,13 +166,14 @@ Breeze v0.4.0 的朴素 ReAct Agent 在 20 个代码任务上的基线表现。�
 | 版本 | 内容 | 状态 |
 |---|---|---|
 | v0.1.0 | 项目初始化、LLM 客户端 | 已完成 |
-| v0.2.0 | 工具注册、`list_files`、`read_file`、`grep` | 已完成 |
-| v0.3.0 | `run_shell` 与安全加固 | 已完成 |
+| v0.2.0 | 工具系统（registry、fs、search） | 已完成 |
+| v0.3.0 | run_shell 与安全加固 | 已完成 |
 | v0.4.0 | Trace、ReAct Loop、CLI | 已完成 |
 | v0.5.0 | 20 个任务集与基线报告 | 已完成 |
-| v0.6.0 | repo map、混合检索、上下文压缩 | 计划中 |
-| v0.7.0 | 模型路由、语义缓存 | 计划中 |
-| v0.8.0 | 沙箱执行与权限模型 | 计划中 |
+| v0.6.0 | repo_map、上下文压缩、gitignore 支持 | 已完成 |
+| v0.7.0 | 评估稳健性、工具 schema 精简 | 计划中 |
+| v0.8.0 | 代码编辑与沙箱 | 计划中 |
+| v0.9.0 | 模型路由与语义缓存 | 计划中 |
 
 ---
 
@@ -161,7 +188,7 @@ Breeze v0.4.0 的朴素 ReAct Agent 在 20 个代码任务上的基线表现。�
 ### 安装
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/breeze.git
+git clone https://github.com/573486592837/breeze.git
 cd breeze
 conda create -n breeze python=3.11 -y
 conda activate breeze
