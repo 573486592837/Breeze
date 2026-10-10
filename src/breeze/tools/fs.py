@@ -3,28 +3,43 @@
 提供 list_files 和 read_file，两者均通过 safe_path 限定在仓库根目录内。
 """
 
+import fnmatch
 from pathlib import Path
 
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
+from breeze.config import settings
 
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
+        # 版本控制
         ".git",
         ".hg",
         ".svn",
+        # Python 缓存与虚拟环境
         "__pycache__",
         ".venv",
         "venv",
         ".env",
-        ".ruff_cache",
-        "pytest_cache",
+        ".tox",
         ".mypy_cache",
-        "node_modules",
+        ".ruff_cache",
+        ".pytest_cache",
+        ".coverage",
+        "htmlcov",
+        ".cache",
+        # 构建产物
         "build",
         "dist",
+        "node_modules",
+        "*.egg-info",
+        # IDE
         ".idea",
         ".vscode",
+        ".ipynb_checkpoints",
+        # Breeze 项目产物
+        "traces",
+        "reports",
     }
 )
 
@@ -32,9 +47,76 @@ DEFAULT_MAX_ENTRIES = 200
 DEFAULT_MAX_BYTES = 200_000
 
 
+def load_gitignore_patterns(root: Path) -> list[str]:
+    """读取 root 下的 .gitignore，返回可用的 glob 模式列表。
+
+    仅支持最常见的语法：每行一个模式，忽略空行和 # 注释，
+    忽略 ! 开头的负向模式。不做完整 gitignore 解析。
+
+    Args:
+        root: 仓库根目录。
+
+    Returns:
+        归一化后的 glob 模式列表。
+    """
+    gi = root / ".gitignore"
+    if not gi.is_file():
+        return []
+
+    try:
+        text = gi.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    patterns: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        patterns.append(line.rstrip("/"))
+    return patterns
+
+def is_ignored(
+    path: Path,
+    root: Path,
+    patterns: list[str],
+) -> bool:
+    """判断路径是否应被忽略。
+
+    同时匹配相对路径和文件名，覆盖 `traces/*.jsonl` 和 `*.pyc`
+    两类常见写法。
+
+    Args:
+        path: 待判断的绝对路径。
+        root: 仓库根目录。
+        patterns: 由 load_gitignore_patterns 返回的模式列表。
+
+    Returns:
+        若路径被任一模式匹配则返回 True。
+    """
+    if not patterns:
+        return False
+
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        return False
+
+    for pat in patterns:
+        if fnmatch.fnmatch(rel, pat):
+            return True
+        if fnmatch.fnmatch(path.name, pat):
+            return True
+    return False
+
+
 @register(
     name="list_files",
-    description=("列出仓库内的文件和目录。返回相对路径，每行一个。用于了解项目结构。可通过 max_depth 控制递归深度。"),
+    description=(
+        "列出仓库内的文件和目录。返回相对路径，每行一个。"
+        "自动忽略 .gitignore 中声明的路径和常见缓存、构建目录。"
+        "用于了解项目结构。可通过 max_depth 控制递归深度。"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -76,6 +158,8 @@ def list_files(
     max_depth = max(1, max_depth)
     max_entries = max(1, max_entries)
 
+    gitignore_patterns = load_gitignore_patterns(settings.repo_root)
+
     entries: list[str] = []
     truncated = False
 
@@ -92,8 +176,11 @@ def list_files(
         for child in children:
             if truncated:
                 return
+            
             if child.is_dir():
                 if child.name in IGNORED_DIRS:
+                    continue
+                if is_ignored(child, settings.repo_root, gitignore_patterns):
                     continue
                 if len(entries) >= max_entries:
                     truncated = True
@@ -102,6 +189,8 @@ def list_files(
                 entries.append(f"{rel}/")
                 walk(child, depth + 1)
             else:
+                if is_ignored(child, settings.repo_root, gitignore_patterns):
+                    continue
                 if len(entries) >= max_entries:
                     truncated = True
                     return

@@ -10,3 +10,4 @@ reports/*.json
 .pytest_cache/
 .ruff_cache/
 !reports/baseline_v1.json
+!reports/context_v1.json
