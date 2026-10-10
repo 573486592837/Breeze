@@ -128,3 +128,62 @@ def test_safe_path_allows_inside(repo: Path) -> None:
     resolved = safe_path("a.txt", root=repo)
     assert resolved == (repo / "a.txt").resolve()
     assert resolved.is_absolute()
+
+
+def test_list_files_ignores_traces_dir(repo: Path) -> None:
+    """traces 目录应被忽略。"""
+    (repo / "traces").mkdir()
+    (repo / "traces" / "20261008.jsonl").write_text("{}", encoding="utf-8")
+    (repo / "README.md").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+    assert "traces" not in out
+    assert "20261008.jsonl" not in out
+
+
+def test_list_files_ignores_reports_dir(repo: Path) -> None:
+    """reports 目录应被忽略。"""
+    (repo / "reports").mkdir()
+    (repo / "reports" / "baseline.json").write_text("{}", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+    assert "reports" not in out
+
+
+def test_list_files_respects_gitignore(repo: Path) -> None:
+    """.gitignore 中的模式应被忽略。"""
+    (repo / ".gitignore").write_text(
+        "data/\n*.log\n", encoding="utf-8"
+    )
+    (repo / "data").mkdir()
+    (repo / "data" / "dump.csv").write_text("x", encoding="utf-8")
+    (repo / "debug.log").write_text("x", encoding="utf-8")
+    (repo / "README.md").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+    assert "data/" not in out
+    assert "debug.log" not in out
+    assert "README.md" in out
+
+
+def test_list_files_ignores_gitignore_comments(repo: Path) -> None:
+    """.gitignore 中的注释和空行应被忽略。"""
+    (repo / ".gitignore").write_text(
+        "# a comment\n\n*.tmp\n", encoding="utf-8"
+    )
+    (repo / "a.tmp").write_text("x", encoding="utf-8")
+    (repo / "b.txt").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+    assert "a.tmp" not in out
+    assert "b.txt" in out
+
+
+def test_list_files_without_gitignore(repo: Path) -> None:
+    """没有 .gitignore 时不应报错。"""
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+    assert "src/" in out
+    assert "a.py" in out

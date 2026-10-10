@@ -11,6 +11,12 @@ from pathlib import Path
 from breeze.tools.fs import IGNORED_DIRS
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
+from breeze.config import settings
+from breeze.tools.fs import (
+    IGNORED_DIRS,
+    is_ignored,
+    load_gitignore_patterns,
+)
 
 DEFAULT_MAX_FILES = 200
 DEFAULT_MAX_BYTES = 20_000
@@ -20,9 +26,9 @@ PY_EXTENSIONS = {".py"}
 @register(
     name="repo_map",
     description=(
-        "生成仓库结构概览。每个文件列出顶层类和函数签名。"
-        "用于快速了解项目结构，替代逐个读取文件。"
-        "返回紧凑文本，适合在探索阶段使用。"
+        "生成仓库结构概览，列出每个 Python 文件的顶层类、函数签名和常量。"
+        "当你需要了解项目有哪些模块、某个模块包含哪些函数时，先调用此工具。"
+        "它比 list_files 更有信息量，比逐个 read_file 更省 Token。"
     ),
     parameters={
         "type": "object",
@@ -96,6 +102,7 @@ def repo_map(
 def _collect_python_files(root: Path, max_files: int) -> list[Path]:
     """递归收集 Python 文件，忽略 IGNORED_DIRS。"""
     files: list[Path] = []
+    gitignore_patterns = load_gitignore_patterns(settings.repo_root)
 
     def walk(current: Path) -> None:
         if len(files) >= max_files:
@@ -114,8 +121,12 @@ def _collect_python_files(root: Path, max_files: int) -> list[Path]:
             if child.is_dir():
                 if child.name in IGNORED_DIRS:
                     continue
+                if is_ignored(child, settings.repo_root, gitignore_patterns):
+                    continue
                 walk(child)
             elif child.suffix in PY_EXTENSIONS:
+                if is_ignored(child, settings.repo_root, gitignore_patterns):
+                    continue
                 files.append(child)
 
     walk(root)

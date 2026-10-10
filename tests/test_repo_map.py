@@ -109,3 +109,27 @@ def test_repo_map_escape_path(repo: Path) -> None:
     """越界路径应被 safe_path 拦截。"""
     with pytest.raises(ValueError):
         registry.execute("repo_map", {"path": "../"})
+
+
+def test_repo_map_ignores_traces(repo: Path) -> None:
+    """traces 目录下的 .py 文件不应出现。"""
+    (repo / "traces").mkdir()
+    (repo / "traces" / "fake.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src" / "real.py").write_text("y = 2\n", encoding="utf-8")
+
+    out = registry.execute("repo_map", {"path": "."})
+    assert "traces" not in out
+    assert "real.py" in out
+
+
+def test_repo_map_respects_gitignore(repo: Path) -> None:
+    """.gitignore 中声明的目录应被忽略。"""
+    (repo / ".gitignore").write_text("generated/\n", encoding="utf-8")
+    (repo / "generated").mkdir()
+    (repo / "generated" / "auto.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "main.py").write_text("y = 2\n", encoding="utf-8")
+
+    out = registry.execute("repo_map", {"path": "."})
+    assert "auto.py" not in out
+    assert "main.py" in out
