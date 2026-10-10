@@ -10,11 +10,13 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_MAX_RECENT_PAIRS = 3
+DEFAULT_MIN_RECENT_PAIRS = 1
+DEFAULT_MAX_RECENT_TOKENS = 3_000
 DEFAULT_ARGUMENTS_PREVIEW = 60
 
-DEFAULT_TOOL_RESULT_MAX_BYTES = 4000
-DEFAULT_TOOL_RESULT_HEAD_BYTES = 2000
-DEFAULT_TOOL_RESULT_TAIL_BYTES = 2000
+DEFAULT_TOOL_RESULT_MAX_BYTES = 4_000
+DEFAULT_TOOL_RESULT_HEAD_BYTES = 2_000
+DEFAULT_TOOL_RESULT_TAIL_BYTES = 2_000
 
 
 @dataclass
@@ -22,17 +24,21 @@ class ContextConfig:
     """ContextManager 的配置。
 
     Attributes:
-        max_recent_pairs: 完整保留的最近轮数。
-        arguments_preview: 摘要中工具参数的最大字符数。
         enable: 是否启用压缩。False 时 build 直接返回原列表。
-        tool_result_max_bytes: 单条工具结果的字节上限，超过则压缩。
+        max_recent_tokens: 保留的最近轮估计 Token 上限。
+        min_recent_pairs: 无论多大，至少保留的最近轮数。
+        max_recent_pairs: 保留的最近轮数硬上限（与 Token 预算同时生效）。
+        arguments_preview: 摘要中工具参数的最大字符数。
+        tool_result_max_bytes: 单条工具结果的字节上限。
         tool_result_head_bytes: 压缩时保留的头部字节数。
         tool_result_tail_bytes: 压缩时保留的尾部字节数。
     """
 
+    enable: bool = True
+    max_recent_tokens: int = DEFAULT_MAX_RECENT_TOKENS
+    min_recent_pairs: int = DEFAULT_MIN_RECENT_PAIRS
     max_recent_pairs: int = DEFAULT_MAX_RECENT_PAIRS
     arguments_preview: int = DEFAULT_ARGUMENTS_PREVIEW
-    enable: bool = True
     tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
     tool_result_head_bytes: int = DEFAULT_TOOL_RESULT_HEAD_BYTES
     tool_result_tail_bytes: int = DEFAULT_TOOL_RESULT_TAIL_BYTES
@@ -69,24 +75,82 @@ class ContextManager:
         body = messages[2:]
         rounds = self._split_rounds(body)
 
-        if len(rounds) <= self.config.max_recent_pairs:
-            result = list(head)
+        kept_rounds = self._select_recent_rounds(head, rounds)
+
+        if len(kept_rounds) == len(rounds):
+            result: list[dict[str, Any]] = list(head)
             for rnd in rounds:
                 for msg in rnd:
                     result.append(self._compact_tool_result(msg))
             return result
 
-        old_rounds = rounds[: -self.config.max_recent_pairs]
-        recent_rounds = rounds[-self.config.max_recent_pairs :]
-
+        old_rounds = rounds[: len(rounds) - len(kept_rounds)]
         summary = self._render_summary(old_rounds)
 
         result: list[dict[str, Any]] = list(head)
         result.append(summary)
-        for rnd in recent_rounds:
+        for rnd in kept_rounds:
             for msg in rnd:
                 result.append(self._compact_tool_result(msg))
         return result
+
+    def _select_recent_rounds(
+        self,
+        head: list[dict[str, Any]],
+        rounds: list[list[dict[str, Any]]],
+    ) -> list[list[dict[str, Any]]]:
+        """从尾部开始保留轮，直到触及 Token 或轮数上限。
+
+        Args:
+            head: system + 初始 user 消息。
+            rounds: 全部轮。
+
+        Returns:
+            保留的轮列表，从旧到新。
+        """
+        kept: list[list[dict[str, Any]]] = []
+        current_tokens = self._estimate_tokens(head)
+
+        for rnd in reversed(rounds):
+            rnd_tokens = self._estimate_tokens(rnd)
+            at_min_pairs = len(kept) < self.config.min_recent_pairs
+
+            if (
+                not at_min_pairs
+                and current_tokens + rnd_tokens > self.config.max_recent_tokens
+            ):
+                break
+
+            if len(kept) >= self.config.max_recent_pairs:
+                break
+
+            kept.insert(0, rnd)
+            current_tokens += rnd_tokens
+
+        return kept
+
+    @staticmethod
+    def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
+        """粗估消息列表的 Token 数。
+
+        采用 4 字符约 1 Token 的经验比例。不做精确定量，
+        仅用于上下文预算判断。
+
+        Args:
+            messages: 消息列表。
+
+        Returns:
+            估计的 Token 数。
+        """
+        total = 0
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, str):
+                total += len(content) // 4
+            for tc in msg.get("tool_calls") or []:
+                args = ContextManager._extract_arguments(tc)
+                total += len(args) // 4 + 10  # 加常数近似工具调用开销
+        return total
 
     def _split_rounds(self, body: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
         """把 assistant+tool 序列切分成轮。

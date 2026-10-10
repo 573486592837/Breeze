@@ -450,3 +450,108 @@ def test_safe_tail_boundary() -> None:
     assert _safe_tail(encoded, 1) == b""
     assert _safe_tail(encoded, 2) == b""
     assert _safe_tail(encoded, 3) == encoded
+
+# ─── Token 预算驱动 ───
+
+
+def test_token_budget_triggers_compaction() -> None:
+    """大轮触发压缩，即使轮数未超 max_recent_pairs。"""
+    cm = ContextManager(
+        ContextConfig(
+            max_recent_pairs=10,
+            max_recent_tokens=200,
+            min_recent_pairs=1,
+        )
+    )
+    # 每轮大约 100 tokens（400 字符 // 4）
+    messages = [_system(), _user("q")]
+    for i in range(5):
+        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
+        messages.append(_tool(f"c{i}", "x" * 400))
+
+    result = cm.build(messages)
+    # 触发压缩，应含摘要
+    assert any(
+        "Compressed history" in (m.get("content") or "")
+        for m in result if m.get("role") == "user"
+    )
+
+
+def test_token_budget_keeps_all_when_small() -> None:
+    """内容很小时不触发压缩。"""
+    cm = ContextManager(
+        ContextConfig(
+            max_recent_pairs=10,
+            max_recent_tokens=10_000,
+            min_recent_pairs=1,
+        )
+    )
+    messages = [_system(), _user("q")]
+    for i in range(3):
+        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
+        messages.append(_tool(f"c{i}", "short"))
+
+    result = cm.build(messages)
+    assert not any(
+        "Compressed history" in (m.get("content") or "")
+        for m in result if m.get("role") == "user"
+    )
+
+
+def test_token_budget_respects_min_recent_pairs() -> None:
+    """即使超预算，也应保留 min_recent_pairs 轮。"""
+    cm = ContextManager(
+        ContextConfig(
+            max_recent_pairs=10,
+            max_recent_tokens=50,      # 极小，必然触发
+            min_recent_pairs=2,
+        )
+    )
+    messages = [_system(), _user("q")]
+    for i in range(5):
+        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
+        messages.append(_tool(f"c{i}", "y" * 400))
+
+    result = cm.build(messages)
+    # 最近 2 轮应完整保留
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) >= 2
+    # 最近一条 tool 消息不应被摘要覆盖
+    assert tool_msgs[-1]["content"].startswith("y")
+
+
+def test_token_budget_respects_max_recent_pairs() -> None:
+    """Token 未超时，仍受 max_recent_pairs 上限约束。"""
+    cm = ContextManager(
+        ContextConfig(
+            max_recent_pairs=2,
+            max_recent_tokens=100_000,  # 极大，不触发
+            min_recent_pairs=1,
+        )
+    )
+    messages = [_system(), _user("q")]
+    for i in range(5):
+        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
+        messages.append(_tool(f"c{i}", "z"))
+
+    result = cm.build(messages)
+    # 应保留最近 2 轮
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2
+
+
+def test_estimate_tokens_counts_content_and_args() -> None:
+    """估算应包含 content 和 tool_calls 参数。"""
+    msg = {
+        "role": "assistant",
+        "content": "a" * 400,
+        "tool_calls": [
+            {
+                "id": "c0",
+                "type": "function",
+                "function": {"name": "t", "arguments": '{"k": "' + "x" * 400 + '"}'},
+            }
+        ],
+    }
+    est = ContextManager._estimate_tokens([msg])
+    assert est >= 100  # 400/4 + 400/4 粗略下限
