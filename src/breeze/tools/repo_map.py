@@ -8,15 +8,14 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from breeze.tools.fs import IGNORED_DIRS
-from breeze.tools.registry import register
-from breeze.tools.safety import safe_path
 from breeze.config import settings
 from breeze.tools.fs import (
     IGNORED_DIRS,
     is_ignored,
     load_gitignore_patterns,
 )
+from breeze.tools.registry import register
+from breeze.tools.safety import safe_path
 
 DEFAULT_MAX_FILES = 200
 DEFAULT_MAX_BYTES = 20_000

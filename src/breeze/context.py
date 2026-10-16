@@ -115,10 +115,7 @@ class ContextManager:
             rnd_tokens = self._estimate_tokens(rnd)
             at_min_pairs = len(kept) < self.config.min_recent_pairs
 
-            if (
-                not at_min_pairs
-                and current_tokens + rnd_tokens > self.config.max_recent_tokens
-            ):
+            if not at_min_pairs and current_tokens + rnd_tokens > self.config.max_recent_tokens:
                 break
 
             if len(kept) >= self.config.max_recent_pairs:

@@ -6,9 +6,9 @@
 import fnmatch
 from pathlib import Path
 
+from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
-from breeze.config import settings
 
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
@@ -75,6 +75,7 @@ def load_gitignore_patterns(root: Path) -> list[str]:
             continue
         patterns.append(line.rstrip("/"))
     return patterns
+
 
 def is_ignored(
     path: Path,
@@ -176,7 +177,7 @@ def list_files(
         for child in children:
             if truncated:
                 return
-            
+
             if child.is_dir():
                 if child.name in IGNORED_DIRS:
                     continue

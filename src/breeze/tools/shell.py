@@ -175,10 +175,32 @@ def run_shell(
     timeout = max(1, int(timeout))
     max_bytes = max(1, int(max_bytes))
 
+    returncode, stdout, stderr = run_command(tokens, workdir, timeout)
+    if returncode == -1:
+        return f"exit_code: -1\nstdout: \nstderr: {stderr}"
+    return _render(returncode, stdout, stderr, max_bytes)
+
+
+def run_command(
+    tokens: list[str],
+    cwd: Path,
+    timeout: int = 10,
+) -> tuple[int, str, str]:
+    """执行命令。不校验白名单，调用方负责。
+
+    Args:
+        tokens: 命令参数列表。
+        cwd: 工作目录。
+        timeout: 超时秒数。
+
+    Returns:
+        (returncode, stdout, stderr)。
+        执行失败时 returncode 为 -1，stderr 包含错误信息。
+    """
     try:
         proc = subprocess.run(
             tokens,
-            cwd=str(workdir),
+            cwd=str(cwd),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -187,13 +209,12 @@ def run_shell(
             shell=False,
         )
     except subprocess.TimeoutExpired:
-        return f"exit_code: -1\nstdout: \nstderr: Command timed out after {timeout} seconds."
+        return -1, "", f"Command timed out after {timeout} seconds."
     except FileNotFoundError:
-        return f"exit_code: -1\nstdout: \nstderr: Command not found: {tokens[0]}"
+        return -1, "", f"Command not found: {tokens[0]}"
     except OSError as exc:
-        return f"exit_code: -1\nstdout: \nstderr: Failed to execute command: {exc}"
-
-    return _render(proc.returncode, proc.stdout, proc.stderr, max_bytes)
+        return -1, "", f"Failed to execute command: {exc}"
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 def _check_allowed(tokens: list[str]) -> None:

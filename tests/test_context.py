@@ -451,6 +451,7 @@ def test_safe_tail_boundary() -> None:
     assert _safe_tail(encoded, 2) == b""
     assert _safe_tail(encoded, 3) == encoded
 
+
 # ─── Token 预算驱动 ───
 
 
@@ -471,10 +472,7 @@ def test_token_budget_triggers_compaction() -> None:
 
     result = cm.build(messages)
     # 触发压缩，应含摘要
-    assert any(
-        "Compressed history" in (m.get("content") or "")
-        for m in result if m.get("role") == "user"
-    )
+    assert any("Compressed history" in (m.get("content") or "") for m in result if m.get("role") == "user")
 
 
 def test_token_budget_keeps_all_when_small() -> None:
@@ -492,10 +490,7 @@ def test_token_budget_keeps_all_when_small() -> None:
         messages.append(_tool(f"c{i}", "short"))
 
     result = cm.build(messages)
-    assert not any(
-        "Compressed history" in (m.get("content") or "")
-        for m in result if m.get("role") == "user"
-    )
+    assert not any("Compressed history" in (m.get("content") or "") for m in result if m.get("role") == "user")
 
 
 def test_token_budget_respects_min_recent_pairs() -> None:
@@ -503,7 +498,7 @@ def test_token_budget_respects_min_recent_pairs() -> None:
     cm = ContextManager(
         ContextConfig(
             max_recent_pairs=10,
-            max_recent_tokens=50,      # 极小，必然触发
+            max_recent_tokens=50,  # 极小，必然触发
             min_recent_pairs=2,
         )
     )

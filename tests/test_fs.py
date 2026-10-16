@@ -152,9 +152,7 @@ def test_list_files_ignores_reports_dir(repo: Path) -> None:
 
 def test_list_files_respects_gitignore(repo: Path) -> None:
     """.gitignore 中的模式应被忽略。"""
-    (repo / ".gitignore").write_text(
-        "data/\n*.log\n", encoding="utf-8"
-    )
+    (repo / ".gitignore").write_text("data/\n*.log\n", encoding="utf-8")
     (repo / "data").mkdir()
     (repo / "data" / "dump.csv").write_text("x", encoding="utf-8")
     (repo / "debug.log").write_text("x", encoding="utf-8")
@@ -168,9 +166,7 @@ def test_list_files_respects_gitignore(repo: Path) -> None:
 
 def test_list_files_ignores_gitignore_comments(repo: Path) -> None:
     """.gitignore 中的注释和空行应被忽略。"""
-    (repo / ".gitignore").write_text(
-        "# a comment\n\n*.tmp\n", encoding="utf-8"
-    )
+    (repo / ".gitignore").write_text("# a comment\n\n*.tmp\n", encoding="utf-8")
     (repo / "a.tmp").write_text("x", encoding="utf-8")
     (repo / "b.txt").write_text("x", encoding="utf-8")
 
