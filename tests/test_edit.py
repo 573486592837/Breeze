@@ -1,5 +1,7 @@
 """edit 模块的单元测试。"""
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -296,3 +298,106 @@ def test_apply_patch_no_tmp_left_on_success(repo: Path) -> None:
 
     tmp_files = list(repo.glob(".*.breeze_tmp"))
     assert tmp_files == []
+
+
+# ─── git_diff ───
+
+
+def _init_git_repo(root: Path) -> None:
+    """初始化一个 git 仓库并完成初始提交。"""
+    env = {
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@test",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@test",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, env={**os.environ, **env})
+    subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=root, check=True)
+
+
+def _git_commit_all(root: Path, message: str = "init") -> None:
+    """暂存所有改动并提交。"""
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=root, check=True)
+
+
+def test_git_diff_clean(repo: Path) -> None:
+    """干净工作区应返回提示。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    out = registry.execute("git_diff", {})
+    assert "clean" in out
+
+
+def test_git_diff_with_changes(repo: Path) -> None:
+    """有改动时应返回 diff。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    (repo / "foo.py").write_text("x = 2\n", encoding="utf-8")
+
+    out = registry.execute("git_diff", {})
+    assert "-x = 1" in out
+    assert "+x = 2" in out
+
+
+def test_git_diff_path_filter(repo: Path) -> None:
+    """path 参数应限制输出到指定文件。"""
+    _init_git_repo(repo)
+    _make_file(repo, "a.py", "x = 1\n")
+    _make_file(repo, "b.py", "y = 1\n")
+    _git_commit_all(repo)
+
+    (repo / "a.py").write_text("x = 2\n", encoding="utf-8")
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+
+    out = registry.execute("git_diff", {"path": "a.py"})
+    assert "a.py" in out
+    assert "b.py" not in out
+
+
+def test_git_diff_path_filter_clean(repo: Path) -> None:
+    """指定文件无改动时返回提示。"""
+    _init_git_repo(repo)
+    _make_file(repo, "a.py", "x = 1\n")
+    _make_file(repo, "b.py", "y = 1\n")
+    _git_commit_all(repo)
+
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+
+    out = registry.execute("git_diff", {"path": "a.py"})
+    assert "clean" in out
+
+
+def test_git_diff_not_a_repo(repo: Path) -> None:
+    """非 git 仓库应返回错误。"""
+    _make_file(repo, "foo.py", "x = 1\n")
+    out = registry.execute("git_diff", {})
+    assert out.startswith("Error:")
+    assert "not a git repository" in out
+
+
+def test_git_diff_rejects_escape(repo: Path) -> None:
+    """越界路径应被拒。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    out = registry.execute("git_diff", {"path": "../outside"})
+    assert out.startswith("Error:")
+
+
+def test_git_diff_truncates_large_output(repo: Path) -> None:
+    """输出超过 8KB 应截断。"""
+    _init_git_repo(repo)
+    _make_file(repo, "big.txt", "x\n" * 50)
+    _git_commit_all(repo)
+
+    (repo / "big.txt").write_text("y\n" * 5000, encoding="utf-8")
+
+    out = registry.execute("git_diff", {})
+    assert "truncated" in out

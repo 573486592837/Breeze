@@ -7,13 +7,17 @@ apply_patch 通过单次 search-replace 修改文件，
 from __future__ import annotations
 
 import contextlib
+import subprocess
+from pathlib import Path
 
 from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
+from breeze.tools.shell import run_command
 
 MAX_PATCH_BYTES = 20_000
 MAX_PATCH_LINES = 200
+MAX_DIFF_BYTES = 8_000
 
 PROTECTED_PREFIXES = (".git/", "traces/", "reports/")
 PROTECTED_FILES = frozenset({".env"})
@@ -32,6 +36,94 @@ def _is_protected(rel_path: str) -> bool:
     if normalized in PROTECTED_FILES:
         return True
     return any(normalized.startswith(p) for p in PROTECTED_PREFIXES)
+
+
+def _is_git_repo(root: Path) -> bool:
+    """检查 root 是否在 git 工作区内。
+
+    Args:
+        root: 要检查的目录。
+
+    Returns:
+        若是 git 仓库则返回 True。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+@register(
+    name="git_diff",
+    description=("返回工作区未提交的改动。用于确认自己修改了什么，或检查 patch 是否生效。可指定单个文件缩小范围。"),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "可选，限制到单个文件，相对于仓库根目录。",
+            },
+        },
+        "required": [],
+    },
+)
+def git_diff(path: str | None = None) -> str:
+    """返回工作区未提交的改动。
+
+    Args:
+        path: 可选，限制到单个文件。
+
+    Returns:
+        成功时返回 unified diff 文本或以 ``(working tree clean)`` 开头。
+        失败时以 ``Error:`` 开头。
+    """
+    root = settings.repo_root.resolve()
+
+    if not _is_git_repo(root):
+        return "Error: not a git repository"
+
+    tokens = ["git", "diff", "--no-color", "--no-ext-diff", "--"]
+
+    if path is not None:
+        try:
+            target = safe_path(path)
+        except ValueError as exc:
+            return f"Error: {exc}"
+
+        try:
+            rel = target.relative_to(root).as_posix()
+        except ValueError:
+            return f"Error: path escapes repository: {path}"
+
+        tokens.append(rel)
+
+    returncode, stdout, stderr = run_command(tokens, root, timeout=15)
+
+    if returncode == -1:
+        return f"Error: {stderr}"
+
+    if returncode != 0:
+        return f"Error: git diff failed: {stderr.strip()[:500]}"
+
+    if not stdout.strip():
+        return "(working tree clean)"
+
+    encoded = stdout.encode("utf-8")
+    if len(encoded) > MAX_DIFF_BYTES:
+        truncated = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore")
+        return truncated + f"\n... (diff truncated at {MAX_DIFF_BYTES} bytes)"
+
+    return stdout
 
 
 @register(
