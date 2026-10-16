@@ -127,6 +127,80 @@ def git_diff(path: str | None = None) -> str:
 
 
 @register(
+    name="git_restore",
+    description=("回滚单个文件到最近一次提交的状态，丢弃该文件的所有未提交改动。仅支持 git 仓库。不可撤销。"),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "要回滚的文件路径，相对于仓库根目录。",
+            },
+        },
+        "required": ["path"],
+    },
+)
+def git_resotre(path: str) -> str:
+    """回滚单个文件到 HEAD 状态。
+
+    Args:
+        path: 要回滚的文件路径，相对于仓库根目录。
+
+    Returns:
+        成功时以 ``Restored`` 开头，失败时以 ``Error:`` 开头。
+    """
+    root = settings.repo_root.resolve()
+
+    if not _is_git_repo(root):
+        return "Error: not a git repository"
+
+    try:
+        target = safe_path(path)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        return f"Error: path escapes repository: {path}"
+
+    if _is_protected(rel):
+        return f"Error: path is protected: {rel}"
+
+    if not target.exists():
+        return f"Error: file not found: {path}"
+
+    if not target.is_file():
+        return f"Error: not a file: {path}"
+
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return f"Error: git ls-files failed: {exc}"
+
+    if proc.returncode != 0:
+        return f"Error: file is not tracked by git: {rel}"
+
+    returncode, stdout, stderr = run_command(["git", "checkout", "--", rel], root, timeout=10)
+
+    if returncode == -1:
+        return f"Error: {stderr}"
+    if returncode != 0:
+        return f"Error: git checkout failed: {stderr.strip()[:500]}"
+
+    return f"Restored {rel} to last commit"
+
+
+@register(
     name="apply_patch",
     description=("修改单个文件中的一处代码。old 必须与文件内容精确匹配，且在整个文件中唯一出现。不支持创建新文件。"),
     parameters={

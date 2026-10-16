@@ -401,3 +401,97 @@ def test_git_diff_truncates_large_output(repo: Path) -> None:
 
     out = registry.execute("git_diff", {})
     assert "truncated" in out
+
+
+# ─── git_restore ───
+
+
+def test_git_restore_basic(repo: Path) -> None:
+    """修改后回滚，文件应回到 HEAD 状态。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    (repo / "foo.py").write_text("x = 999\n", encoding="utf-8")
+    assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 999\n"
+
+    out = registry.execute("git_restore", {"path": "foo.py"})
+    assert out.startswith("Restored")
+    assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_git_restore_untracked_file(repo: Path) -> None:
+    """未跟踪的文件应拒绝。"""
+    _init_git_repo(repo)
+    _make_file(repo, "committed.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    _make_file(repo, "untracked.py", "y = 2\n")
+
+    out = registry.execute("git_restore", {"path": "untracked.py"})
+    assert out.startswith("Error:")
+    assert "not tracked" in out
+
+
+def test_git_restore_not_a_repo(repo: Path) -> None:
+    """非 git 仓库应拒绝。"""
+    _make_file(repo, "foo.py", "x = 1\n")
+
+    out = registry.execute("git_restore", {"path": "foo.py"})
+    assert out.startswith("Error:")
+    assert "not a git repository" in out
+
+
+def test_git_restore_rejects_escape(repo: Path) -> None:
+    """越界路径应拒绝。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    out = registry.execute("git_restore", {"path": "../outside"})
+    assert out.startswith("Error:")
+
+
+def test_git_restore_rejects_protected(repo: Path) -> None:
+    """保护路径应拒绝。"""
+    _init_git_repo(repo)
+
+    for protected in [".git/config", "traces/log.jsonl", "reports/x.json"]:
+        out = registry.execute("git_restore", {"path": protected})
+        assert out.startswith("Error:")
+        assert "protected" in out
+
+
+def test_git_restore_missing_file(repo: Path) -> None:
+    """文件不存在应拒绝。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    out = registry.execute("git_restore", {"path": "missing.py"})
+    assert out.startswith("Error:")
+    assert "not found" in out
+
+
+def test_git_restore_directory(repo: Path) -> None:
+    """目标是目录应拒绝。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    (repo / "subdir").mkdir()
+
+    out = registry.execute("git_restore", {"path": "subdir"})
+    assert out.startswith("Error:")
+    assert "not a file" in out
+
+
+def test_git_restore_clean_file(repo: Path) -> None:
+    """文件未修改时回滚应成功但不改变内容。"""
+    _init_git_repo(repo)
+    _make_file(repo, "foo.py", "x = 1\n")
+    _git_commit_all(repo)
+
+    out = registry.execute("git_restore", {"path": "foo.py"})
+    assert out.startswith("Restored")
+    assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
