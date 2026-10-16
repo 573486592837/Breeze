@@ -28,7 +28,6 @@ PY_EXTENSIONS = {".py"}
     description=(
         "生成仓库结构概览，列出每个 Python 文件的顶层类、函数签名和常量。"
         "当你需要了解项目有哪些模块、某个模块包含哪些函数时，先调用此工具。"
-        "它比 list_files 更有信息量，比逐个 read_file 更省 Token。"
     ),
     parameters={
         "type": "object",
