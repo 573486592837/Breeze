@@ -1,0 +1,44 @@
+# Breeze configuration example.
+#
+# Copy this file to either:
+#   - breeze.toml in your repository root (highest precedence)
+#   - ~/.breeze/config.toml (user-wide default)
+#
+# Precedence (low to high):
+#   code defaults < user config < repo config < BREEZE_* env vars < CLI flags
+#
+# Security parameters (whitelists, protected paths, size limits) and
+# tool-schema defaults are NOT configurable here. See config.py.
+
+[llm]
+# LiteLLM model identifier. Must include the openai/ prefix so LiteLLM
+# routes requests through the OpenAI-compatible endpoint.
+model = "openai/Pro/deepseek-ai/DeepSeek-V3.2"
+api_base = "https://api.siliconflow.cn/v1"
+temperature = 0.0
+
+[agent]
+# Maximum agent loop steps per run.
+max_steps = 10
+# Maximum apply_patch calls per run before further edits are rejected.
+max_edit_attempts = 5
+
+[context]
+# Set to false to disable context compression entirely.
+enable = true
+# Budget of the LLM-facing message list (excluding tool schemas).
+max_recent_tokens = 3000
+# Always keep at least this many recent rounds, even if over budget.
+min_recent_pairs = 1
+# Hard upper bound on retained recent rounds.
+max_recent_pairs = 3
+# Characters of tool arguments shown in compressed summaries.
+arguments_preview = 60
+# Tool results above this size are compacted to head + tail.
+tool_result_max_bytes = 4000
+tool_result_head_bytes = 2000
+tool_result_tail_bytes = 2000
+
+[trace]
+# Directory for JSONL trace files.
+dir = "traces"
