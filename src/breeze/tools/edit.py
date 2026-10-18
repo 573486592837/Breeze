@@ -7,6 +7,7 @@ apply_patch 通过单次 search-replace 修改文件，
 from __future__ import annotations
 
 import contextlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,13 @@ from breeze.tools.shell import run_command
 MAX_PATCH_BYTES = 20_000
 MAX_PATCH_LINES = 200
 MAX_DIFF_BYTES = 8_000
+MAX_TESTS_OUTPUT_BYTES = 8_000
+TESTS_TIMEOUT_SECONDS = 60
+
+_PATTERN_RE = re.compile(r"^[A-Za-z0-9_./:=\-\[\]]+$")
+_PASSED_RE = re.compile(r"(\d+) passed")
+_FAILED_RE = re.compile(r"(\d+) failed")
+_ERROR_RE = re.compile(r"(\d+) errors?")
 
 PROTECTED_PREFIXES = (".git/", "traces/", "reports/")
 PROTECTED_FILES = frozenset({".env"})
@@ -301,3 +309,140 @@ def apply_patch(path: str, old: str, new: str) -> str:
         return f"Error: cannot write file: {exc}"
 
     return f"Patched {rel} (1 replacement)"
+
+
+def _is_python_project(root: Path) -> bool:
+    """检测项目是否是 Python 项目。
+
+    Args:
+        root: 仓库根目录。
+
+    Returns:
+        若存在 pyproject.toml、setup.py、pytest.ini、tox.ini 或
+        任一 tests/*.py 文件则返回 True。
+    """
+    markers = [
+        "pyproject.toml",
+        "setup.py",
+        "pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+    ]
+    for name in markers:
+        if (root / name).is_file():
+            return True
+    tests_dir = root / "tests"
+    return tests_dir.is_dir() and any(tests_dir.glob("*.py"))
+
+
+@register(
+    name="run_tests",
+    description=(
+        "运行 pytest 并返回结果摘要。"
+        "可指定单个测试文件或节点 ID，如 'tests/test_fs.py' 或 'tests/test_fs.py::test_x'。"
+        "不支持额外的 pytest 参数。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "pattern": {
+                "type": "string",
+                "description": ("可选的测试目标，如 'tests/test_fs.py'。省略时运行全部测试。"),
+            },
+        },
+        "required": [],
+    },
+)
+def run_tests(pattern: str | None = None) -> str:
+    """运行 pytest 并返回结构化摘要。
+
+    Args:
+        pattern: 可选的测试目标，不含空格。
+
+    Returns:
+        成功时以 ``exit_code=`` 开头，包含 summary 和 failures。
+        参数非法或执行失败时以 ``Error:`` 开头。
+    """
+    root = settings.repo_root.resolve()
+
+    if not _is_python_project(root):
+        return (
+            "Error: no Python project detected in this repository. "
+            "run_tests only supports Python projects with pytest. "
+            "Use run_shell to run your project's test command instead, "
+            "for example 'npm test' or 'cargo test'."
+        )
+
+    tokens = ["pytest", "-q"]
+
+    if pattern is not None:
+        if not pattern:
+            return "Error: pattern is empty"
+        if not _PATTERN_RE.match(pattern):
+            return f"Error: invalid pattern characters: {pattern}"
+        tokens.append(pattern)
+
+    returncode, stdout, stderr = run_command(tokens, root, timeout=TESTS_TIMEOUT_SECONDS)
+
+    if returncode == -1:
+        return f"Error: {stderr.strip()}"
+
+    combined = stdout + "\n" + stderr
+    summary = _parse_pytest_summary(combined)
+    failures = _extract_pytest_failures(combined)
+
+    lines: list[str] = [f"exit_code={returncode}", f"summary: {summary}"]
+    if failures:
+        lines.append("failures:")
+        lines.extend(f"- {name}" for name in failures)
+
+    output = "\n".join(lines)
+
+    encoded = output.encode("utf-8")
+    if len(encoded) > MAX_TESTS_OUTPUT_BYTES:
+        truncated = encoded[:MAX_TESTS_OUTPUT_BYTES].decode("utf-8", errors="ignore")
+        output = truncated + "\n... (output truncated)"
+
+    return output
+
+
+def _parse_pytest_summary(text: str) -> str:
+    """从 pytest 输出中提取通过/失败/错误计数。
+
+    Args:
+        text: pytest 输出文本。
+
+    Returns:
+        形如 ``148 passed, 2 failed, 1 error`` 的摘要。
+        无法解析时返回 ``(no summary)``。
+    """
+    parts: list[str] = []
+
+    if m := _PASSED_RE.search(text):
+        parts.append(f"{m.group(1)} passed")
+    if m := _FAILED_RE.search(text):
+        parts.append(f"{m.group(1)} failed")
+    if m := _ERROR_RE.search(text):
+        parts.append(f"{m.group(1)} error")
+
+    return ", ".join(parts) if parts else "(no summary)"
+
+
+def _extract_pytest_failures(text: str) -> list[str]:
+    """提取失败测试的节点 ID。
+
+    Args:
+        text: pytest 输出文本。
+
+    Returns:
+        失败测试节点 ID 列表，最多 MAX_FAILURE_LIST 条。
+    """
+    failures: list[str] = []
+    for line in text.splitlines():
+        if not line.startswith("FAILED "):
+            continue
+        rest = line[len("FAILED ") :].strip()
+        node = rest.split(" - ", 1)[0].strip()
+        if node:
+            failures.append(node)
+    return failures
