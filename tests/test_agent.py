@@ -344,3 +344,133 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None, monkeypatc
     # max_recent_pairs=1 时 recent 轮最多 3 条（含收尾注入），上限为 6
     assert max(captured_lengths) <= 7
     assert len(captured_lengths) == 6
+
+
+# ─── 编辑能力集成 ───
+
+
+def test_agent_system_prompt_contains_edit_guidance() -> None:
+    """默认系统提示应包含编辑相关指引。"""
+    from breeze.agent import DEFAULT_SYSTEM_PROMPT
+
+    prompt = DEFAULT_SYSTEM_PROMPT
+    assert "apply_patch" in prompt
+    assert "git_diff" in prompt
+    assert "git_restore" in prompt
+    assert "run_tests" in prompt
+    assert "不要修改测试文件" in prompt
+
+
+def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """超过 max_edit_attempts 的 apply_patch 调用应被拦截。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        executed.append(name)
+        return f"Patched {arguments.get('path', '?')} (1 replacement)"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    responses = [
+        _tool_call(
+            "apply_patch",
+            {"path": "x.py", "old": "a", "new": "b"},
+            call_id=f"c{i}",
+        )
+        for i in range(6)
+    ] + [_text("done")]
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_attempts=3)
+    result = agent.run("edit x.py")
+
+    assert result == "done"
+    assert executed.count("apply_patch") == 3
+
+    tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
+    assert len(apply_events) == 6
+
+    errors = [e for e in apply_events if e["error"]]
+    assert len(errors) == 3
+    assert all("max_edit_attempts" in e["error"] for e in errors)
+
+
+def test_agent_edit_count_resets_between_runs(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """两次 run 的编辑计数独立。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        executed.append(name)
+        return "Patched"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    # 第一次 run：3 次调用
+    responses1 = [
+        _tool_call(
+            "apply_patch",
+            {"path": "x.py", "old": "a", "new": "b"},
+            call_id=f"c{i}",
+        )
+        for i in range(3)
+    ] + [_text("done1")]
+
+    llm1 = FakeLLMClient(responses1)
+    agent1 = Agent(llm=llm1, trace=trace, max_steps=10, max_edit_attempts=3)
+    assert agent1.run("first") == "done1"
+    assert executed.count("apply_patch") == 3
+
+    # 第二次 run：又是 3 次调用，应全部执行
+    executed.clear()
+    responses2 = [
+        _tool_call(
+            "apply_patch",
+            {"path": "y.py", "old": "c", "new": "d"},
+            call_id=f"d{i}",
+        )
+        for i in range(3)
+    ] + [_text("done2")]
+
+    llm2 = FakeLLMClient(responses2)
+    agent2 = Agent(llm=llm2, trace=trace, max_steps=10, max_edit_attempts=3)
+    assert agent2.run("second") == "done2"
+    assert executed.count("apply_patch") == 3
+
+
+def test_agent_edit_count_ignores_other_tools(
+    trace: RunTrace, fake_tool: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非 apply_patch 工具不占编辑配额。"""
+    from breeze.agent import Agent
+
+    # 前 3 轮用 fake_echo，后 3 轮用 apply_patch（应全部执行）
+    responses = (
+        [_tool_call("fake_echo", {"text": "x"}, call_id=f"e{i}") for i in range(3)]
+        + [
+            _tool_call(
+                "apply_patch",
+                {"path": "x.py", "old": "a", "new": "b"},
+                call_id=f"p{i}",
+            )
+            for i in range(3)
+        ]
+        + [_text("done")]
+    )
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_attempts=3)
+    result = agent.run("mixed")
+
+    assert result == "done"
+
+    tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
+    errors = [e for e in apply_events if e["error"]]
+    assert len(errors) == 0

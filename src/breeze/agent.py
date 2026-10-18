@@ -14,17 +14,30 @@ from breeze.tools import registry
 from breeze.trace import RunTrace
 
 DEFAULT_MAX_STEPS = 10
+DEFAULT_MAX_EDIT_ATTEMPTS = 5
 
 DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
-你可以使用工具查看文件、搜索代码、运行命令。
+你可以使用工具查看文件、搜索代码、运行命令、修改代码。
 
 工作规则：
 1. 回答必须基于工具观察，不要编造文件内容。
 2. 在调用工具前，先判断是否已有足够信息回答用户问题。
-3. 一旦能回答问题，立即停止调用工具并给出答案，不要为了“更全面”而继续探索。
+3. 一旦能回答问题，立即停止调用工具并给出答案。
 4. 如果只需读取一个文件就能回答，就不要读取更多文件。
 5. 遇到工具错误时，简要说明原因，不要反复重试同一工具。
 6. 最终答案应简洁、直接，引用关键文件路径和函数名。
+
+编辑代码时：
+1. 修改前用 read_file 确认目标位置和上下文。
+2. 用 apply_patch 提交修改，old 必须唯一匹配文件中的原文。
+3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。
+4. 如果需要运行测试，优先使用 run_tests（仅支持 Python 项目）。
+   需要传递特殊 pytest 参数时，改用 run_shell。
+5. 如果修改有误，用 git_restore 回滚单个文件后重试。
+6. 不要修改 .git、traces、reports 目录下的内容。
+7. 不要修改测试文件来让测试通过，只修改被测代码。
+8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。
+   超过后会被拒绝，此时应报告失败或回滚。
 """
 
 
@@ -48,21 +61,24 @@ class Agent:
         llm: LLMClient,
         trace: RunTrace,
         max_steps: int = DEFAULT_MAX_STEPS,
+        max_edit_attempts: int = DEFAULT_MAX_EDIT_ATTEMPTS,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         context: ContextManager | None = None,
     ) -> None:
         """初始化 Agent。
 
         Args:
-            llm: LLM 客户端，需实现 chat(messages, tools) -> LLMResponse。
+            llm: LLM 客户端。
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
+            max_edit_attempts: 单次运行允许的 apply_patch 调用上限。
             system_prompt: 系统提示。
-            context: 上下文管理器，None 时使用默认配置。
+            context: 上下文管理器。
         """
         self.llm = llm
         self.trace = trace
         self.max_steps = max_steps
+        self.max_edit_attempts = max_edit_attempts
         self.system_prompt = system_prompt
         self.context = context or ContextManager()
 
@@ -79,6 +95,8 @@ class Agent:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": question},
         ]
+
+        edit_count = 0
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -145,6 +163,29 @@ class Agent:
             )
 
             for tc in tool_calls:
+                if tc.name == "apply_patch":
+                    edit_count += 1
+                    if edit_count > self.max_edit_attempts:
+                        error_msg = (
+                            f"Error: exceeded max_edit_attempts "
+                            f"({self.max_edit_attempts}). "
+                            f"Use git_restore to revert changes or report the failure."
+                        )
+                        self.trace.log_tool(
+                            step=step,
+                            tool=tc.name,
+                            arguments={"raw": tc.arguments_json},
+                            result=error_msg,
+                            latency_ms=0.0,
+                            error=error_msg,
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": error_msg,
+                        })
+                        continue
+
                 self._execute_and_append(messages, tc, step)
 
         return f"Reached max steps ({self.max_steps}), task not completed."

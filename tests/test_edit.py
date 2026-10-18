@@ -21,6 +21,16 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+@pytest.fixture
+def python_repo(repo: Path) -> Path:
+    """在 repo 基础上添加 Python 项目标记，供 run_tests 测试使用。"""
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "0.1.0"\n',
+        encoding="utf-8",
+    )
+    return repo
+
+
 def _make_file(root: Path, name: str, content: str) -> Path:
     """在临时仓库中创建文件。"""
     p = root / name
@@ -529,7 +539,7 @@ def fake_pytest(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     yield captured
 
 
-def test_run_tests_all_pass(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_all_pass(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """全部通过时返回 passed 计数。"""
     fake_pytest["returncode"] = 0
     fake_pytest["stdout"] = "148 passed in 5.34s\n"
@@ -541,7 +551,7 @@ def test_run_tests_all_pass(repo: Path, fake_pytest: dict[str, Any]) -> None:
     assert "failures" not in out
 
 
-def test_run_tests_with_failures(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_with_failures(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """有失败时列出失败节点 ID。"""
     fake_pytest["returncode"] = 1
     fake_pytest["stdout"] = (
@@ -560,7 +570,7 @@ def test_run_tests_with_failures(repo: Path, fake_pytest: dict[str, Any]) -> Non
     assert "tests/test_search.py::test_y" in out
 
 
-def test_run_tests_with_errors(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_with_errors(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """errors 计数应被解析。"""
     fake_pytest["returncode"] = 1
     fake_pytest["stdout"] = "10 passed, 1 error in 2.0s\n"
@@ -570,7 +580,7 @@ def test_run_tests_with_errors(repo: Path, fake_pytest: dict[str, Any]) -> None:
     assert "1 error" in out
 
 
-def test_run_tests_pattern_passed(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_pattern_passed(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """pattern 应作为额外参数传给 pytest。"""
     fake_pytest["returncode"] = 0
     fake_pytest["stdout"] = "5 passed in 0.5s\n"
@@ -580,7 +590,7 @@ def test_run_tests_pattern_passed(repo: Path, fake_pytest: dict[str, Any]) -> No
     assert fake_pytest["tokens"] == ["pytest", "-q", "tests/test_fs.py"]
 
 
-def test_run_tests_node_id_pattern(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_node_id_pattern(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """节点 ID 形式应被接受。"""
     fake_pytest["returncode"] = 0
     fake_pytest["stdout"] = "1 passed in 0.1s\n"
@@ -591,28 +601,28 @@ def test_run_tests_node_id_pattern(repo: Path, fake_pytest: dict[str, Any]) -> N
     assert fake_pytest["tokens"][-1] == "tests/test_fs.py::test_apply_patch_basic"
 
 
-def test_run_tests_rejects_empty_pattern(repo: Path) -> None:
+def test_run_tests_rejects_empty_pattern(python_repo: Path) -> None:
     """空 pattern 应拒绝。"""
     out = registry.execute("run_tests", {"pattern": ""})
     assert out.startswith("Error:")
     assert "empty" in out
 
 
-def test_run_tests_rejects_spaces(repo: Path) -> None:
+def test_run_tests_rejects_spaces(python_repo: Path) -> None:
     """pattern 含空格应拒绝。"""
     out = registry.execute("run_tests", {"pattern": "tests/foo.py -v"})
     assert out.startswith("Error:")
     assert "invalid" in out
 
 
-def test_run_tests_rejects_shell_chars(repo: Path) -> None:
+def test_run_tests_rejects_shell_chars(python_repo: Path) -> None:
     """pattern 含 shell 字符应拒绝。"""
     for bad in ["foo; rm -rf /", "foo && bar", "foo | bar", "$(whoami)"]:
         out = registry.execute("run_tests", {"pattern": bad})
         assert out.startswith("Error:"), bad
 
 
-def test_run_tests_timeout(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_timeout(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """超时应返回 Error。"""
     fake_pytest["returncode"] = -1
     fake_pytest["stderr"] = "Command timed out after 60 seconds."
@@ -622,7 +632,7 @@ def test_run_tests_timeout(repo: Path, fake_pytest: dict[str, Any]) -> None:
     assert "timed out" in out
 
 
-def test_run_tests_no_summary(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_no_summary(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """无法解析摘要时返回 (no summary)。"""
     fake_pytest["returncode"] = 5
     fake_pytest["stdout"] = "no tests ran\n"
@@ -631,7 +641,7 @@ def test_run_tests_no_summary(repo: Path, fake_pytest: dict[str, Any]) -> None:
     assert "no summary" in out
 
 
-def test_run_tests_truncates_large_output(repo: Path, fake_pytest: dict[str, Any]) -> None:
+def test_run_tests_truncates_large_output(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """超过 8KB 应截断。"""
     fake_pytest["returncode"] = 1
     # 每条约 60 字节，250 条约 15KB，必然触发 8KB 截断
@@ -647,14 +657,26 @@ def test_run_tests_truncates_large_output(repo: Path, fake_pytest: dict[str, Any
     assert len(out.encode("utf-8")) <= 8_100  # 允许少量余量
 
 
-def test_run_tests_real_pytest(repo: Path) -> None:
+def test_run_tests_real_pytest(python_repo: Path) -> None:
     """真实 pytest 调用：验证端到端可用。"""
     if shutil.which("pytest") is None:
         pytest.skip("pytest not found on PATH")
 
-    _make_file(repo, "test_sample.py", "def test_ok():\n    assert 1 == 1\n")
+    _make_file(python_repo, "test_sample.py", "def test_ok():\n    assert 1 == 1\n")
 
     out = registry.execute("run_tests", {"pattern": "test_sample.py"})
 
     assert "exit_code=0" in out
     assert "1 passed" in out
+
+
+def test_run_tests_non_python_project(repo: Path) -> None:
+    """非 Python 项目应返回明确错误。"""
+    _make_file(repo, "main.js", "console.log('hi');\n")
+    _make_file(repo, "package.json", '{"name": "demo"}\n')
+
+    out = registry.execute("run_tests", {})
+
+    assert out.startswith("Error:")
+    assert "no Python project" in out
+    assert "run_shell" in out

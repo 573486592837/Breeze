@@ -73,7 +73,7 @@ def _is_git_repo(root: Path) -> bool:
 
 @register(
     name="git_diff",
-    description=("返回工作区未提交的改动。用于确认自己修改了什么，或检查 patch 是否生效。可指定单个文件缩小范围。"),
+    description=("返回工作区未提交的改动。适用于查看多次修改后的整体变化，或回滚前确认当前状态。可指定单个文件缩小范围。"),
     parameters={
         "type": "object",
         "properties": {
