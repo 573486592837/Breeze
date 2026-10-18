@@ -9,6 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from breeze.config import settings
+
+# Deprecated: values come from settings via ContextConfig.__post_init__.
+# Kept for backward compatibility with code that imports these constants.
+DEFAULT_MAX_RECENT_TOKENS = 3000
 DEFAULT_MAX_RECENT_PAIRS = 3
 DEFAULT_MIN_RECENT_PAIRS = 1
 DEFAULT_MAX_RECENT_TOKENS = 3_000
@@ -23,25 +28,48 @@ DEFAULT_TOOL_RESULT_TAIL_BYTES = 2_000
 class ContextConfig:
     """ContextManager 的配置。
 
+    All fields default to None. None means "use the value from settings".
+    Explicit values (including 0 and False) take precedence over config.
+    After __post_init__, every field holds a concrete non-None value.
+
     Attributes:
-        enable: 是否启用压缩。False 时 build 直接返回原列表。
+        enable: 是否启用压缩。
         max_recent_tokens: 保留的最近轮估计 Token 上限。
         min_recent_pairs: 无论多大，至少保留的最近轮数。
-        max_recent_pairs: 保留的最近轮数硬上限（与 Token 预算同时生效）。
+        max_recent_pairs: 保留的最近轮数硬上限。
         arguments_preview: 摘要中工具参数的最大字符数。
         tool_result_max_bytes: 单条工具结果的字节上限。
         tool_result_head_bytes: 压缩时保留的头部字节数。
         tool_result_tail_bytes: 压缩时保留的尾部字节数。
     """
 
-    enable: bool = True
-    max_recent_tokens: int = DEFAULT_MAX_RECENT_TOKENS
-    min_recent_pairs: int = DEFAULT_MIN_RECENT_PAIRS
-    max_recent_pairs: int = DEFAULT_MAX_RECENT_PAIRS
-    arguments_preview: int = DEFAULT_ARGUMENTS_PREVIEW
-    tool_result_max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES
-    tool_result_head_bytes: int = DEFAULT_TOOL_RESULT_HEAD_BYTES
-    tool_result_tail_bytes: int = DEFAULT_TOOL_RESULT_TAIL_BYTES
+    enable: bool | None = None
+    max_recent_tokens: int | None = None
+    min_recent_pairs: int | None = None
+    max_recent_pairs: int | None = None
+    arguments_preview: int | None = None
+    tool_result_max_bytes: int | None = None
+    tool_result_head_bytes: int | None = None
+    tool_result_tail_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        """Fill unset fields from settings."""
+        if self.enable is None:
+            self.enable = settings.context_enable
+        if self.max_recent_tokens is None:
+            self.max_recent_tokens = settings.context_max_recent_tokens
+        if self.min_recent_pairs is None:
+            self.min_recent_pairs = settings.context_min_recent_pairs
+        if self.max_recent_pairs is None:
+            self.max_recent_pairs = settings.context_max_recent_pairs
+        if self.arguments_preview is None:
+            self.arguments_preview = settings.context_arguments_preview
+        if self.tool_result_max_bytes is None:
+            self.tool_result_max_bytes = settings.context_tool_result_max_bytes
+        if self.tool_result_head_bytes is None:
+            self.tool_result_head_bytes = settings.context_tool_result_head_bytes
+        if self.tool_result_tail_bytes is None:
+            self.tool_result_tail_bytes = settings.context_tool_result_tail_bytes
 
 
 class ContextManager:

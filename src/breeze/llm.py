@@ -25,25 +25,45 @@ class LLMClient:
         model: str | None = None,
         api_key: str | None = None,
         api_base: str | None = None,
+        temperature: float | None = None,
     ) -> None:
+        """初始化 LLM 客户端。
+
+        Args:
+            model: 模型名。None 时从配置读取。
+            api_key: API 密钥。None 时从配置读取。
+            api_base: API 基础地址。None 时从配置读取。
+            temperature: 温度。None 时从配置读取。
+        """
         self.model = model or settings.model
         self.api_key = api_key or settings.api_key
         self.api_base = api_base or settings.api_base
+        self.temperature = temperature if temperature is not None else settings.llm_temperature
 
     def chat(
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        temperature: float = 0.0,
+        temperature: float | None = None,
     ) -> LLMResponse:
+        """发起一次 chat completion 调用。
+
+        Args:
+            messages: 消息列表。
+            tools: 可选的工具 schema 列表。
+            temperature: 温度。None 时使用实例配置。
+
+        Returns:
+            LLMResponse。
+        """
+        temp = temperature if temperature is not None else self.temperature
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "api_key": self.api_key,
             "api_base": self.api_base,
-            "temperature": temperature,
+            "temperature": temp,
         }
-
         if tools:
             kwargs["tools"] = tools
 

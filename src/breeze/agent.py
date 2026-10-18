@@ -8,11 +8,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from breeze.config import settings
 from breeze.context import ContextManager
 from breeze.llm import LLMClient, LLMResponse
 from breeze.tools import registry
 from breeze.trace import RunTrace
 
+# Deprecated: use settings.agent_max_steps instead.
+# Kept for backward compatibility with code that imports this constant.
 DEFAULT_MAX_STEPS = 10
 DEFAULT_MAX_EDIT_ATTEMPTS = 5
 
@@ -60,8 +63,8 @@ class Agent:
         self,
         llm: LLMClient,
         trace: RunTrace,
-        max_steps: int = DEFAULT_MAX_STEPS,
-        max_edit_attempts: int = DEFAULT_MAX_EDIT_ATTEMPTS,
+        max_steps: int | None = None,
+        max_edit_attempts: int | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         context: ContextManager | None = None,
     ) -> None:
@@ -77,8 +80,10 @@ class Agent:
         """
         self.llm = llm
         self.trace = trace
-        self.max_steps = max_steps
-        self.max_edit_attempts = max_edit_attempts
+        self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
+        self.max_edit_attempts = (
+            max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
+        )
         self.system_prompt = system_prompt
         self.context = context or ContextManager()
 
@@ -179,11 +184,13 @@ class Agent:
                             latency_ms=0.0,
                             error=error_msg,
                         )
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": error_msg,
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": error_msg,
+                            }
+                        )
                         continue
 
                 self._execute_and_append(messages, tc, step)

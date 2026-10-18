@@ -474,3 +474,42 @@ def test_agent_edit_count_ignores_other_tools(
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
     errors = [e for e in apply_events if e["error"]]
     assert len(errors) == 0
+
+
+# ─── 配置集成 ───
+
+
+def test_agent_uses_settings_for_max_steps(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """不传 max_steps 时用 settings 的值。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "agent_max_steps", 7)
+
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.max_steps == 7
+
+
+def test_agent_explicit_max_steps_overrides_settings(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式传 max_steps 时覆盖 settings。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "agent_max_steps", 7)
+
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, max_steps=3)
+
+    assert agent.max_steps == 3
+
+
+def test_agent_uses_settings_for_max_edit_attempts(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """不传 max_edit_attempts 时用 settings 的值。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "agent_max_edit_attempts", 2)
+
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.max_edit_attempts == 2

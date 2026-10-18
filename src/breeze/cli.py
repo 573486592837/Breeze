@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from breeze.agent import DEFAULT_MAX_STEPS, Agent
+from breeze.agent import Agent
 from breeze.config import settings
 from breeze.llm import LLMClient
 from breeze.trace import RunTrace
@@ -53,9 +53,9 @@ def ask(
         help="default model",
     ),
     max_steps: int = typer.Option(
-        DEFAULT_MAX_STEPS,
+        None,
         "--max-steps",
-        help="max cycling steps",
+        help="max cycling steps (default: from breeze.toml or DEFAULTS)",
         min=1,
         max=50,
     ),
