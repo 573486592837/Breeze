@@ -89,10 +89,13 @@ def _parse_args() -> argparse.Namespace:
         help="use a fake LLM to verify the script itself",
     )
     parser.add_argument(
-        "--repeat",
-        type=int,
-        default=1,
-        help="run each task N times and use median tokens (default: 1)"
+        "--repeat", type=int, default=1, help="run each task N times and use median tokens (default: 1)"
+    )
+    parser.add_argument(
+        "--fixtures-dir",
+        type=Path,
+        default=Path("fixtures"),
+        help="directory for setup patch files (default: fixtures)",
     )
     return parser.parse_args()
 
@@ -111,6 +114,7 @@ def main() -> int:
         model=args.model,
         only_ids=only_ids,
         trace_dir=args.trace_dir,
+        fixtures_dir=args.fixtures_dir,
         dry_run=args.dry_run,
         repeat=args.repeat,
         llm_factory=_FakeLLM if args.no_llm else None,

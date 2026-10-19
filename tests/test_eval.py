@@ -1,6 +1,7 @@
 """eval 模块的单元测试。"""
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,24 @@ def fake_repo(tmp_path: Path) -> Path:
     root.mkdir()
     (root / "README.md").write_text("# demo\n", encoding="utf-8")
     return root
+
+
+@pytest.fixture
+def git_repo(fake_repo: Path) -> Path:
+    """在 fake_repo 基础上初始化 git 仓库并提交。"""
+    subprocess.run(["git", "init", "-q"], cwd=fake_repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=fake_repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=fake_repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=fake_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=fake_repo, check=True)
+    return fake_repo
+
+
+@pytest.fixture
+def fixtures_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "fixtures"
+    d.mkdir()
+    return d
 
 
 # ─── load_tasks ───
@@ -486,3 +505,294 @@ def test_summarize_empty_has_std() -> None:
     """空结果集也应包含 std_tokens。"""
     s = summarize([])
     assert s["std_tokens"] == 0.0
+
+
+# ─── setup / eval_command / worktree ───
+
+
+def test_load_tasks_parses_setup_and_eval(
+    tmp_path: Path,
+) -> None:
+    """load_tasks 应解析 setup 和 eval_command。"""
+    yaml_path = tmp_path / "tasks.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "fix it",
+                        "success_criteria": "tests pass",
+                        "setup": [{"patch": "fix01.patch"}],
+                        "eval_command": "pytest -q",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, tasks = load_tasks(yaml_path)
+    t = tasks[0]
+    assert len(t.setup) == 1
+    assert t.setup[0].kind == "patch"
+    assert t.setup[0].value == "fix01.patch"
+    assert t.eval_command == "pytest -q"
+
+
+def test_load_tasks_rejects_invalid_setup(tmp_path: Path) -> None:
+    """setup 格式不合法应抛错。"""
+    yaml_path = tmp_path / "tasks.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "x",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "setup": "not a list",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="setup must be a list"):
+        load_tasks(yaml_path)
+
+
+def test_run_eval_requires_git_repo_for_long_tasks(fake_repo: Path, tmp_path: Path) -> None:
+    """有 setup 的任务要求 repo_root 是 git 仓库。"""
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "setup": [{"command": "echo hi"}],
+                        "eval_command": "true",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="git repository"):
+        run_eval(
+            tasks_path=tasks_path,
+            output_path=tmp_path / "out.json",
+            repo_root=fake_repo,
+            trace_dir=tmp_path / "traces",
+            fixtures_dir=tmp_path / "fixtures",
+            llm_factory=FakeLLM,
+        )
+
+
+def test_run_eval_with_worktree_end_to_end(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """端到端：worktree 隔离 + setup command + eval_command。"""
+    import sys
+
+    (git_repo / "target.txt").write_text("original\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add target"], cwd=git_repo, check=True)
+
+    # 用 Python 替代 Unix 命令，跨平台
+    setup_cmd = f"\"{sys.executable}\" -c \"from pathlib import Path; Path('target.txt').write_text('broken')\""
+    eval_cmd = f"\"{sys.executable}\" -c \"import sys; sys.exit(0 if 'broken' in open('target.txt').read() else 1)\""
+
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "make eval pass",
+                        "success_criteria": "eval passes",
+                        "setup": [{"command": setup_cmd}],
+                        "eval_command": eval_cmd,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    r = data["results"][0]
+
+    assert r["auto_graded"] is True
+    assert r["success"] is True
+
+
+def test_run_eval_setup_failure_records_failed_result(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """setup 失败时该 run 记录为失败，但不中断评估。"""
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "setup": [{"patch": "nonexistent.patch"}],
+                        "eval_command": "true",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    r = data["results"][0]
+    assert r["success"] is False
+    assert "setup failed" in r["notes"]
+
+
+def test_run_eval_repeat_with_eval_majority(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """多次运行按多数原则聚合 success。"""
+    import sys
+
+    # 用 Python -c "pass" 作为恒成功的 eval_command
+    eval_cmd = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "eval_command": eval_cmd,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        repeat=3,
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    r = data["results"][0]
+
+    assert r["success"] is True
+    assert r["auto_graded"] is True
+
+
+def test_run_eval_short_tasks_unaffected_by_worktree(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """没有 setup / eval_command 的短任务不需要 git 仓库。"""
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=output,
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["summary"]["total_tasks"] == 2
+    # 短任务不设 auto_graded
+    assert data["results"][0]["auto_graded"] is False
+
+
+def test_merge_manual_grades_skips_auto_graded(
+    tmp_path: Path,
+) -> None:
+    """auto_graded 的任务跳过人工评分合并。"""
+    from breeze.eval import _merge_manual_grades
+
+    old_path = tmp_path / "old.json"
+    old_path.write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "id": "fix01",
+                        "success": False,
+                        "notes": "human said fail",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    new_report = {
+        "results": [
+            {
+                "id": "fix01",
+                "success": True,
+                "notes": "",
+                "auto_graded": True,
+            }
+        ],
+        "summary": {},
+    }
+
+    _merge_manual_grades(new_report, old_path)
+
+    # auto_graded 跳过合并，保持 True
+    assert new_report["results"][0]["success"] is True

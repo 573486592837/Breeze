@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import statistics
+import subprocess
+import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,8 +26,25 @@ from breeze.trace import RunTrace
 
 
 @dataclass
+class SetupOp:
+    """任务 setup 的单个操作。
+
+    Attributes:
+        kind: "patch" 或 "command"。
+        value: patch 相对 fixtures 目录的路径，或要执行的命令。
+    """
+
+    kind: str
+    value: str
+
+
+@dataclass
 class TaskSpec:
-    """单个评估任务。"""
+    """单个评估任务。
+
+    短任务只需 id/type/question/success_criteria。
+    长任务额外使用 setup 和 eval_command 启用 worktree 隔离与自动判定。
+    """
 
     id: str
     type: str
@@ -32,6 +52,8 @@ class TaskSpec:
     success_criteria: str
     max_steps: int = 6
     notes: str = ""
+    setup: list[SetupOp] = field(default_factory=list)
+    eval_command: str | None = None
 
 
 @dataclass
@@ -68,6 +90,7 @@ class TaskResult:
     tokens_std: float | None = None
     tokens_min: int | None = None
     tokens_max: int | None = None
+    auto_graded: bool = False
 
 
 def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
@@ -105,6 +128,11 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
             raise ValueError(f"duplicate task id: {item['id']}")
         seen_ids.add(item["id"])
 
+        setup = _parse_setup(item.get("setup", []))
+        eval_command = item.get("eval_command")
+        if eval_command is not None and not isinstance(eval_command, str):
+            raise ValueError(f"task {item['id']} eval_command must be a string")
+
         tasks.append(
             TaskSpec(
                 id=item["id"],
@@ -113,11 +141,281 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
                 success_criteria=item["success_criteria"],
                 max_steps=int(item.get("max_steps", 6)),
                 notes=item.get("notes", ""),
+                setup=setup,
+                eval_command=eval_command,
             )
         )
 
     metadata = {k: v for k, v in raw.items() if k != "tasks"}
     return metadata, tasks
+
+
+def _is_git_repo(root: Path) -> bool:
+    """检查 root 是否在 git 工作区内。"""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _create_worktree(repo_root: Path, name: str) -> Path:
+    """在临时目录下创建 worktree。
+
+    Args:
+        repo_root: 原始仓库根目录。
+        name: 用于临时目录名前缀。
+
+    Returns:
+        worktree 路径。
+
+    Raises:
+        RuntimeError: git worktree add 失败。
+    """
+    base = Path(tempfile.mkdtemp(prefix=f"breeze-eval-{name}-"))
+    wt = base / "wt"
+    proc = subprocess.run(
+        ["git", "worktree", "add", "--detach", str(wt), "HEAD"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        shell=False,
+    )
+    if proc.returncode != 0:
+        with contextlib.suppress(OSError):
+            base.rmdir()
+        raise RuntimeError(f"git worktree add failed: {proc.stderr.strip()[:500]}")
+    return wt
+
+
+def _remove_worktree(repo_root: Path, worktree: Path) -> None:
+    """移除 worktree 并清理临时父目录。失败时静默。"""
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree)],
+        cwd=str(repo_root),
+        capture_output=True,
+        timeout=30,
+        shell=False,
+    )
+    with contextlib.suppress(OSError):
+        worktree.parent.rmdir()
+
+
+def _reset_worktree(worktree: Path) -> None:
+    """把 worktree 重置到 HEAD 状态。"""
+    subprocess.run(
+        ["git", "checkout", "--", "."],
+        cwd=str(worktree),
+        capture_output=True,
+        timeout=15,
+        shell=False,
+    )
+    subprocess.run(
+        ["git", "clean", "-fd"],
+        cwd=str(worktree),
+        capture_output=True,
+        timeout=15,
+        shell=False,
+    )
+
+
+def _run_setup(
+    worktree: Path,
+    task: TaskSpec,
+    fixtures_dir: Path,
+) -> tuple[bool, str]:
+    """执行任务的 setup 操作。
+
+    Args:
+        worktree: 隔离的工作副本路径。
+        task: 任务定义。
+        fixtures_dir: patch 文件的基准目录。
+
+    Returns:
+        (ok, message)。失败时 ok=False，message 含原因。
+    """
+    for op in task.setup:
+        if op.kind == "patch":
+            patch_path = fixtures_dir / op.value
+            if not patch_path.is_file():
+                return False, f"patch not found: {patch_path}"
+            proc = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", str(patch_path)],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                shell=False,
+            )
+            if proc.returncode != 0:
+                return False, f"git apply failed: {proc.stderr.strip()[:300]}"
+        elif op.kind == "command":
+            # setup command 由任务定义者编写，不来自 LLM，允许 shell=True
+            if not op.value.strip():
+                return False, "empty setup command"
+            proc = subprocess.run(
+                op.value,
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                shell=True,
+            )
+            if proc.returncode != 0:
+                return False, f"setup command failed: {proc.stderr.strip()[:300]}"
+        else:
+            return False, f"unknown setup op kind: {op.kind}"
+    return True, ""
+
+
+def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> bool:
+    """执行 eval_command，退出码 0 视为成功。"""
+    if not command.strip():
+        return False
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            shell=True,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+def _make_failed_result(task: TaskSpec, error: str) -> TaskResult:
+    """构造一个失败的 TaskResult。"""
+    return TaskResult(
+        id=task.id,
+        type=task.type,
+        question=task.question,
+        success_criteria=task.success_criteria,
+        max_steps=task.max_steps,
+        answer=f"[eval] {error}",
+        trace_path="",
+        llm_calls=0,
+        tool_calls=0,
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        llm_latency_ms=0.0,
+        tool_latency_ms=0.0,
+        errors=1,
+        duration_ms=0.0,
+        success=False,
+        notes=error,
+        auto_graded=bool(task.eval_command),
+    )
+
+
+def _run_task_with_worktree(
+    task: TaskSpec,
+    llm: LLMClient,
+    trace_dir: Path,
+    repo_root: Path,
+    fixtures_dir: Path,
+    repeat: int,
+    log: Callable[[str], None],
+) -> list[TaskResult]:
+    """在 worktree 里跑 repeat 次任务。
+
+    Args:
+        task: 任务定义。
+        llm: LLM 客户端。
+        trace_dir: trace 目录。
+        repo_root: 原始仓库根目录。
+        fixtures_dir: patch 文件的基准目录。
+        repeat: 运行次数。
+        log: 进度回调。
+
+    Returns:
+        repeat 次运行的 TaskResult 列表。
+    """
+    worktree = _create_worktree(repo_root, task.id)
+    results: list[TaskResult] = []
+    original_root = settings.repo_root
+    try:
+        for j in range(repeat):
+            _reset_worktree(worktree)
+            ok, msg = _run_setup(worktree, task, fixtures_dir)
+            if not ok:
+                log(f"  run {j + 1}/{repeat}: setup failed: {msg}")
+                results.append(_make_failed_result(task, f"setup failed: {msg}"))
+                continue
+
+            settings.repo_root = worktree
+            log(f"  run {j + 1}/{repeat}")
+            try:
+                r = run_task(task, llm, trace_dir)
+            except Exception as exc:
+                log(f"  run {j + 1}/{repeat}: agent error: {exc}")
+                results.append(_make_failed_result(task, f"agent error: {exc}"))
+                continue
+            finally:
+                settings.repo_root = original_root
+
+            if task.eval_command:
+                passed = _run_eval_command(worktree, task.eval_command)
+                r.success = passed
+                r.auto_graded = True
+                log(f"  run {j + 1}/{repeat}: eval {'PASS' if passed else 'FAIL'}")
+
+            results.append(r)
+    finally:
+        settings.repo_root = original_root
+        _remove_worktree(repo_root, worktree)
+    return results
+
+
+def _parse_setup(raw: Any) -> list[SetupOp]:
+    """解析 setup 列表。
+
+    Args:
+        raw: YAML 中 setup 字段的值。
+
+    Returns:
+        SetupOp 列表。
+
+    Raises:
+        ValueError: 格式不合法。
+    """
+    if not isinstance(raw, list):
+        raise ValueError(f"setup must be a list, got {type(raw).__name__}")
+
+    ops: list[SetupOp] = []
+    for item in raw:
+        if not isinstance(item, dict) or len(item) != 1:
+            raise ValueError(f"each setup op must have exactly one key: {item}")
+        if "patch" in item:
+            ops.append(SetupOp("patch", str(item["patch"])))
+        elif "command" in item:
+            ops.append(SetupOp("command", str(item["command"])))
+        else:
+            raise ValueError(f"unknown setup op keys: {list(item.keys())}")
+    return ops
 
 
 def run_task(
@@ -194,30 +492,23 @@ def _aggregate_runs(runs: list[TaskResult]) -> TaskResult:
     base["total_tokens"] = int(statistics.median(tokens))
     base["llm_calls"] = int(statistics.median([r.llm_calls for r in runs]))
     base["tool_calls"] = int(statistics.median([r.tool_calls for r in runs]))
-    base["prompt_tokens"] = int(
-        statistics.median([r.prompt_tokens for r in runs])
-    )
-    base["completion_tokens"] = int(
-        statistics.median([r.completion_tokens for r in runs])
-    )
-    base["duration_ms"] = round(
-        statistics.median([r.duration_ms for r in runs]), 2
-    )
-    base["llm_latency_ms"] = round(
-        statistics.median([r.llm_latency_ms for r in runs]), 2
-    )
-    base["tool_latency_ms"] = round(
-        statistics.median([r.tool_latency_ms for r in runs]), 2
-    )
+    base["prompt_tokens"] = int(statistics.median([r.prompt_tokens for r in runs]))
+    base["completion_tokens"] = int(statistics.median([r.completion_tokens for r in runs]))
+    base["duration_ms"] = round(statistics.median([r.duration_ms for r in runs]), 2)
+    base["llm_latency_ms"] = round(statistics.median([r.llm_latency_ms for r in runs]), 2)
+    base["tool_latency_ms"] = round(statistics.median([r.tool_latency_ms for r in runs]), 2)
     base["errors"] = int(statistics.median([r.errors for r in runs]))
 
     base["tokens_samples"] = tokens
     base["tokens_median"] = float(statistics.median(tokens))
-    base["tokens_std"] = (
-        round(statistics.stdev(tokens), 2) if len(tokens) > 1 else 0.0
-    )
+    base["tokens_std"] = round(statistics.stdev(tokens), 2) if len(tokens) > 1 else 0.0
     base["tokens_min"] = min(tokens)
     base["tokens_max"] = max(tokens)
+
+    passes = [r.success for r in runs if r.success is not None]
+    if passes:
+        base["success"] = sum(passes) > len(passes) / 2
+        base["auto_graded"] = any(r.auto_graded for r in runs)
 
     return TaskResult(**base)
 
@@ -258,9 +549,7 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
         "ungraded": sum(1 for r in results if r.success is None),
         "total_tokens": sum(tokens),
         "avg_tokens": round(sum(tokens) / n, 2),
-        "std_tokens": (
-            round(statistics.stdev(tokens), 2) if n > 1 else 0.0
-        ),
+        "std_tokens": (round(statistics.stdev(tokens), 2) if n > 1 else 0.0),
         "total_llm_calls": sum(r.llm_calls for r in results),
         "avg_llm_calls": round(sum(r.llm_calls for r in results) / n, 2),
         "total_tool_calls": sum(r.tool_calls for r in results),
@@ -313,6 +602,8 @@ def _merge_manual_grades(new_report: dict[str, Any], old_path: Path) -> None:
     old_by_id = {r["id"]: r for r in old.get("results", []) if "id" in r}
 
     for r in new_report["results"]:
+        if r.get("auto_graded"):
+            continue
         old_r = old_by_id.get(r["id"])
         if not old_r:
             continue
@@ -334,6 +625,7 @@ def run_eval(
     model: str | None = None,
     only_ids: set[str] | None = None,
     trace_dir: Path = Path("traces"),
+    fixtures_dir: Path = Path("fixtures"),
     dry_run: bool = False,
     repeat: int = 1,
     llm_factory: Callable[[], LLMClient] | None = None,
@@ -348,6 +640,7 @@ def run_eval(
         model: 覆盖模型名，None 表示用 settings.model。
         only_ids: 只运行指定 id；None 表示全部。
         trace_dir: trace 目录。
+        fixtures_dir: patch 文件基准目录。
         dry_run: 只打印任务，不运行。
         repeat: 每个任务运行的次数，用于降低噪声。
         llm_factory: 返回 LLMClient 的工厂函数，便于测试注入。
@@ -366,14 +659,23 @@ def run_eval(
     if dry_run:
         log(f"dry-run: {len(tasks)} task(s), repeat={repeat}")
         for t in tasks:
-            log(f"  [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}")
+            extras = []
+            if t.setup:
+                extras.append(f"setup={len(t.setup)}")
+            if t.eval_command:
+                extras.append("eval_command=yes")
+            extra = f" [{', '.join(extras)}]" if extras else ""
+            log(f"  [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}{extra}")
         return {}
 
     if repeat < 1:
         raise ValueError(f"repeat must be >= 1, got {repeat}")
 
+    needs_worktree = any(t.setup or t.eval_command for t in tasks)
+    if needs_worktree and not _is_git_repo(repo_root):
+        raise ValueError("long-task evaluation requires a git repository at repo_root")
+
     original_root = settings.repo_root
-    settings.repo_root = repo_root
     try:
         factory = llm_factory or (lambda: LLMClient(model=model))
         llm = factory()
@@ -381,10 +683,15 @@ def run_eval(
         results: list[TaskResult] = []
         for i, task in enumerate(tasks, start=1):
             log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat}")
-            task_runs: list[TaskResult] = []
-            for j in range(repeat):
-                log(f"  run {j + 1}/{repeat}")
-                task_runs.append(run_task(task, llm, trace_dir))
+
+            if task.setup or task.eval_command:
+                task_runs = _run_task_with_worktree(task, llm, trace_dir, repo_root, fixtures_dir, repeat, log)
+            else:
+                settings.repo_root = repo_root
+                task_runs = []
+                for j in range(repeat):
+                    log(f"  run {j + 1}/{repeat}")
+                    task_runs.append(run_task(task, llm, trace_dir))
 
             result = _aggregate_runs(task_runs)
             results.append(result)
@@ -394,16 +701,13 @@ def run_eval(
                 preview += "..."
             log(f"  answer: {preview}")
             log(
-                f"  tokens={result.total_tokens}\n"
-                f"llm_calls={result.llm_calls}\n"
-                f"tool_calls={result.tool_calls}\n"
+                f"  tokens={result.total_tokens} "
+                f"llm_calls={result.llm_calls} "
+                f"tool_calls={result.tool_calls} "
                 f"duration={result.duration_ms}ms"
             )
             if result.tokens_samples is not None:
-                log(
-                    f"  samples={result.tokens_samples} "
-                    f"std={result.tokens_std}"
-                )
+                log(f"  samples={result.tokens_samples} std={result.tokens_std}")
 
         report = build_report(metadata, results)
         _merge_manual_grades(report, output_path)
