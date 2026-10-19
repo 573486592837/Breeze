@@ -88,6 +88,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="use a fake LLM to verify the script itself",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="run each task N times and use median tokens (default: 1)"
+    )
     return parser.parse_args()
 
 
@@ -106,6 +112,7 @@ def main() -> int:
         only_ids=only_ids,
         trace_dir=args.trace_dir,
         dry_run=args.dry_run,
+        repeat=args.repeat,
         llm_factory=_FakeLLM if args.no_llm else None,
         progress=progress,
     )

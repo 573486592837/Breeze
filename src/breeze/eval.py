@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -38,6 +39,9 @@ class TaskResult:
     """单个任务的运行结果。
 
     success 和 notes 由人工填写，脚本初始化为 None 和空字符串。
+
+    当 repeat > 1 时，total_tokens、llm_calls、tool_calls、duration_ms
+    是 N 次运行的中位数，原始采样存在 tokens_samples 中。
     """
 
     id: str
@@ -58,6 +62,12 @@ class TaskResult:
     duration_ms: float
     success: bool | None = None
     notes: str = ""
+    # repeat > 1 时填充
+    tokens_samples: list[int] | None = None
+    tokens_median: float | None = None
+    tokens_std: float | None = None
+    tokens_min: int | None = None
+    tokens_max: int | None = None
 
 
 def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
@@ -160,6 +170,58 @@ def run_task(
     )
 
 
+def _aggregate_runs(runs: list[TaskResult]) -> TaskResult:
+    """把同一任务的多次运行聚合成一条结果。
+
+    中位数用于 total_tokens、llm_calls、tool_calls、duration_ms。
+    原始 Token 采样存入 tokens_samples。
+    answer 和 trace_path 取第一次运行的，作为代表。
+
+    Args:
+        runs: 同一任务的 N 次运行结果，N >= 1。
+
+    Returns:
+        聚合后的 TaskResult。
+    """
+    if not runs:
+        raise ValueError("runs must not be empty")
+    if len(runs) == 1:
+        return runs[0]
+
+    base = asdict(runs[0])
+    tokens = [r.total_tokens for r in runs]
+
+    base["total_tokens"] = int(statistics.median(tokens))
+    base["llm_calls"] = int(statistics.median([r.llm_calls for r in runs]))
+    base["tool_calls"] = int(statistics.median([r.tool_calls for r in runs]))
+    base["prompt_tokens"] = int(
+        statistics.median([r.prompt_tokens for r in runs])
+    )
+    base["completion_tokens"] = int(
+        statistics.median([r.completion_tokens for r in runs])
+    )
+    base["duration_ms"] = round(
+        statistics.median([r.duration_ms for r in runs]), 2
+    )
+    base["llm_latency_ms"] = round(
+        statistics.median([r.llm_latency_ms for r in runs]), 2
+    )
+    base["tool_latency_ms"] = round(
+        statistics.median([r.tool_latency_ms for r in runs]), 2
+    )
+    base["errors"] = int(statistics.median([r.errors for r in runs]))
+
+    base["tokens_samples"] = tokens
+    base["tokens_median"] = float(statistics.median(tokens))
+    base["tokens_std"] = (
+        round(statistics.stdev(tokens), 2) if len(tokens) > 1 else 0.0
+    )
+    base["tokens_min"] = min(tokens)
+    base["tokens_max"] = max(tokens)
+
+    return TaskResult(**base)
+
+
 def summarize(results: list[TaskResult]) -> dict[str, Any]:
     """计算汇总指标。
 
@@ -167,7 +229,7 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
         results: 所有任务的运行结果。
 
     Returns:
-        汇总字典。
+        汇总字典。std_tokens 为跨任务 total_tokens 的标准差。
     """
     n = len(results)
     if n == 0:
@@ -178,6 +240,7 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
             "ungraded": 0,
             "total_tokens": 0,
             "avg_tokens": 0.0,
+            "std_tokens": 0.0,
             "total_llm_calls": 0,
             "avg_llm_calls": 0.0,
             "total_tool_calls": 0,
@@ -186,13 +249,18 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
             "errors": 0,
         }
 
+    tokens = [r.total_tokens for r in results]
+
     return {
         "total_tasks": n,
         "success": sum(1 for r in results if r.success is True),
         "failed": sum(1 for r in results if r.success is False),
         "ungraded": sum(1 for r in results if r.success is None),
-        "total_tokens": sum(r.total_tokens for r in results),
-        "avg_tokens": round(sum(r.total_tokens for r in results) / n, 2),
+        "total_tokens": sum(tokens),
+        "avg_tokens": round(sum(tokens) / n, 2),
+        "std_tokens": (
+            round(statistics.stdev(tokens), 2) if n > 1 else 0.0
+        ),
         "total_llm_calls": sum(r.llm_calls for r in results),
         "avg_llm_calls": round(sum(r.llm_calls for r in results) / n, 2),
         "total_tool_calls": sum(r.tool_calls for r in results),
@@ -267,6 +335,7 @@ def run_eval(
     only_ids: set[str] | None = None,
     trace_dir: Path = Path("traces"),
     dry_run: bool = False,
+    repeat: int = 1,
     llm_factory: Callable[[], LLMClient] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -280,6 +349,7 @@ def run_eval(
         only_ids: 只运行指定 id；None 表示全部。
         trace_dir: trace 目录。
         dry_run: 只打印任务，不运行。
+        repeat: 每个任务运行的次数，用于降低噪声。
         llm_factory: 返回 LLMClient 的工厂函数，便于测试注入。
         progress: 进度回调，接收一行字符串。
 
@@ -294,10 +364,13 @@ def run_eval(
     log = progress or (lambda _msg: None)
 
     if dry_run:
-        log(f"dry-run: {len(tasks)} task(s)")
+        log(f"dry-run: {len(tasks)} task(s), repeat={repeat}")
         for t in tasks:
-            log(f" [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}")
+            log(f"  [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}")
         return {}
+
+    if repeat < 1:
+        raise ValueError(f"repeat must be >= 1, got {repeat}")
 
     original_root = settings.repo_root
     settings.repo_root = repo_root
@@ -307,20 +380,30 @@ def run_eval(
 
         results: list[TaskResult] = []
         for i, task in enumerate(tasks, start=1):
-            log(f"[{i}/{len(tasks)}] {task.id} ({task.type})")
-            result = run_task(task, llm, trace_dir)
+            log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat}")
+            task_runs: list[TaskResult] = []
+            for j in range(repeat):
+                log(f"  run {j + 1}/{repeat}")
+                task_runs.append(run_task(task, llm, trace_dir))
+
+            result = _aggregate_runs(task_runs)
             results.append(result)
 
             preview = result.answer[:80].replace("\n", " ")
             if len(result.answer) > 80:
                 preview += "..."
-            log(f"answer: {preview}")
+            log(f"  answer: {preview}")
             log(
-                f"tokens={result.total_tokens}\n"
+                f"  tokens={result.total_tokens}\n"
                 f"llm_calls={result.llm_calls}\n"
                 f"tool_calls={result.tool_calls}\n"
                 f"duration={result.duration_ms}ms"
             )
+            if result.tokens_samples is not None:
+                log(
+                    f"  samples={result.tokens_samples} "
+                    f"std={result.tokens_std}"
+                )
 
         report = build_report(metadata, results)
         _merge_manual_grades(report, output_path)

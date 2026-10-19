@@ -345,3 +345,144 @@ def test_run_eval_restores_repo_root(
         llm_factory=FakeLLM,
     )
     assert settings.repo_root == original
+
+
+# ─── repeat 与聚合 ───
+
+
+class VariableFakeLLM:
+    """每次调用返回递增的 Token 数。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.model = "variable"
+        self.call_count = 0
+
+    def chat(self, messages, tools=None, temperature=0.0) -> LLMResponse:
+        self.call_count += 1
+        tokens = 10 * self.call_count
+        return LLMResponse(
+            content=f"answer {self.call_count}",
+            tool_calls=[],
+            prompt_tokens=tokens,
+            completion_tokens=5,
+            total_tokens=tokens + 5,
+        )
+
+
+def test_run_eval_repeat_aggregates_tokens(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """repeat=3 时 total_tokens 为中位数，samples 保留原始值。"""
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=output,
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        repeat=3,
+        llm_factory=VariableFakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    first = data["results"][0]
+
+    # VariableFakeLLM 每次 chat 返回 tokens=15, 25, 35
+    # 每个任务只调用一次 chat（无 tool_calls）
+    # 第一个任务取前 3 个
+    assert first["tokens_samples"] == [15, 25, 35]
+    assert first["tokens_median"] == 25.0
+    assert first["tokens_std"] == 10.0
+    assert first["tokens_min"] == 15
+    assert first["tokens_max"] == 35
+
+    # 第二个任务取后 3 个
+    second = data["results"][1]
+    assert second["tokens_samples"] == [45, 55, 65]
+    assert second["tokens_median"] == 55.0
+
+
+def test_run_eval_repeat_one_no_aggregation(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """repeat=1 时不填聚合字段。"""
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=output,
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        repeat=1,
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    first = data["results"][0]
+
+    assert first["tokens_samples"] is None
+    assert first["tokens_median"] is None
+    assert first["tokens_std"] is None
+    assert first["total_tokens"] == 15  # FakeLLM 固定返回 15
+
+
+def test_run_eval_repeat_zero_raises(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """repeat=0 应抛 ValueError。"""
+    with pytest.raises(ValueError, match="repeat must be"):
+        run_eval(
+            tasks_path=task_yaml,
+            output_path=tmp_path / "out.json",
+            repo_root=fake_repo,
+            trace_dir=tmp_path / "traces",
+            repeat=0,
+            llm_factory=FakeLLM,
+        )
+
+
+def test_run_eval_repeat_dry_run(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """dry-run 显示 repeat 值。"""
+    messages: list[str] = []
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=tmp_path / "out.json",
+        repo_root=fake_repo,
+        dry_run=True,
+        repeat=3,
+        progress=messages.append,
+    )
+    assert any("repeat=3" in m for m in messages)
+
+
+def test_summarize_includes_std() -> None:
+    """summary 应包含 std_tokens。"""
+    results = [
+        _make_result(True, 100),
+        _make_result(True, 200),
+        _make_result(True, 300),
+    ]
+    s = summarize(results)
+    assert "std_tokens" in s
+    # statistics.stdev([100, 200, 300]) == 100.0
+    assert s["std_tokens"] == 100.0
+
+
+def test_summarize_single_task_std_zero() -> None:
+    """只有一个任务时 std_tokens 为 0。"""
+    s = summarize([_make_result(True, 100)])
+    assert s["std_tokens"] == 0.0
+
+
+def test_summarize_empty_has_std() -> None:
+    """空结果集也应包含 std_tokens。"""
+    s = summarize([])
+    assert s["std_tokens"] == 0.0
