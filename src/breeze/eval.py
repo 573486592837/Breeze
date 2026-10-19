@@ -649,6 +649,12 @@ def run_eval(
     Returns:
         报告字典。dry_run 模式下返回空字典。
     """
+    tasks_path = tasks_path.resolve()
+    output_path = output_path.resolve()
+    repo_root = repo_root.resolve()
+    trace_dir = trace_dir.resolve()
+    fixtures_dir = fixtures_dir.resolve()
+
     metadata, tasks = load_tasks(tasks_path)
 
     if only_ids is not None:
