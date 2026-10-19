@@ -1,0 +1,11 @@
+--- a/src/breeze/tools/shell.py
++++ b/src/breeze/tools/shell.py
+@@ -298,8 +298,6 @@ def _check_paths(tokens: list[str], exe: str) -> None:
+             raise ValueError(f"Absolute paths are not allowed: {token}")
+ 
+         segments = re.split(r"[/\\:]", token)
+-        if ".." in segments:
+-            raise ValueError(f"Path traversal is not allowed: {token}")
+ 
+ 
+ def _is_absolute_like(token: str) -> bool:

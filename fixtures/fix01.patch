@@ -1,0 +1,12 @@
+--- a/src/breeze/tools/safety.py
++++ b/src/breeze/tools/safety.py
+@@ -29,9 +29,4 @@ def safe_path(path: str | Path, root: Path | None = None) -> Path:
+ 
+     candidate = (root / path).resolve()
+ 
+-    try:
+-        candidate.relative_to(root)
+-    except ValueError as exc:
+-        raise ValueError(f"Path out of bounds: {path}") from exc
+-
+     return candidate
