@@ -1,6 +1,7 @@
 """CLI 的单元测试。"""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -205,3 +206,40 @@ def test_ask_restores_repo_root(repo: Path, tmp_path: Path) -> None:
         ["ask", "hello", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
     )
     assert cli_module.settings.repo_root == original
+
+
+def test_ask_uses_settings_max_steps_when_not_specified(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不传 --max-steps 时 Agent 使用 settings 的值。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "agent_max_steps", 4)
+
+    captured: dict[str, Any] = {}
+    original = cli_module.Agent
+
+    class CapturingAgent:
+        def __init__(self, llm, trace, max_steps=None, **kwargs):
+            self._inner = original(llm=llm, trace=trace, max_steps=max_steps, **kwargs)
+            captured["resolved_max_steps"] = self._inner.max_steps
+
+        def run(self, question):
+            return self._inner.run(question)
+
+    monkeypatch.setattr(cli_module, "Agent", CapturingAgent)
+
+    result = runner.invoke(
+        app,
+        [
+            "ask",
+            "hello",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "traces"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["resolved_max_steps"] == 4

@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import pytest
+
 from breeze.context import ContextConfig, ContextManager
 
 
@@ -550,3 +552,47 @@ def test_estimate_tokens_counts_content_and_args() -> None:
     }
     est = ContextManager._estimate_tokens([msg])
     assert est >= 100  # 400/4 + 400/4 粗略下限
+
+
+# ─── 配置集成 ───
+
+
+def test_context_config_defaults_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ContextConfig() 字段取自 settings。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "context_max_recent_tokens", 5000)
+    monkeypatch.setattr(settings, "context_max_recent_pairs", 4)
+
+    cfg = ContextConfig()
+
+    assert cfg.max_recent_tokens == 5000
+    assert cfg.max_recent_pairs == 4
+
+
+def test_context_config_explicit_overrides_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式传参覆盖 settings。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "context_max_recent_tokens", 5000)
+
+    cfg = ContextConfig(max_recent_tokens=1000)
+
+    assert cfg.max_recent_tokens == 1000
+
+
+def test_context_config_enable_false_respected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """enable=False 不被 settings 覆盖。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "context_enable", True)
+
+    cfg = ContextConfig(enable=False)
+
+    assert cfg.enable is False

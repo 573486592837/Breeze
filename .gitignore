@@ -11,3 +11,4 @@ reports/*.json
 .ruff_cache/
 !reports/baseline_v1.json
 !reports/context_v1.json
+breeze.toml
