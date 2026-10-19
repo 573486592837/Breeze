@@ -1,0 +1,57 @@
+# Breeze 长任务评估集 v1
+#
+# 每个任务在独立的 git worktree 中运行。
+# setup 用 patch 注入 bug，eval_command 判定是否修复成功。
+#
+# 评分：eval_command 退出码 0 为 True，否则为 False。
+# 所有任务只用 patch 形式的 setup，不使用 command，保证跨平台一致。
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  - id: fix01
+    type: fix
+    question: "运行 pytest tests/test_fs.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    success_criteria: "pytest tests/test_fs.py 全部通过"
+    setup:
+      - patch: fix01.patch
+    eval_command: "pytest tests/test_fs.py -q"
+    max_steps: 15
+
+  - id: fix02
+    type: fix
+    question: "运行 pytest tests/test_registry.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    success_criteria: "pytest tests/test_registry.py 全部通过"
+    setup:
+      - patch: fix02.patch
+    eval_command: "pytest tests/test_registry.py -q"
+    max_steps: 15
+
+  - id: fix03
+    type: fix
+    question: "运行 pytest tests/test_shell.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    success_criteria: "pytest tests/test_shell.py 全部通过"
+    setup:
+      - patch: fix03.patch
+    eval_command: "pytest tests/test_shell.py -q"
+    max_steps: 15
+
+  - id: fix04
+    type: fix
+    question: "运行 pytest tests/test_fs.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    success_criteria: "pytest tests/test_fs.py 全部通过"
+    setup:
+      - patch: fix04.patch
+    eval_command: "pytest tests/test_fs.py -q"
+    max_steps: 15
+
+  - id: fix05
+    type: fix
+    question: "运行 pytest tests/test_shell.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    success_criteria: "pytest tests/test_shell.py 全部通过"
+    setup:
+      - patch: fix05.patch
+    eval_command: "pytest tests/test_shell.py -q"
+    max_steps: 15

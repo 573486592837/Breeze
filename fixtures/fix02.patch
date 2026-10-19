@@ -1,0 +1,11 @@
+--- a/src/breeze/tools/registry.py
++++ b/src/breeze/tools/registry.py
+@@ -30,8 +30,6 @@ def register(
+     """
+ 
+     def decorator(fn: Callable[..., str]) -> Callable[..., str]:
+-        if name in TOOLS:
+-            raise ValueError(f"Tool name '{name}' is already registered.")
+         TOOLS[name] = {
+             "fn": fn,
+             "schema": {

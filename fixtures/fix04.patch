@@ -1,0 +1,11 @@
+--- a/src/breeze/tools/fs.py
++++ b/src/breeze/tools/fs.py
+@@ -272,7 +272,7 @@ def read_file(
+     total_lines = len(lines)
+ 
+     slice_start = start_line - 1
+-    slice_end = total_lines if end_line is None else min(end_line, total_lines)
++    slice_end = total_lines if end_line is None else min(end_line - 1, total_lines)
+     selected = lines[slice_start:slice_end]
+ 
+     width = len(str(slice_end) if slice_end > 0 else 1)

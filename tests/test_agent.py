@@ -13,6 +13,13 @@ from breeze.tools import registry
 from breeze.trace import RunTrace
 
 
+@pytest.fixture(autouse=True)
+def _force_context_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试假设压缩默认开启，隔离外部配置。"""
+    from breeze.config import settings
+    monkeypatch.setattr(settings, "context_enable", True)
+
+
 class FakeLLMClient:
     """测试用 LLM 客户端，按预设脚本返回响应。"""
 

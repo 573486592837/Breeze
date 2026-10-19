@@ -7,6 +7,13 @@ import pytest
 from breeze.context import ContextConfig, ContextManager
 
 
+@pytest.fixture(autouse=True)
+def _force_context_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试假设压缩默认开启，隔离外部配置。"""
+    from breeze.config import settings
+    monkeypatch.setattr(settings, "context_enable", True)
+
+
 def _system(content: str = "sys") -> dict[str, Any]:
     return {"role": "system", "content": content}
 

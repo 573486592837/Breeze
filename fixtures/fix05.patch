@@ -1,0 +1,10 @@
+--- a/src/breeze/tools/shell.py
++++ b/src/breeze/tools/shell.py
+@@ -64,7 +64,6 @@ FORBIDDEN_RG_OPTIONS: frozenset[str] = frozenset(
+         "--sortr",
+         "--engine",
+         "--follow",
+-        "-L",
+         "--search-zip",
+         "-z",
+         "--decompress",
