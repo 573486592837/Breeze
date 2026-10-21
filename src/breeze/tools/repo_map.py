@@ -25,15 +25,22 @@ PY_EXTENSIONS = {".py"}
 @register(
     name="repo_map",
     description=(
-        "生成仓库结构概览，列出每个 Python 文件的顶层类、函数签名和常量。"
-        "当你需要了解项目有哪些模块、某个模块包含哪些函数时，先调用此工具。"
+        "生成 Python 文件的符号概览（顶层类、函数签名、常量）。"
+        "仅在以下情况使用：(1) 刚接触一个陌生的、大型的代码库，"
+        "需要先了解整体结构；(2) 不确定某个功能在哪些文件里实现。"
+        "对于已知目标文件的定向任务，直接使用 grep 或 read_file 更高效。"
+        "输出可能很大，建议用 path 参数限定到子目录。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "起始目录，相对于仓库根目录。默认为 '.'。",
+                "description": (
+                    "起始目录，相对于仓库根目录。"
+                    "优先指定具体子目录（如 'src/breeze/tools'），"
+                    "避免在项目根（'.'）调用导致输出过大。"
+                ),
                 "default": ".",
             },
             "max_files": {

@@ -11,6 +11,7 @@ from breeze.context import ContextConfig, ContextManager
 def _force_context_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """测试假设压缩默认开启，隔离外部配置。"""
     from breeze.config import settings
+
     monkeypatch.setattr(settings, "context_enable", True)
 
 
@@ -603,3 +604,10 @@ def test_context_config_enable_false_respected(
     cfg = ContextConfig(enable=False)
 
     assert cfg.enable is False
+
+
+def test_default_tool_result_thresholds_are_generous() -> None:
+    """默认阈值应大于 8KB，避免误压缩工具结果。"""
+    cfg = ContextConfig()
+    assert cfg.tool_result_max_bytes >= 16_000
+    assert cfg.tool_result_head_bytes >= 8_000

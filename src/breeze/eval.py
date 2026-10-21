@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import shutil
 import statistics
 import subprocess
 import tempfile
@@ -213,10 +215,15 @@ def _remove_worktree(repo_root: Path, worktree: Path) -> None:
         worktree.parent.rmdir()
 
 
-def _reset_worktree(worktree: Path) -> None:
-    """把 worktree 重置到 HEAD 状态。"""
+def _reset_worktree(worktree: Path, target_sha: str) -> None:
+    """把 worktree 重置到指定的 commit。
+
+    Args:
+        worktree: worktree 路径。
+        target_sha: 目标 commit SHA。
+    """
     subprocess.run(
-        ["git", "checkout", "--", "."],
+        ["git", "reset", "--hard", target_sha],
         cwd=str(worktree),
         capture_output=True,
         timeout=15,
@@ -228,6 +235,40 @@ def _reset_worktree(worktree: Path) -> None:
         capture_output=True,
         timeout=15,
         shell=False,
+    )
+
+
+def _commit_setup(worktree: Path, task_id: str) -> None:
+    """提交 setup 产生的改动，使 HEAD 反映注入 bug 后的状态。
+
+    这样 agent 的修复会产生 working tree 与 HEAD 的差异，
+    git_diff 能正确显示。
+
+    Args:
+        worktree: worktree 路径。
+        task_id: 任务 ID，用于 commit message。
+    """
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "breeze-eval",
+        "GIT_AUTHOR_EMAIL": "eval@breeze.local",
+        "GIT_COMMITTER_NAME": "breeze-eval",
+        "GIT_COMMITTER_EMAIL": "eval@breeze.local",
+    }
+    subprocess.run(
+        ["git", "add", "-A"],
+        cwd=str(worktree),
+        capture_output=True,
+        timeout=10,
+        shell=False,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", f"setup: {task_id}", "--allow-empty", "-q"],
+        cwd=str(worktree),
+        capture_output=True,
+        timeout=10,
+        shell=False,
+        env=env,
     )
 
 
@@ -357,14 +398,34 @@ def _run_task_with_worktree(
     worktree = _create_worktree(repo_root, task.id)
     results: list[TaskResult] = []
     original_root = settings.repo_root
+
+    # 记录 worktree 创建时的原始 SHA，用于每次 repeat 前重置
+    original_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        shell=False,
+    ).stdout.strip()
+
     try:
         for j in range(repeat):
-            _reset_worktree(worktree)
+            _reset_worktree(worktree, original_sha)
             ok, msg = _run_setup(worktree, task, fixtures_dir)
             if not ok:
                 log(f"  run {j + 1}/{repeat}: setup failed: {msg}")
                 results.append(_make_failed_result(task, f"setup failed: {msg}"))
                 continue
+
+            fixtures_in_wt = worktree / "fixtures"
+            if fixtures_in_wt.exists():
+                shutil.rmtree(fixtures_in_wt, ignore_errors=True)
+
+            # 提交 setup 改动，让 HEAD 反映 buggy 状态
+            _commit_setup(worktree, task.id)
 
             settings.repo_root = worktree
             log(f"  run {j + 1}/{repeat}")
