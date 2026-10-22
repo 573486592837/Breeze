@@ -1,0 +1,30 @@
+# Breeze 多阶段指令评估集 v1
+#
+# 任务用单条复合指令表达"先观察、再行动"的多阶段行为。
+# 真实的用户插话式多轮对话属于后续版本（breeze chat），此处不涉及。
+#
+# 评分：eval_command 退出码 0 为 True，否则为 False。
+# eval_command 先做测试完整性守卫（git diff --quiet），再运行验收与回归。
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  - id: mt01
+    type: multiturn
+    question: "先查看 src/breeze/tools/safety.py 中 safe_path 的实现，简要说明它拦截的是什么情况。然后基于你的理解为它增加审计记录：每当 safe_path 拒绝一个路径（即原本要抛出 Path out of bounds 时），在仓库根目录的 security.log 文件末尾追加一行 'rejected: <原始输入路径>'，文件不存在则创建；访问被允许时不写入。不要改变现有异常类型和消息，也不要修改任何测试文件。验收测试已放在 tests/test_mt01_logging.py，完成后 pytest -q tests/test_mt01_logging.py tests/test_fs.py tests/test_search.py 应全部通过。"
+    success_criteria: "拒绝越界路径时写入 security.log 且允许访问时不写；fs/search 测试不回归；验收测试未被修改"
+    setup:
+      - patch: test_mt01_logging.patch
+    eval_command: "git diff --quiet -- tests/test_mt01_logging.py && pytest -q tests/test_mt01_logging.py tests/test_fs.py tests/test_search.py"
+    max_steps: 20
+
+  - id: mt02
+    type: multiturn
+    question: "先运行 pytest tests/test_fs.py 确认是否有失败。如果有失败：定位并修复源代码中的问题，只允许修改 src/ 目录下的代码，不要修改任何测试文件。如果没有失败：新建 tests/test_extra.py，为 read_file 的单行范围读取补充一个通过的用例。完成后运行 pytest -q 全量测试必须全部通过。"
+    success_criteria: "pytest -q 全量通过，且 tests/ 下已有文件未被修改"
+    setup:
+      - patch: fix01.patch
+    eval_command: "git diff --quiet -- tests/ && pytest -q"
+    max_steps: 20

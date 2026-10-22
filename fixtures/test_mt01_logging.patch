@@ -1,0 +1,36 @@
+--- /dev/null
++++ b/tests/test_mt01_logging.py
+@@ -0,0 +1,33 @@
++"""mt01 验收测试：safe_path 拒绝越界时写入 security.log。"""
++
++from pathlib import Path
++
++import pytest
++
++from breeze.config import settings
++from breeze.tools import registry
++
++
++@pytest.fixture
++def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
++    root = tmp_path.resolve()
++    monkeypatch.setattr(settings, "repo_root", root)
++    (root / "src").mkdir()
++    return root
++
++
++def test_rejected_path_is_logged(repo: Path) -> None:
++    with pytest.raises(ValueError):
++        registry.execute("list_files", {"path": "../outside"})
++
++    log = repo / "security.log"
++    assert log.exists()
++    text = log.read_text(encoding="utf-8")
++    assert "rejected:" in text
++    assert "../outside" in text
++
++
++def test_allowed_path_not_logged(repo: Path) -> None:
++    registry.execute("list_files", {"path": "src"})
++
++    assert not (repo / "security.log").exists()
