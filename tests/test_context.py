@@ -162,6 +162,59 @@ def test_summary_mentions_reinvoke() -> None:
     assert "Re-invoke" in result[2]["content"]
 
 
+def test_summary_keeps_findings() -> None:
+    """摘要应保留被压缩轮 assistant 的推理结论。"""
+    cm = ContextManager(ContextConfig(max_recent_pairs=1))
+    messages = _make_history(3)
+    messages[2]["content"] = "已确认 registry 是模块，不是对象"
+    result = cm.build(messages)
+
+    summary = result[2]["content"]
+    assert "Confirmed findings" in summary
+    assert "step 0 concluded: 已确认 registry 是模块，不是对象" in summary
+    assert "step 1 concluded: step 1" in summary
+
+
+def test_summary_findings_collapse_and_truncate() -> None:
+    """结论应折叠为单行，超长时截断加省略号。"""
+    cm = ContextManager(ContextConfig(max_recent_pairs=1, summary_findings_preview=20))
+    messages = _make_history(2)
+    messages[2]["content"] = "第一行\n第二行   第三行\n第四行内容特别特别长需要被截断处理"
+    result = cm.build(messages)
+
+    summary = result[2]["content"]
+    assert "第一行 第二行 第三行 第四行内容特别特..." in summary
+    assert "\n第一行" not in summary
+
+
+def test_summary_findings_capped() -> None:
+    """结论条数超过上限时保留最近的。"""
+    cm = ContextManager(ContextConfig(max_recent_pairs=1, summary_max_findings=2))
+    messages = _make_history(4)
+    result = cm.build(messages)
+
+    summary = result[2]["content"]
+    assert "step 0 concluded" not in summary
+    assert "step 1 concluded" in summary
+    assert "step 2 concluded" in summary
+    # 工具调用时间线不受结论上限影响
+    assert "step 0: tool_0" in summary
+
+
+def test_summary_no_findings_section_when_content_empty() -> None:
+    """assistant 无文本时不应出现结论段。"""
+    cm = ContextManager(ContextConfig(max_recent_pairs=1))
+    messages = [_system(), _user("question")]
+    for i in range(3):
+        messages.append(_assistant(None, [(f"c{i}", f"tool_{i}", "{}")]))
+        messages.append(_tool(f"c{i}", "r"))
+    result = cm.build(messages)
+
+    summary = result[2]["content"]
+    assert "Confirmed findings" not in summary
+    assert "tool_0" in summary
+
+
 def test_recent_rounds_kept_intact() -> None:
     """最近 K 轮的消息应与原始一致。"""
     cm = ContextManager(ContextConfig(max_recent_pairs=2))

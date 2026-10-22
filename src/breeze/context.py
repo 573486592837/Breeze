@@ -38,6 +38,8 @@ class ContextConfig:
         min_recent_pairs: 无论多大，至少保留的最近轮数。
         max_recent_pairs: 保留的最近轮数硬上限。
         arguments_preview: 摘要中工具参数的最大字符数。
+        summary_findings_preview: 摘要中每条推理结论的最大字符数。
+        summary_max_findings: 摘要中保留的推理结论条数上限。
         tool_result_max_bytes: 单条工具结果的字节上限。
         tool_result_head_bytes: 压缩时保留的头部字节数。
         tool_result_tail_bytes: 压缩时保留的尾部字节数。
@@ -48,6 +50,8 @@ class ContextConfig:
     min_recent_pairs: int | None = None
     max_recent_pairs: int | None = None
     arguments_preview: int | None = None
+    summary_findings_preview: int | None = None
+    summary_max_findings: int | None = None
     tool_result_max_bytes: int | None = None
     tool_result_head_bytes: int | None = None
     tool_result_tail_bytes: int | None = None
@@ -64,6 +68,10 @@ class ContextConfig:
             self.max_recent_pairs = settings.context_max_recent_pairs
         if self.arguments_preview is None:
             self.arguments_preview = settings.context_arguments_preview
+        if self.summary_findings_preview is None:
+            self.summary_findings_preview = settings.context_summary_findings_preview
+        if self.summary_max_findings is None:
+            self.summary_max_findings = settings.context_summary_max_findings
         if self.tool_result_max_bytes is None:
             self.tool_result_max_bytes = settings.context_tool_result_max_bytes
         if self.tool_result_head_bytes is None:
@@ -207,6 +215,10 @@ class ContextManager:
     def _render_summary(self, old_rounds: list[list[dict[str, Any]]]) -> dict[str, Any]:
         """把旧轮渲染成一条 user 摘要消息。
 
+        摘要包含两部分：assistant 消息中的推理结论（Confirmed
+        findings）和工具调用时间线。保留结论是为了避免压缩在关键
+        决策点触发后，模型丢失已推导的事实而重新推导或幻觉。
+
         Args:
             old_rounds: 被压缩的轮列表。
 
@@ -215,15 +227,33 @@ class ContextManager:
         """
         lines: list[str] = [f"[Compressed history: {len(old_rounds)} earlier rounds]"]
 
+        findings: list[str] = []
+        actions: list[str] = []
+
         for idx, rnd in enumerate(old_rounds):
             for msg in rnd:
                 if msg.get("role") != "assistant":
                     continue
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    flat = self._collapse(content, self.config.summary_findings_preview)
+                    findings.append(f"- step {idx} concluded: {flat}")
                 for tc in msg.get("tool_calls", []) or []:
                     name = self._extract_name(tc)
                     args = self._extract_arguments(tc)
                     preview = self._truncate(args, self.config.arguments_preview)
-                    lines.append(f"- step {idx}: {name}({preview})")
+                    actions.append(f"- step {idx}: {name}({preview})")
+
+        if findings:
+            kept = findings[-self.config.summary_max_findings :]
+            lines.append("")
+            lines.append("Confirmed findings from earlier reasoning:")
+            lines.extend(kept)
+
+        if actions:
+            lines.append("")
+            lines.append("Tool calls:")
+            lines.extend(actions)
 
         lines.append("")
         lines.append("Note: earlier tool results are omitted. Re-invoke tools if you need the full content.")
@@ -285,6 +315,14 @@ class ContextManager:
         if func is None:
             return "{}"
         return getattr(func, "arguments", "{}")
+
+    @staticmethod
+    def _collapse(text: str, limit: int) -> str:
+        """把多行文本折叠为单行并按 limit 截断。"""
+        flat = " ".join(text.split())
+        if len(flat) <= limit:
+            return flat
+        return flat[:limit] + "..."
 
     @staticmethod
     def _truncate(text: str, limit: int) -> str:
