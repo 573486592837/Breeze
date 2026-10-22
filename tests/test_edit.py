@@ -332,6 +332,73 @@ def test_apply_patch_no_tmp_left_on_success(repo: Path) -> None:
     assert tmp_files == []
 
 
+# ─── create_file ───
+
+
+def test_create_file_basic(repo: Path) -> None:
+    """创建新文件应成功并自动建目录。"""
+    out = registry.execute("create_file", {"path": "src/pkg/new.py", "content": "x = 1\n"})
+
+    assert out.startswith("Created src/pkg/new.py")
+    assert "6 bytes" in out
+    assert (repo / "src/pkg/new.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_create_file_rejects_existing(repo: Path) -> None:
+    """已存在文件应被拒且指向 apply_patch，原内容不变。"""
+    _make_file(repo, "foo.py", "x = 1\n")
+
+    out = registry.execute("create_file", {"path": "foo.py", "content": "y = 2\n"})
+
+    assert out.startswith("Error:")
+    assert "apply_patch" in out
+    assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_create_file_rejects_protected_paths(repo: Path) -> None:
+    """保护路径下的文件应被拒。"""
+    for p in ["traces/x.jsonl", "reports/y.json", ".git/config", ".env"]:
+        out = registry.execute("create_file", {"path": p, "content": "x"})
+        assert out.startswith("Error:"), p
+        assert "protected" in out, p
+
+
+def test_create_file_rejects_escape(repo: Path) -> None:
+    """越界路径应被拒且不写出仓库。"""
+    out = registry.execute("create_file", {"path": "../evil.py", "content": "x"})
+
+    assert out.startswith("Error:")
+    assert not (repo.parent / "evil.py").exists()
+
+
+def test_create_file_rejects_oversized_content(repo: Path) -> None:
+    """内容超过上限应被拒且不落盘。"""
+    out = registry.execute("create_file", {"path": "big.txt", "content": "x" * 50_001})
+
+    assert out.startswith("Error:")
+    assert "bytes" in out
+    assert not (repo / "big.txt").exists()
+
+
+def test_create_file_preserves_newlines(repo: Path) -> None:
+    """内容中的换行符应原样保留。"""
+    content = "line1\nline2\n\nline4\n"
+
+    out = registry.execute("create_file", {"path": "keep.py", "content": content})
+
+    assert out.startswith("Created")
+    assert (repo / "keep.py").read_text(encoding="utf-8") == content
+    raw = (repo / "keep.py").read_bytes()
+    assert raw == content.encode("utf-8")
+
+
+def test_create_file_leaves_no_tmp(repo: Path) -> None:
+    """成功后不应残留临时文件。"""
+    registry.execute("create_file", {"path": "foo.py", "content": "x\n"})
+
+    assert list(repo.glob(".*.breeze_tmp")) == []
+
+
 # ─── git_diff ───
 
 
