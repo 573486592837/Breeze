@@ -22,7 +22,7 @@ tasks:
 
   - id: mt02
     type: multiturn
-    question: "先运行 pytest tests/test_fs.py 确认是否有失败。如果有失败：定位并修复源代码中的问题，只允许修改 src/ 目录下的代码，不要修改任何测试文件。如果没有失败：新建 tests/test_extra.py，为 read_file 的单行范围读取补充一个通过的用例。完成后运行 pytest -q 全量测试必须全部通过。"
+    question: "先运行 pytest tests/test_fs.py 确认是否有失败。两个分支互斥，只执行命中的那一个：如果有失败，定位并修复源代码中的问题，只允许修改 src/ 目录下的代码，不要修改也不要新建任何测试文件；如果没有失败，新建 tests/test_extra.py，为 read_file 的单行范围读取补充一个通过的用例。完成命中的分支后运行 pytest -q，全量必须通过，然后立即结束任务，不要做任何额外的工作。"
     success_criteria: "pytest -q 全量通过，且 tests/ 下已有文件未被修改"
     setup:
       - patch: fix01.patch

@@ -74,6 +74,13 @@ def test_defaults_context_fields() -> None:
     assert isinstance(ctx["enable"], bool)
 
 
+def test_defaults_context_summary_findings() -> None:
+    """summary 结论提取的默认值存在且类型正确。"""
+    ctx = DEFAULTS["context"]
+    assert ctx["summary_findings_preview"] == 240
+    assert ctx["summary_max_findings"] == 12
+
+
 def test_load_defaults_only(tmp_path: Path) -> None:
     """无配置文件、无环境变量时返回 DEFAULTS 的拷贝。"""
     cfg = load_config(tmp_path)
