@@ -14,7 +14,7 @@ from pathlib import Path
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
-DEFAULT_TIMEOUT_SECONDS = 30
+DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_BYTES = 20_000
 
 ALLOWED_EXECUTABLES: frozenset[str] = frozenset(
@@ -141,7 +141,7 @@ def _split_command(command: str) -> list[str]:
             },
             "timeout": {
                 "type": "integer",
-                "description": "命令执行超时时间（秒）。默认为 30。",
+                "description": "命令执行超时时间（秒）。默认为 60。",
                 "default": DEFAULT_TIMEOUT_SECONDS,
             },
             "max_bytes": {
