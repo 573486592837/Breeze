@@ -35,9 +35,9 @@ max_recent_pairs = 3
 # Characters of tool arguments shown in compressed summaries.
 arguments_preview = 60
 # Tool results above this size are compacted to head + tail.
-tool_result_max_bytes = 4000
-tool_result_head_bytes = 2000
-tool_result_tail_bytes = 2000
+tool_result_max_bytes = 16000
+tool_result_head_bytes = 8000
+tool_result_tail_bytes = 8000
 
 [trace]
 # Directory for JSONL trace files.

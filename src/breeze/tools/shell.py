@@ -14,7 +14,7 @@ from pathlib import Path
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
-DEFAULT_TIMEOUT_SECONDS = 10
+DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_BYTES = 20_000
 
 ALLOWED_EXECUTABLES: frozenset[str] = frozenset(
@@ -82,7 +82,7 @@ FORBIDDEN_RG_OPTIONS: frozenset[str] = frozenset(
 )
 
 
-def _stripquotes(token: str) -> str:
+def _strip_quotes(token: str) -> str:
     """去掉 token 两端成对的引号。
 
     Args:
@@ -104,10 +104,21 @@ def _split_command(command: str) -> list[str]:
 
     Returns:
         token 列表，已去引号。
+
+    Raises:
+        ValueError: 命令的引号不匹配或转义无效。
     """
     posix = os.name != "nt"
-    raw = shlex.split(command, posix=posix)
-    return [_stripquotes(t) for t in raw]
+    try:
+        raw = shlex.split(command, posix=posix)
+    except ValueError as exc:
+        raise ValueError(
+            f"Unable to parse command: {exc}. "
+            "The command may contain unbalanced quotes or invalid escapes. "
+            "Prefer simple commands without nested quotes. "
+            "For inline Python, use 'python -m <module>' instead of '-c'."
+        ) from exc
+    return [_strip_quotes(t) for t in raw]
 
 
 @register(
@@ -130,7 +141,7 @@ def _split_command(command: str) -> list[str]:
             },
             "timeout": {
                 "type": "integer",
-                "description": "命令执行超时时间（秒）。默认为 10。",
+                "description": "命令执行超时时间（秒）。默认为 60。",
                 "default": DEFAULT_TIMEOUT_SECONDS,
             },
             "max_bytes": {
@@ -184,7 +195,7 @@ def run_shell(
 def run_command(
     tokens: list[str],
     cwd: Path,
-    timeout: int = 10,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
     """执行命令。不校验白名单，调用方负责。
 
@@ -229,7 +240,22 @@ def _check_allowed(tokens: list[str]) -> None:
     exe = tokens[0].lower()
 
     if exe not in ALLOWED_EXECUTABLES:
-        raise ValueError(f"Executable not allowed: {exe}")
+        allowed = ", ".join(sorted(ALLOWED_EXECUTABLES))
+        extra = ""
+        if exe in {"cd", "pushd", "popd"}:
+            extra = " (cwd is set via the cwd parameter, not via cd)"
+        elif exe in {"sh", "bash", "cmd", "powershell", "zsh", "pwsh"}:
+            extra = " (shells are not allowed; commands run directly with shell=False)"
+        elif exe in {"cat", "head", "tail", "less", "more", "tee"}:
+            extra = " (file reading should use read_file; Breeze does not support file creation or shell redirection)"
+        elif exe in {"echo", "printf"}:
+            extra = (
+                " (Breeze does not support file creation or shell redirection; "
+                "use apply_patch to modify existing files)"
+            )
+        elif exe in {"rm", "del", "mv", "cp", "ln"}:
+            extra = " (file modifications should use apply_patch)"
+        raise ValueError(f"Executable not allowed: {exe}{extra}. Allowed commands: {allowed}.")
 
     if shutil.which(exe) is None:
         raise ValueError(f"Executable not found on PATH: {exe}")
@@ -243,10 +269,16 @@ def _check_allowed(tokens: list[str]) -> None:
 
     if exe in {"python", "python3"}:
         if len(tokens) < 3 or tokens[1] != "-m":
-            raise ValueError("Python command must use '-m <module>'.")
-        module = tokens[2].lower()
+            raise ValueError(
+                "Python command must use '-m <module>'. To verify behavior, use run_tests with a specific test. "
+            )
+        module = tokens[2].strip("\"'").lower()
         if module not in ALLOWED_PYTHON_MODULES:
-            raise ValueError(f"Python module not allowed: {module}")
+            raise ValueError(
+                f"Python module not allowed: {module}. "
+                f"Allowed: {sorted(ALLOWED_PYTHON_MODULES)}. "
+                f"Use run_tests to run pytest."
+            )
 
     _check_options(tokens, exe)
     _check_paths(tokens, exe)

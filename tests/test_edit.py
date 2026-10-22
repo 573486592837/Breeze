@@ -551,13 +551,25 @@ def test_run_tests_all_pass(python_repo: Path, fake_pytest: dict[str, Any]) -> N
     assert "failures" not in out
 
 
-def test_run_tests_with_failures(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
-    """有失败时列出失败节点 ID。"""
+def test_run_tests_with_failures(
+    python_repo: Path, fake_pytest: dict[str, Any]
+) -> None:
+    """有失败时列出失败节点 ID 和断言详情。"""
     fake_pytest["returncode"] = 1
     fake_pytest["stdout"] = (
         "...F....\n"
-        "FAILED tests/test_fs.py::test_x - AssertionError: nope\n"
-        "FAILED tests/test_search.py::test_y - ValueError\n"
+        "================================== FAILURES ===================================\n"
+        "______________________ test_x ______________________\n"
+        "\n"
+        "    def test_x():\n"
+        "        with pytest.raises(ValueError, match=\"expected msg\"):\n"
+        ">           do_something()\n"
+        "E           Failed: DID NOT RAISE <class 'ValueError'>\n"
+        "\n"
+        "tests/test_fs.py:42: Failed\n"
+        "=========================== short test summary info ===========================\n"
+        "FAILED tests/test_fs.py::test_x - Failed: DID NOT RAISE <class 'ValueError'>\n"
+        "FAILED tests/test_search.py::test_y - AssertionError: nope\n"
         "148 passed, 2 failed in 6.0s\n"
     )
 
@@ -568,6 +580,30 @@ def test_run_tests_with_failures(python_repo: Path, fake_pytest: dict[str, Any])
     assert "2 failed" in out
     assert "tests/test_fs.py::test_x" in out
     assert "tests/test_search.py::test_y" in out
+    # 断言详情
+    assert "DID NOT RAISE" in out
+    # traceback 段
+    assert "--- pytest traceback (truncated) ---" in out
+    assert "expected msg" in out
+
+
+def test_run_tests_traceback_truncated(
+    python_repo: Path, fake_pytest: dict[str, Any]
+) -> None:
+    """FAILURES 段超过 3000 字节应截断。"""
+    fake_pytest["returncode"] = 1
+    big_traceback = "E   " + "x" * 5000
+    fake_pytest["stdout"] = (
+        "================================== FAILURES ===================================\n"
+        + big_traceback
+        + "\n"
+        "==================== short test summary info ====================\n"
+        "FAILED tests/test_fs.py::test_x - failed\n"
+    )
+
+    out = registry.execute("run_tests", {})
+
+    assert "traceback truncated" in out
 
 
 def test_run_tests_with_errors(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
@@ -601,11 +637,24 @@ def test_run_tests_node_id_pattern(python_repo: Path, fake_pytest: dict[str, Any
     assert fake_pytest["tokens"][-1] == "tests/test_fs.py::test_apply_patch_basic"
 
 
-def test_run_tests_rejects_empty_pattern(python_repo: Path) -> None:
-    """空 pattern 应拒绝。"""
+def test_run_tests_empty_pattern_runs_all(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
+    """空 pattern 等同于跑全量测试。"""
+    fake_pytest["returncode"] = 0
+    fake_pytest["stdout"] = "148 passed in 5.34s\n"
+
     out = registry.execute("run_tests", {"pattern": ""})
+
+    assert "exit_code=0" in out
+    assert "148 passed" in out
+    # tokens 只含 pytest 和 -q，没有空字符串
+    assert fake_pytest["tokens"] == ["pytest", "-q"]
+
+
+def test_run_tests_whitespace_pattern_rejected(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
+    """纯空白 pattern 仍应被拒绝，不被视为空串。"""
+    out = registry.execute("run_tests", {"pattern": "   "})
     assert out.startswith("Error:")
-    assert "empty" in out
+    assert "invalid pattern" in out
 
 
 def test_run_tests_rejects_spaces(python_repo: Path) -> None:

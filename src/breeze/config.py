@@ -42,9 +42,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "min_recent_pairs": 1,
         "max_recent_pairs": 3,
         "arguments_preview": 60,
-        "tool_result_max_bytes": 4000,
-        "tool_result_head_bytes": 2000,
-        "tool_result_tail_bytes": 2000,
+        "tool_result_max_bytes": 16000,
+        "tool_result_head_bytes": 8000,
+        "tool_result_tail_bytes": 8000,
     },
     "trace": {
         "dir": "traces",

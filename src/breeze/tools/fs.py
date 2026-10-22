@@ -44,6 +44,7 @@ IGNORED_DIRS: frozenset[str] = frozenset(
 )
 
 DEFAULT_MAX_ENTRIES = 200
+DEFAULT_MAX_FILES_PER_DIR = 20
 DEFAULT_MAX_BYTES = 200_000
 
 
@@ -116,7 +117,8 @@ def is_ignored(
     description=(
         "列出仓库内的文件和目录。返回相对路径，每行一个。"
         "自动忽略 .gitignore 中声明的路径和常见缓存、构建目录。"
-        "用于了解项目结构。可通过 max_depth 控制递归深度。"
+        "每个目录下的文件数默认限制为 20 个，避免大目录淹没有用信息。"
+        "可通过 max_files_per_dir 放宽限制。"
     ),
     parameters={
         "type": "object",
@@ -136,6 +138,13 @@ def is_ignored(
                 "description": "返回条目数上限。默认为 200。",
                 "default": DEFAULT_MAX_ENTRIES,
             },
+            "max_files_per_dir": {
+                "type": "integer",
+                "description": (
+                    "单个目录下最多列出的文件数。默认为 20。若某目录下有大量同类文件（如日志），可降低此值。"
+                ),
+                "default": DEFAULT_MAX_FILES_PER_DIR,
+            },
         },
         "required": [],
     },
@@ -144,6 +153,7 @@ def list_files(
     path: str = ".",
     max_depth: int = 2,
     max_entries: int = DEFAULT_MAX_ENTRIES,
+    max_files_per_dir: int = DEFAULT_MAX_FILES_PER_DIR,
 ) -> str:
     """列出目录内容。
 
@@ -156,8 +166,9 @@ def list_files(
         每行一个相对路径的字符串。超限时追加截断提示。
     """
     root = safe_path(path)
-    max_depth = max(1, max_depth)
-    max_entries = max(1, max_entries)
+    max_depth = max(1, int(max_depth))
+    max_entries = max(1, int(max_entries))
+    max_files_per_dir = max(1, int(max_files_per_dir))
 
     gitignore_patterns = load_gitignore_patterns(settings.repo_root)
 
@@ -174,29 +185,41 @@ def list_files(
         except (PermissionError, OSError):
             return
 
-        for child in children:
+        dirs = [c for c in children if c.is_dir()]
+        files = [c for c in children if c.is_file()]
+
+        for child in dirs:
             if truncated:
                 return
+            if child.name in IGNORED_DIRS:
+                continue
+            if is_ignored(child, settings.repo_root, gitignore_patterns):
+                continue
+            if len(entries) >= max_entries:
+                truncated = True
+                return
+            rel = child.relative_to(root).as_posix()
+            entries.append(f"{rel}/")
+            walk(child, depth + 1)
 
-            if child.is_dir():
-                if child.name in IGNORED_DIRS:
-                    continue
-                if is_ignored(child, settings.repo_root, gitignore_patterns):
-                    continue
-                if len(entries) >= max_entries:
-                    truncated = True
-                    return
-                rel = child.relative_to(root).as_posix()
-                entries.append(f"{rel}/")
-                walk(child, depth + 1)
-            else:
-                if is_ignored(child, settings.repo_root, gitignore_patterns):
-                    continue
-                if len(entries) >= max_entries:
-                    truncated = True
-                    return
-                rel = child.relative_to(root).as_posix()
-                entries.append(rel)
+        shown = 0
+        hidden = 0
+        for child in files:
+            if is_ignored(child, settings.repo_root, gitignore_patterns):
+                continue
+            if shown >= max_files_per_dir:
+                hidden += 1
+                continue
+            if len(entries) >= max_entries:
+                truncated = True
+                return
+            rel = child.relative_to(root).as_posix()
+            entries.append(rel)
+            shown += 1
+
+        if hidden > 0 and not truncated:
+            dir_rel = "." if current == root else current.relative_to(root).as_posix()
+            entries.append(f"(... {hidden} more files in {dir_rel}/, use max_files_per_dir to see more)")
 
     walk(root, 1)
 
@@ -206,9 +229,32 @@ def list_files(
     return result
 
 
+def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
+    """查找 start_index（0-based）之后第一个顶层 def/class 的行号（1-based）。
+
+    Args:
+        lines: 文件的所有行。
+        start_index: 起始搜索位置（0-based，包含）。
+
+    Returns:
+        下一个顶层 def 或 class 的行号（1-based）。找不到时返回 None。
+    """
+    for i in range(start_index, len(lines)):
+        line = lines[i]
+        if line.startswith("def ") or line.startswith("class "):
+            return i + 1
+    return None
+
+
 @register(
     name="read_file",
-    description=("读取文件内容，带行号。可通过 start_line 和 end_line 读取指定行范围。文件过大时会被截断。"),
+    description=(
+        "读取文件内容，带行号。"
+        "对于已知目标位置的文件，用 start_line/end_line 读取精确范围，"
+        "避免将整个文件加载到上下文。"
+        "例如：read_file('src/foo.py', start_line=237, end_line=300)。"
+        "不传 start_line/end_line 时读取全文件。"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -218,16 +264,16 @@ def list_files(
             },
             "start_line": {
                 "type": "integer",
-                "description": "起始行号，从 1 开始。默认为 1。",
+                "description": "起始行号，从 1 开始。",
                 "default": 1,
             },
             "end_line": {
                 "type": "integer",
-                "description": "结束行号（含）。省略时读到文件末尾。",
+                "description": ("结束行号（含）。对大文件，建议明确指定以节省上下文。"),
             },
             "max_bytes": {
                 "type": "integer",
-                "description": "返回内容的字节上限。默认为 200000。",
+                "description": "返回内容的字节上限。",
                 "default": DEFAULT_MAX_BYTES,
             },
         },
@@ -256,7 +302,14 @@ def read_file(
     """
     target = safe_path(path)
     if not target.is_file():
-        raise ValueError(f"Path is not a file: {path}")
+        hint = ""
+        if not path.startswith("src/"):
+            alt = settings.repo_root / "src" / path
+            if alt.is_file():
+                hint = f" Did you mean: src/{path}?"
+        raise ValueError(
+            f"Path is not a file: {path}.{hint}\nHint: use list_files or repo_map to explore the project structure."
+        )
 
     max_bytes = max(1, int(max_bytes))
     start_line = max(1, int(start_line))
@@ -294,8 +347,16 @@ def read_file(
         return "(empty)"
 
     result = "\n".join(rendered_lines)
+
     if truncated:
-        result += f"\n... (truncated to {max_bytes} bytes)"
-    elif end_line is not None and end_line < total_lines:
-        result += f"\n... ({total_lines - end_line} more lines not shown)"
+        result += f"\n... (truncated to {max_bytes} bytes; file has {total_lines} lines total)"
+        return result
+
+    result += f"\n--- (file has {total_lines} lines total) ---"
+
+    if end_line is not None and end_line < total_lines:
+        next_sym = _next_symbol_line(lines, end_line)
+        if next_sym is not None:
+            snippet = lines[next_sym - 1].strip()[:80]
+            result += f"\n--- (next symbol at line {next_sym}: {snippet}) ---"
     return result

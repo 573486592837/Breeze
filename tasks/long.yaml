@@ -13,45 +13,45 @@ model: openai/Pro/deepseek-ai/DeepSeek-V3.2
 tasks:
   - id: fix01
     type: fix
-    question: "运行 pytest tests/test_fs.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    question: "运行 pytest tests/test_fs.py 有测试失败。找到并修复代码中的问题。修复后 pytest -q 必须全部通过，不得引入新的失败。不要修改测试文件。"
     success_criteria: "pytest tests/test_fs.py 全部通过"
     setup:
       - patch: fix01.patch
-    eval_command: "pytest tests/test_fs.py -q"
-    max_steps: 15
+    eval_command: "pytest -q"
+    max_steps: 20
 
   - id: fix02
     type: fix
-    question: "运行 pytest tests/test_registry.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    question: "运行 pytest tests/test_registry.py 有测试失败。找到并修复代码中的问题。修复后 pytest -q 必须全部通过，不得引入新的失败。不要修改测试文件。"
     success_criteria: "pytest tests/test_registry.py 全部通过"
     setup:
       - patch: fix02.patch
-    eval_command: "pytest tests/test_registry.py -q"
-    max_steps: 15
+    eval_command: "pytest -q"
+    max_steps: 20
 
   - id: fix03
     type: fix
-    question: "运行 pytest tests/test_shell.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    question: "运行 pytest tests/test_shell.py 有测试失败。找到并修复代码中的问题。修复后 pytest -q 必须全部通过，不得引入新的失败。不要修改测试文件。"
     success_criteria: "pytest tests/test_shell.py 全部通过"
     setup:
       - patch: fix03.patch
-    eval_command: "pytest tests/test_shell.py -q"
-    max_steps: 15
+    eval_command: "pytest -q"
+    max_steps: 20
 
   - id: fix04
     type: fix
-    question: "运行 pytest tests/test_fs.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    question: "运行 pytest tests/test_fs.py 有测试失败。找到并修复代码中的问题。修复后 pytest -q 必须全部通过，不得引入新的失败。不要修改测试文件。"
     success_criteria: "pytest tests/test_fs.py 全部通过"
     setup:
       - patch: fix04.patch
-    eval_command: "pytest tests/test_fs.py -q"
-    max_steps: 15
+    eval_command: "pytest -q"
+    max_steps: 20
 
   - id: fix05
     type: fix
-    question: "运行 pytest tests/test_shell.py 有测试失败。找到代码中的问题并修复，使所有测试通过。不要修改测试文件。"
+    question: "运行 pytest tests/test_shell.py 有测试失败。找到并修复代码中的问题。修复后 pytest -q 必须全部通过，不得引入新的失败。不要修改测试文件。"
     success_criteria: "pytest tests/test_shell.py 全部通过"
     setup:
       - patch: fix05.patch
-    eval_command: "pytest tests/test_shell.py -q"
-    max_steps: 15
+    eval_command: "pytest -q"
+    max_steps: 20

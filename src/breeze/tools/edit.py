@@ -290,10 +290,16 @@ def apply_patch(path: str, old: str, new: str) -> str:
 
     count = content.count(old_norm)
     if count == 0:
+        hint = ""
+        if old.count("\n") > 10:
+            hint = (
+                f"\nHint: the old text is {old.count(chr(10))} lines long. "
+                f"Try a smaller snippet (3-5 lines around the change)."
+            )
         return (
             f"Error: old text not found in {path}\n"
             f"Searched for:\n---\n{old}\n---\n"
-            f"Hint: use read_file to verify the current content."
+            f"Hint: use read_file to verify the current content.{hint}"
         )
     if count > 1:
         return f"Error: old text matches {count} locations in {path}, add more context to make it unique"
@@ -342,6 +348,7 @@ def _is_python_project(root: Path) -> bool:
     description=(
         "运行 pytest 并返回结果摘要。"
         "可指定单个测试文件或节点 ID，如 'tests/test_fs.py' 或 'tests/test_fs.py::test_x'。"
+        "省略 pattern 或传入空字符串时运行全部测试。"
         "不支持额外的 pytest 参数。"
     ),
     parameters={
@@ -349,7 +356,7 @@ def _is_python_project(root: Path) -> bool:
         "properties": {
             "pattern": {
                 "type": "string",
-                "description": ("可选的测试目标，如 'tests/test_fs.py'。省略时运行全部测试。"),
+                "description": ("可选的测试目标，如 'tests/test_fs.py'。省略或传空字符串时运行全部测试。"),
             },
         },
         "required": [],
@@ -367,6 +374,13 @@ def run_tests(pattern: str | None = None) -> str:
     """
     root = settings.repo_root.resolve()
 
+    tokens = ["pytest", "-q"]
+
+    if pattern:
+        if not _PATTERN_RE.match(pattern):
+            return f"Error: invalid pattern characters: {pattern}"
+        tokens.append(pattern)
+
     if not _is_python_project(root):
         return (
             "Error: no Python project detected in this repository. "
@@ -374,15 +388,6 @@ def run_tests(pattern: str | None = None) -> str:
             "Use run_shell to run your project's test command instead, "
             "for example 'npm test' or 'cargo test'."
         )
-
-    tokens = ["pytest", "-q"]
-
-    if pattern is not None:
-        if not pattern:
-            return "Error: pattern is empty"
-        if not _PATTERN_RE.match(pattern):
-            return f"Error: invalid pattern characters: {pattern}"
-        tokens.append(pattern)
 
     returncode, stdout, stderr = run_command(tokens, root, timeout=TESTS_TIMEOUT_SECONDS)
 
@@ -396,7 +401,26 @@ def run_tests(pattern: str | None = None) -> str:
     lines: list[str] = [f"exit_code={returncode}", f"summary: {summary}"]
     if failures:
         lines.append("failures:")
-        lines.extend(f"- {name}" for name in failures)
+        for f in failures:
+            line = f"- {f['name']}"
+            if f["detail"]:
+                line += f" — {f['detail']}"
+            lines.append(line)
+
+    if returncode == 0:
+        lines.append(
+            "status: verified — all tests pass. No further validation needed."
+        )
+    else:
+        lines.append(
+            "status: failed — investigate the failing test, then fix the code."
+        )
+        section = _extract_failures_section(combined, max_bytes=3000)
+        if section:
+            lines.append("")
+            lines.append("--- pytest traceback (truncated) ---")
+            lines.append(section)
+            lines.append("--- end traceback ---")
 
     output = "\n".join(lines)
 
@@ -430,21 +454,72 @@ def _parse_pytest_summary(text: str) -> str:
     return ", ".join(parts) if parts else "(no summary)"
 
 
-def _extract_pytest_failures(text: str) -> list[str]:
-    """提取失败测试的节点 ID。
+def _extract_pytest_failures(text: str) -> list[dict[str, str]]:
+    """提取失败测试的节点 ID 和简要错误信息。
 
     Args:
         text: pytest 输出文本。
 
     Returns:
-        失败测试节点 ID 列表，最多 MAX_FAILURE_LIST 条。
+        list of {"name": str, "detail": str}。
+        detail 从 FAILED 行的 " - " 后缀提取，可能为空。
     """
-    failures: list[str] = []
+    failures: list[dict[str, str]] = []
     for line in text.splitlines():
         if not line.startswith("FAILED "):
             continue
-        rest = line[len("FAILED ") :].strip()
-        node = rest.split(" - ", 1)[0].strip()
-        if node:
-            failures.append(node)
+        rest = line[len("FAILED "):].strip()
+        if " - " in rest:
+            name, detail = rest.split(" - ", 1)
+            failures.append(
+                {"name": name.strip(), "detail": detail.strip()[:300]}
+            )
+        else:
+            failures.append({"name": rest, "detail": ""})
     return failures
+
+
+def _extract_failures_section(
+    text: str, max_bytes: int = 3000
+) -> str:
+    """从 pytest 输出提取 FAILURES 段并截断。
+
+    Args:
+        text: pytest 的 stdout + stderr。
+        max_bytes: 返回内容的字节上限。
+
+    Returns:
+        FAILURES 段的文本。找不到时返回空字符串。
+    """
+    # pytest 8+ 用 "============ FAILURES ============"
+    # 旧版本用 "================================== FAILURES ============================"
+    markers = ("FAILURES", "==== FAILURES ====")
+    start = -1
+    for marker in markers:
+        start = text.find(marker)
+        if start >= 0:
+            break
+    if start < 0:
+        return ""
+
+    # 结束标志：short test summary 或下一个大分隔线
+    end = text.find("short test summary", start)
+    if end < 0:
+        # 找 "=====" 大分隔线（至少 5 个 =）
+        search_from = start + len(marker) + 5
+        for i in range(search_from, len(text) - 4):
+            if text[i:i + 5] == "=====":
+                end = i
+                break
+    if end < 0:
+        end = len(text)
+
+    section = text[start:end].strip()
+    if not section:
+        return ""
+
+    encoded = section.encode("utf-8")
+    if len(encoded) > max_bytes:
+        truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        return truncated + "\n... (traceback truncated)"
+    return section

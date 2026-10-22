@@ -376,3 +376,41 @@ def test_run_shell_allows_relative_paths(repo: Path, fake_run: dict[str, Any]) -
     ]:
         out = registry.execute("run_shell", {"command": cmd})
         assert "exit_code: 0" in out
+
+
+def test_run_shell_unbalanced_quotes(repo: Path) -> None:
+    """引号不配对应返回清晰的错误。"""
+    with pytest.raises(ValueError, match="Unable to parse command"):
+        registry.execute(
+            "run_shell",
+            {"command": 'git "unclosed'},
+        )
+
+
+def test_run_shell_unbalanced_quotes_message(
+    repo: Path,
+) -> None:
+    """错误消息应包含有用的替代建议。"""
+    with pytest.raises(ValueError, match="python -m <module>"):
+        registry.execute(
+            "run_shell",
+            {"command": 'git "unclosed'},
+        )
+
+
+def test_run_shell_rejection_lists_allowed_commands(repo: Path) -> None:
+    """非白名单命令的拒绝消息应列出允许的命令。"""
+    with pytest.raises(ValueError, match="Allowed commands:"):
+        registry.execute("run_shell", {"command": "cat file.txt"})
+
+
+def test_run_shell_cd_hint(repo: Path) -> None:
+    """cd 被拒时应提示使用 cwd 参数。"""
+    with pytest.raises(ValueError, match="cwd parameter"):
+        registry.execute("run_shell", {"command": "cd /tmp"})
+
+
+def test_run_shell_cat_hint(repo: Path) -> None:
+    """cat 被拒时应提示不支持文件创建。"""
+    with pytest.raises(ValueError, match="file creation"):
+        registry.execute("run_shell", {"command": "cat file.txt"})

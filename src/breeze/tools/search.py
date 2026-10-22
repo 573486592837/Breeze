@@ -22,7 +22,12 @@ RG_TIMEOUT_SECONDS = 30
 
 @register(
     name="grep",
-    description=("在仓库内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。用于定位函数、变量、字符串等。"),
+    description=(
+        "在仓库内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。"
+        "用于定位函数、变量、字符串等。"
+        "建议用 path='.' 和合适的 glob（如 '*.py'、'*.js'、'*.ts'、'*.go'）"
+        "这比猜测子目录更可靠。"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -32,12 +37,12 @@ RG_TIMEOUT_SECONDS = 30
             },
             "path": {
                 "type": "string",
-                "description": "搜索起始目录或文件，相对于仓库根目录。默认为 '.'。",
+                "description": ("搜索起始路径。建议用 '.' 从仓库根搜索，配合 glob 限定范围。"),
                 "default": ".",
             },
             "glob": {
                 "type": "string",
-                "description": "文件名过滤，如 '*.py'。省略时不限制。",
+                "description": ("文件名过滤，如 '*.py'。强烈建议指定，如 '*.py' 或 '*.{js,ts}'，避免扫描无关文件。"),
             },
             "max_results": {
                 "type": "integer",

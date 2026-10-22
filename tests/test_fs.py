@@ -183,3 +183,95 @@ def test_list_files_without_gitignore(repo: Path) -> None:
     out = registry.execute("list_files", {"path": ".", "max_depth": 2})
     assert "src/" in out
     assert "a.py" in out
+
+
+def test_read_file_reports_total_lines(repo: Path) -> None:
+    """read_file 应返回文件总行数。"""
+    content = "\n".join(f"L{i}" for i in range(1, 21))
+    (repo / "x.py").write_text(content, encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "x.py", "start_line": 1, "end_line": 5})
+
+    assert "file has 20 lines total" in out
+
+
+def test_read_file_suggests_next_symbol(repo: Path) -> None:
+    """读取部分范围时，应指出下一符号位置。"""
+    lines = [
+        "def first():",
+        "    pass",
+        "",
+        "def second():",
+        "    pass",
+        "",
+        "class Third:",
+        "    pass",
+    ]
+    (repo / "x.py").write_text("\n".join(lines), encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "x.py", "start_line": 1, "end_line": 2})
+
+    assert "next symbol at line 4" in out
+    assert "def second" in out
+
+
+def test_read_file_no_next_symbol_at_end(repo: Path) -> None:
+    """读到文件末尾时不提示下一符号。"""
+    content = "def foo():\n    pass\n"
+    (repo / "x.py").write_text(content, encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "x.py"})
+
+    assert "next symbol" not in out
+    assert "file has 2 lines total" in out
+
+
+def test_read_file_truncation_includes_total(repo: Path) -> None:
+    """截断时也返回总行数。"""
+    content = "\n".join("x" * 200 for _ in range(50))
+    (repo / "big.py").write_text(content, encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "big.py", "max_bytes": 500})
+
+    assert "truncated" in out
+    assert "file has 50 lines total" in out
+
+
+def test_list_files_limits_per_dir_files(repo: Path) -> None:
+    """单目录下文件超过 max_files_per_dir 时省略。"""
+    for i in range(50):
+        (repo / f"log_{i:03d}.txt").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1, "max_files_per_dir": 10})
+
+    # 只应显示 10 个
+    shown = [ln for ln in out.splitlines() if ln.startswith("log_")]
+    assert len(shown) == 10
+    # 应提示省略
+    assert "more files" in out
+    assert "40 more" in out
+
+
+def test_list_files_per_dir_default_20(repo: Path) -> None:
+    """默认每目录显示 20 个文件。"""
+    for i in range(30):
+        (repo / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+
+    shown = [ln for ln in out.splitlines() if ln.startswith("f")]
+    assert len(shown) == 20
+    assert "10 more" in out
+
+
+def test_list_files_directories_still_listed(repo: Path) -> None:
+    """有大量文件的目录，其子目录仍应列出。"""
+    (repo / "sub").mkdir()
+    (repo / "sub" / "a.py").write_text("x", encoding="utf-8")
+    for i in range(50):
+        (repo / f"file_{i}.txt").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1, "max_files_per_dir": 5})
+
+    assert "sub/" in out
+    assert "more files" in out
