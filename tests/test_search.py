@@ -68,6 +68,44 @@ def test_grep_search_single_file(sample: Path) -> None:
     assert "README.md" in out
 
 
+# ─── grep rg 输出归一化 ───
+
+
+def test_grep_rg_line_normalizes_windows_separators() -> None:
+    """rg 在 Windows 输出的反斜杠路径应归一化为正斜杠并去掉 ./ 前缀。"""
+    from breeze.tools.search import _normalize_rg_line
+
+    assert _normalize_rg_line(".\\src\\a.py:1:def foo():") == "src/a.py:1:def foo():"
+    assert _normalize_rg_line("src\\sub\\b.py:12:x = 1") == "src/sub/b.py:12:x = 1"
+    assert _normalize_rg_line("README.md:2:foo bar") == "README.md:2:foo bar"
+    assert _normalize_rg_line("no line number") == "no line number"
+
+
+def test_grep_rg_output_normalized(
+    sample: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """强制走 rg 分支并用伪造的 Windows 输出，验证最终结果格式。"""
+    import subprocess
+
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: "/fake/rg")
+
+    def _fake(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=".\\src\\a.py:1:def foo():\n.\\README.md:2:foo bar\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("breeze.tools.search.subprocess.run", _fake)
+
+    out = registry.execute("grep", {"pattern": "foo", "path": "."})
+    assert "src/a.py:1:def foo():" in out
+    assert "README.md:2:foo bar" in out
+    assert "\\" not in out
+
+
 # ─── grep 异常处理 ───
 
 

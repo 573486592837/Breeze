@@ -19,6 +19,29 @@ from breeze.tools.safety import safe_path
 DEFAULT_MAX_RESULTS = 100
 RG_TIMEOUT_SECONDS = 30
 
+_RG_LINE_RE = re.compile(r"^(.*?):(\d+):(.*)$")
+
+
+def _normalize_rg_line(line: str) -> str:
+    """把 rg 输出行的路径部分归一化为正斜杠。
+
+    ripgrep 在 Windows 下输出 .\\src\\a.py 形式，与 Python 回退实现的
+    src/a.py 不一致。统一为相对正斜杠路径，保证两种实现输出格式一致。
+
+    Args:
+        line: 形如 ``path:lineno:content`` 的一行输出。
+
+    Returns:
+        路径归一化后的行。无法解析行号时原样返回。
+    """
+    m = _RG_LINE_RE.match(line)
+    if not m:
+        return line
+    path = m.group(1).replace("\\", "/")
+    if path.startswith("./"):
+        path = path[2:]
+    return f"{path}:{m.group(2)}:{m.group(3)}"
+
 
 @register(
     name="grep",
@@ -118,7 +141,7 @@ def _grep_with_rg(
     except ValueError:
         rel_target = target.as_posix()
 
-    cmd = ["rg", "--line-number", "--no-heading", "--color", "never"]
+    cmd = ["rg", "--line-number", "--no-heading", "--with-filename", "--color", "never"]
     for ignored in IGNORED_DIRS:
         cmd.extend(["--glob", f"!{ignored}/"])
     if glob_pattern:
@@ -146,7 +169,7 @@ def _grep_with_rg(
     if proc.returncode not in (0, 1):
         return [f"ripgrep exited with code {proc.returncode}: {proc.stderr.strip()[:500]}"]
 
-    return proc.stdout.strip().splitlines()[:max_results]
+    return [_normalize_rg_line(ln) for ln in proc.stdout.strip().splitlines()[:max_results]]
 
 
 def _grep_with_python(
