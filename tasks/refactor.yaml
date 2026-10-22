@@ -1,0 +1,30 @@
+# Breeze 重构评估集 v1
+#
+# 每个任务在独立的 git worktree 中运行。
+# setup 用 patch 注入结构性验收测试（重构前失败），
+# eval_command 先校验测试未被修改，再运行结构测试与对应模块的行为回归测试。
+#
+# 评分：eval_command 退出码 0 为 True，否则为 False。
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  - id: refactor01
+    type: refactor
+    question: "把 src/breeze/tools/shell.py 中 _check_options 的 git 与 rg 选项黑名单检查拆分为两个函数：_check_git_options(tokens) 和 _check_rg_options(tokens)，由 _check_allowed 按可执行文件分派调用，删除原 _check_options。行为必须完全不变：run_shell 的现有测试全部通过。参考 tests/test_refactor01_structure.py 中的结构要求。不要修改测试文件。"
+    success_criteria: "tests/test_refactor01_structure.py 与 tests/test_shell.py 全部通过且测试文件未被修改"
+    setup:
+      - patch: test_refactor01_structure.patch
+    eval_command: "git diff --quiet -- tests/test_refactor01_structure.py && pytest -q tests/test_refactor01_structure.py tests/test_shell.py"
+    max_steps: 15
+
+  - id: refactor02
+    type: refactor
+    question: "src/breeze/tools/edit.py 中 apply_patch 和 create_file 各自内联了相同的原子写逻辑（写 .breeze_tmp 临时文件后 replace，失败时清理）。提取为模块级函数 _atomic_write(target: pathlib.Path, text: str) -> None，写入 content 指定路径，失败时删除临时文件并抛出 OSError，两处调用它。行为必须完全不变：tests/test_edit.py 全部通过。函数签名以 tests/test_refactor02_atomic.py 为准。不要修改测试文件。"
+    success_criteria: "tests/test_refactor02_atomic.py 与 tests/test_edit.py 全部通过且测试文件未被修改"
+    setup:
+      - patch: test_refactor02_atomic.patch
+    eval_command: "git diff --quiet -- tests/test_refactor02_atomic.py && pytest -q tests/test_refactor02_atomic.py tests/test_edit.py"
+    max_steps: 15

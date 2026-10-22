@@ -1,0 +1,32 @@
+--- /dev/null
++++ b/tests/test_refactor02_atomic.py
+@@ -0,0 +1,29 @@
++"""refactor02 验收测试：edit 模块的原子写辅助函数。"""
++
++from pathlib import Path
++
++from breeze.tools import edit
++
++
++def test_atomic_write_helper_exists() -> None:
++    assert callable(getattr(edit, "_atomic_write", None))
++
++
++def test_atomic_write_roundtrip(tmp_path: Path) -> None:
++    target = tmp_path / "x.txt"
++
++    edit._atomic_write(target, "hello\n")
++
++    assert target.read_text(encoding="utf-8") == "hello\n"
++    assert list(tmp_path.glob(".*.breeze_tmp")) == []
++
++
++def test_atomic_write_leaves_no_tmp_on_failure(tmp_path: Path) -> None:
++    blocked = tmp_path / "dir.txt"
++    blocked.mkdir()
++
++    try:
++        edit._atomic_write(blocked, "x")
++    except OSError:
++        pass
++    assert list(tmp_path.glob(".*.breeze_tmp")) == []

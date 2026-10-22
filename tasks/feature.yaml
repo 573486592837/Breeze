@@ -1,0 +1,39 @@
+# Breeze 功能添加评估集 v1
+#
+# 每个任务在独立的 git worktree 中运行。
+# setup 用 patch 注入验收测试（此时测试为失败状态），
+# eval_command 先校验验收测试未被修改，再运行验收测试与相关回归测试。
+#
+# 评分：eval_command 退出码 0 为 True，否则为 False。
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  - id: feat01
+    type: feature
+    question: "创建 src/breeze/tools/metrics.py，实现 Counter 类：构造时计数为 0；inc(step=1) 按 step 增加并返回增加后的新值；value 属性返回当前计数；reset() 将计数清零。验收测试已放在 tests/test_feat01_metrics.py，运行 pytest tests/test_feat01_metrics.py 使其通过。不要修改测试文件。"
+    success_criteria: "tests/test_feat01_metrics.py 全部通过且该文件未被修改"
+    setup:
+      - patch: test_feat01_metrics.patch
+    eval_command: "git diff --quiet -- tests/test_feat01_metrics.py && pytest -q tests/test_feat01_metrics.py"
+    max_steps: 15
+
+  - id: feat02
+    type: feature
+    question: "为 src/breeze/tools/fs.py 的 list_files 工具添加 exclude_pattern 参数：字符串类型，默认 None；当传入 glob（如 '*.log'）时，文件名匹配该 glob 的文件不再列出（fnmatch 语义，目录不受影响）。同时更新工具的 description 和 parameters schema。验收测试已放在 tests/test_feat02_exclude.py，运行 pytest tests/test_feat02_exclude.py 使其通过。不要修改测试文件。"
+    success_criteria: "tests/test_feat02_exclude.py 全部通过且该文件未被修改，list_files 原有测试不回归"
+    setup:
+      - patch: test_feat02_exclude.patch
+    eval_command: "git diff --quiet -- tests/test_feat02_exclude.py && pytest -q tests/test_feat02_exclude.py tests/test_fs.py"
+    max_steps: 15
+
+  - id: feat03
+    type: feature
+    question: "在 src/breeze/config.py 中新增 [eval] 配置段：DEFAULTS 中加入 eval.default_repeat = 1，Settings 暴露为 eval_default_repeat 整型属性，从 breeze.toml 的 [eval] default_repeat 读取。tests/test_config.py 中的 section 期望与 tests/test_feat03_eval_config.py 已按新配置预更新，不要修改任何测试文件，只改 src/breeze/config.py。完成后运行 pytest -q tests/test_feat03_eval_config.py tests/test_config.py 应全部通过。"
+    success_criteria: "tests/test_feat03_eval_config.py 与 tests/test_config.py 全部通过且测试文件未被修改"
+    setup:
+      - patch: test_feat03_eval_config.patch
+    eval_command: "git diff --quiet -- tests/test_feat03_eval_config.py tests/test_config.py && pytest -q tests/test_feat03_eval_config.py tests/test_config.py"
+    max_steps: 15
