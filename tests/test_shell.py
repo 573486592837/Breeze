@@ -111,6 +111,20 @@ def test_run_shell_allows_python_whitelisted_modules(repo: Path, fake_run: dict[
         assert "exit_code: 0" in out
 
 
+def test_run_shell_rejects_bare_pytest(repo: Path) -> None:
+    """裸 pytest 命令应被拒，拒绝消息指向 run_tests。"""
+    with pytest.raises(ValueError, match="Executable not allowed: pytest"):
+        registry.execute("run_shell", {"command": "pytest -q"})
+
+
+def test_run_shell_bare_pytest_hint(repo: Path) -> None:
+    """pytest 被拒时应提示使用 run_tests 或 python -m pytest。"""
+    with pytest.raises(ValueError, match="run_tests"):
+        registry.execute("run_shell", {"command": "pytest tests/test_fs.py"})
+    with pytest.raises(ValueError, match="python -m pytest"):
+        registry.execute("run_shell", {"command": "pytest tests/test_fs.py"})
+
+
 # ─── 参数校验：cwd ───
 
 
