@@ -368,7 +368,9 @@ def test_create_file_preserves_newlines(repo: Path) -> None:
     out = registry.execute("create_file", {"path": "keep.py", "content": content})
 
     assert out.startswith("Created")
-    assert (repo / "keep.py").read_text(encoding="utf-8", newline="") == content
+    assert (repo / "keep.py").read_text(encoding="utf-8") == content
+    raw = (repo / "keep.py").read_bytes()
+    assert raw == content.encode("utf-8")
 
 
 def test_create_file_leaves_no_tmp(repo: Path) -> None:
