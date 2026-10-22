@@ -313,6 +313,27 @@ def test_run_eval_only_ids(
     assert report["results"][0]["id"] == "t01"
 
 
+def test_run_eval_logs_effective_config(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """正常运行应输出实际生效的配置摘要。"""
+    messages: list[str] = []
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=tmp_path / "out.json",
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        llm_factory=FakeLLM,
+        progress=messages.append,
+    )
+    joined = "\n".join(messages)
+    assert "model=" in joined
+    assert "context.enable=" in joined
+    assert "context.max_recent_tokens=" in joined
+
+
 def test_run_eval_merges_manual_grades(
     task_yaml: Path,
     fake_repo: Path,

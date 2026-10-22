@@ -66,7 +66,7 @@ tasks:
   - id: l03
     type: locate
     question: "run_shell 的可执行文件白名单定义在哪里？包含哪些命令？"
-    success_criteria: "指出 src/breeze/tools/shell.py 中的 ALLOWED_EXECUTABLES；列出 git、pytest、rg、python、python3、where。"
+    success_criteria: "指出 src/breeze/tools/shell.py 中的 ALLOWED_EXECUTABLES；列出 git、rg、python、python3、where。"
     max_steps: 6
 
   - id: l04

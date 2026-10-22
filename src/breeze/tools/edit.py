@@ -408,13 +408,9 @@ def run_tests(pattern: str | None = None) -> str:
             lines.append(line)
 
     if returncode == 0:
-        lines.append(
-            "status: verified — all tests pass. No further validation needed."
-        )
+        lines.append("status: verified — all tests pass. No further validation needed.")
     else:
-        lines.append(
-            "status: failed — investigate the failing test, then fix the code."
-        )
+        lines.append("status: failed — investigate the failing test, then fix the code.")
         section = _extract_failures_section(combined, max_bytes=3000)
         if section:
             lines.append("")
@@ -468,20 +464,16 @@ def _extract_pytest_failures(text: str) -> list[dict[str, str]]:
     for line in text.splitlines():
         if not line.startswith("FAILED "):
             continue
-        rest = line[len("FAILED "):].strip()
+        rest = line[len("FAILED ") :].strip()
         if " - " in rest:
             name, detail = rest.split(" - ", 1)
-            failures.append(
-                {"name": name.strip(), "detail": detail.strip()[:300]}
-            )
+            failures.append({"name": name.strip(), "detail": detail.strip()[:300]})
         else:
             failures.append({"name": rest, "detail": ""})
     return failures
 
 
-def _extract_failures_section(
-    text: str, max_bytes: int = 3000
-) -> str:
+def _extract_failures_section(text: str, max_bytes: int = 3000) -> str:
     """从 pytest 输出提取 FAILURES 段并截断。
 
     Args:
@@ -508,7 +500,7 @@ def _extract_failures_section(
         # 找 "=====" 大分隔线（至少 5 个 =）
         search_from = start + len(marker) + 5
         for i in range(search_from, len(text) - 4):
-            if text[i:i + 5] == "=====":
+            if text[i : i + 5] == "=====":
                 end = i
                 break
     if end < 0:

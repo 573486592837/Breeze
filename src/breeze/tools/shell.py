@@ -20,7 +20,6 @@ DEFAULT_MAX_BYTES = 20_000
 ALLOWED_EXECUTABLES: frozenset[str] = frozenset(
     {
         "git",
-        "pytest",
         "rg",
         "python",
         "python3",
@@ -124,8 +123,9 @@ def _split_command(command: str) -> list[str]:
 @register(
     name="run_shell",
     description=(
-        "在仓库内执行受限的 shell 命令。支持 git、pytest、rg、ls、cat 等只读命令，"
-        "不支持管道、重定向和任意命令。返回 exit_code、stdout、stderr。"
+        "在仓库内执行受限的 shell 命令。支持 git、rg 等只读命令，"
+        "不支持管道、重定向和任意命令。运行测试请用 run_tests；"
+        "仅当需要特殊 pytest 参数时用 'python -m pytest'。返回 exit_code、stdout、stderr。"
     ),
     parameters={
         "type": "object",
@@ -242,7 +242,9 @@ def _check_allowed(tokens: list[str]) -> None:
     if exe not in ALLOWED_EXECUTABLES:
         allowed = ", ".join(sorted(ALLOWED_EXECUTABLES))
         extra = ""
-        if exe in {"cd", "pushd", "popd"}:
+        if exe == "pytest":
+            extra = " (use run_tests; for special pytest arguments use 'python -m pytest')"
+        elif exe in {"cd", "pushd", "popd"}:
             extra = " (cwd is set via the cwd parameter, not via cd)"
         elif exe in {"sh", "bash", "cmd", "powershell", "zsh", "pwsh"}:
             extra = " (shells are not allowed; commands run directly with shell=False)"
