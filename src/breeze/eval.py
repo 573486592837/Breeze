@@ -52,7 +52,7 @@ class TaskSpec:
     type: str
     question: str
     success_criteria: str
-    max_steps: int = 6
+    max_steps: int = settings.agent_max_steps
     notes: str = ""
     setup: list[SetupOp] = field(default_factory=list)
     eval_command: str | None = None
@@ -141,7 +141,7 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
                 type=item["type"],
                 question=item["question"],
                 success_criteria=item["success_criteria"],
-                max_steps=int(item.get("max_steps", 6)),
+                max_steps=int(item.get("max_steps", settings.agent_max_steps)),
                 notes=item.get("notes", ""),
                 setup=setup,
                 eval_command=eval_command,
@@ -756,7 +756,7 @@ def run_eval(
 
         results: list[TaskResult] = []
         for i, task in enumerate(tasks, start=1):
-            log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat}")
+            log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat} max_steps={task.max_steps}")
 
             if task.setup or task.eval_command:
                 task_runs = _run_task_with_worktree(task, llm, trace_dir, repo_root, fixtures_dir, repeat, log)

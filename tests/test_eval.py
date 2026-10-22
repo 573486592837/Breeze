@@ -503,6 +503,53 @@ def test_run_eval_repeat_dry_run(
     assert any("repeat=3" in m for m in messages)
 
 
+def test_load_tasks_max_steps_falls_back_to_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """YAML 未写 max_steps 的任务应回退到 settings.agent_max_steps。"""
+    monkeypatch.setattr(settings, "agent_max_steps", 7)
+    path = tmp_path / "tasks.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "x01",
+                        "type": "explain",
+                        "question": "q",
+                        "success_criteria": "c",
+                    }
+                ]
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    _, tasks = load_tasks(path)
+    assert tasks[0].max_steps == 7
+
+
+def test_run_eval_logs_task_max_steps(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """任务起始行应显示该任务实际生效的 max_steps。"""
+    messages: list[str] = []
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=tmp_path / "out.json",
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        repeat=1,
+        llm_factory=FakeLLM,
+        progress=messages.append,
+    )
+    assert any("t01" in m and "max_steps=3" in m for m in messages)
+    assert any("t02" in m and "max_steps=4" in m for m in messages)
+
+
 def test_summarize_includes_std() -> None:
     """summary 应包含 std_tokens。"""
     results = [
