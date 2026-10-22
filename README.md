@@ -277,6 +277,41 @@ summary 的丰富度来缓解，而非回退压缩。
 
 ---
 
+## Evaluation Suite Expansion (v0.10.0)
+
+v0.10.0 将评估从"bug 修复"单一形态扩展到 5 类任务，并完成若干速赢修复。
+
+### 新增任务集（repeat=1，DeepSeek-V3.2，压缩开启 6000 budget）
+
+| 任务集 | 任务 | 形态 | 初始结果 | Tokens |
+|---|---|---|---|---|
+| feature.yaml | feat01-03 | 新工具 + 验收测试注入 | 红/绿已验证，基线待跑 | - |
+| refactor.yaml | refactor01-02 | 结构调整 + 回归守卫 | 红/绿已验证，基线待跑 | - |
+| multiturn.yaml | mt01-02 | 条件分支复合指令 | mt01 PASS / mt02 FAIL | 71,530 / 76,241 |
+| external.yaml | ext01-03 | 非 Python（Node.js 样例） | 3/3 PASS | avg 20,433 |
+
+所有长任务评分使用统一守卫模式：
+`git diff --quiet -- <验收文件> && <测试/检查命令>`，防止修改验收条件本身。
+
+### 关键观察：mt02 失败归因
+
+mt02（修复 `safe_path` 后，条件分支应结束）中模型多做了一步——
+新建测试文件却写错导入并遗漏 fixture 定义，步数耗尽后在最终答案中
+**声称已修复但从未执行编辑**。压缩（prompt 稳定在 2.4K–4.5K）丢失了
+早期读到的导入风格与 fixture 位置，导致重复读取与错误重推导。
+这与 v0.9.0 的 fix05 遗忘是同一根因，是下一项改进
+（summary 提取"已确认事实/结论"）的直接依据。
+
+### 工具与评估修复
+
+- `create_file` 工具：新文件不再需要绕道 `apply_patch`
+- `run_shell` 白名单移除裸 `pytest`，统一走 `run_tests`（特殊参数用 `python -m pytest`）
+- `grep` 输出跨环境归一化（rg 存在与否路径格式一致）
+- `run_eval` 打印生效配置摘要；未写 `max_steps` 的任务回退到
+  `settings.agent_max_steps`（此前硬编码 6），任务起始日志显示实际生效值
+
+---
+
 ## 路线图
 
 | 版本 | 内容 | 状态 |
@@ -290,8 +325,9 @@ summary 的丰富度来缓解，而非回退压缩。
 | v0.7.0 | 编辑能力（apply_patch、git_diff、git_restore、run_tests） | 已完成 |
 | v0.7.1 | 分层 TOML 配置 | 已完成 |
 | v0.8.0 | 长任务评估（5 个 bug 修复任务） | 已完成 |
-| v0.9.0 | 长任务压缩对比、冗余调用优化 | 计划中 |
-| v1.0.0 | 功能添加任务、模型切换、沙箱执行 | 计划中 |
+| v0.9.0 | 长任务压缩对比、冗余调用优化 | 已完成 |
+| v0.10.0 | 任务集扩展（feature/refactor/multiturn/external）、create_file、评估守卫与配置修复 | 已完成 |
+| v1.0.0 | 压缩 summary 增强、测试并行化、全量评估与文档收尾 | 计划中 |
 
 ---
 
@@ -427,8 +463,13 @@ breeze/
 │   └── compare.py
 ├── tasks/
 │   ├── baseline.yaml     # 20 个短任务
-│   └── long.yaml         # 5 个 bug 修复任务
-├── fixtures/             # 长任务的 bug 注入 patch
+│   ├── long.yaml         # 5 个 bug 修复任务
+│   ├── feature.yaml      # 3 个功能添加任务
+│   ├── refactor.yaml     # 2 个重构任务
+│   ├── multiturn.yaml    # 2 个条件分支复合任务
+│   └── external.yaml     # 3 个非 Python（Node.js）任务
+├── fixtures/             # bug 注入与验收测试 patch
+├── samples/node-app/     # 非 Python 评估样例与检查脚本
 ├── tests/
 ├── reports/
 ├── traces/
