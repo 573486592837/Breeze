@@ -17,6 +17,7 @@ from breeze.trace import RunTrace
 def _force_context_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """测试假设压缩默认开启，隔离外部配置。"""
     from breeze.config import settings
+
     monkeypatch.setattr(settings, "context_enable", True)
 
 

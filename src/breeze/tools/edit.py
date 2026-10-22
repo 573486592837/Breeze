@@ -18,6 +18,7 @@ from breeze.tools.shell import run_command
 
 MAX_PATCH_BYTES = 20_000
 MAX_PATCH_LINES = 200
+MAX_CREATE_BYTES = 50_000
 MAX_DIFF_BYTES = 8_000
 MAX_TESTS_OUTPUT_BYTES = 8_000
 TESTS_TIMEOUT_SECONDS = 60
@@ -212,7 +213,10 @@ def git_resotre(path: str) -> str:
 
 @register(
     name="apply_patch",
-    description=("修改单个文件中的一处代码。old 必须与文件内容精确匹配，且在整个文件中唯一出现。不支持创建新文件。"),
+    description=(
+        "修改单个文件中的一处代码。old 必须与文件内容精确匹配，且在整个文件中唯一出现。"
+        "不支持创建新文件，创建请用 create_file。"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -274,7 +278,7 @@ def apply_patch(path: str, old: str, new: str) -> str:
         return f"Error: path is protected: {rel}"
 
     if not target.exists():
-        return f"Error: file not found: {path} (creating files is not supported yet)"
+        return f"Error: file not found: {path} (to create a new file, use create_file)"
     if not target.is_file():
         return f"Error: not a file: {path}"
 
@@ -317,6 +321,77 @@ def apply_patch(path: str, old: str, new: str) -> str:
         return f"Error: cannot write file: {exc}"
 
     return f"Patched {rel} (1 replacement)"
+
+
+@register(
+    name="create_file",
+    description=(
+        "创建新文件并写入完整内容。path 必须尚不存在；目录会自动创建。修改已存在的文件请用 apply_patch，不支持覆盖。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "新文件路径，相对于仓库根目录。",
+            },
+            "content": {
+                "type": "string",
+                "description": "文件的完整内容。",
+            },
+        },
+        "required": ["path", "content"],
+    },
+)
+def create_file(path: str, content: str) -> str:
+    """创建新文件并写入内容。
+
+    Args:
+        path: 新文件路径，相对于仓库根目录。
+        content: 文件完整内容。
+
+    Returns:
+        成功时以 ``Created`` 开头，失败时以 ``Error:`` 开头。
+        所有失败均为字符串返回，不抛异常。
+    """
+    if len(content.encode("utf-8")) > MAX_CREATE_BYTES:
+        return f"Error: content exceeds {MAX_CREATE_BYTES} bytes"
+
+    try:
+        target = safe_path(path)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    root = settings.repo_root.resolve()
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        return f"Error: path escapes repository: {path}"
+
+    if _is_protected(rel):
+        return f"Error: path is protected: {rel}"
+
+    if target.exists():
+        return f"Error: file already exists: {path}. Use apply_patch to modify it."
+    if target.parent.exists() and not target.parent.is_dir():
+        return f"Error: parent path is not a directory: {target.parent.name}"
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"Error: cannot create directory: {exc}"
+
+    tmp = target.parent / f".{target.name}.breeze_tmp"
+    try:
+        with tmp.open("w", encoding="utf-8", newline="") as f:
+            f.write(content)
+        tmp.replace(target)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        return f"Error: cannot write file: {exc}"
+
+    return f"Created {rel} ({len(content.encode('utf-8'))} bytes)"
 
 
 def _is_python_project(root: Path) -> bool:
@@ -408,13 +483,9 @@ def run_tests(pattern: str | None = None) -> str:
             lines.append(line)
 
     if returncode == 0:
-        lines.append(
-            "status: verified — all tests pass. No further validation needed."
-        )
+        lines.append("status: verified — all tests pass. No further validation needed.")
     else:
-        lines.append(
-            "status: failed — investigate the failing test, then fix the code."
-        )
+        lines.append("status: failed — investigate the failing test, then fix the code.")
         section = _extract_failures_section(combined, max_bytes=3000)
         if section:
             lines.append("")
@@ -468,20 +539,16 @@ def _extract_pytest_failures(text: str) -> list[dict[str, str]]:
     for line in text.splitlines():
         if not line.startswith("FAILED "):
             continue
-        rest = line[len("FAILED "):].strip()
+        rest = line[len("FAILED ") :].strip()
         if " - " in rest:
             name, detail = rest.split(" - ", 1)
-            failures.append(
-                {"name": name.strip(), "detail": detail.strip()[:300]}
-            )
+            failures.append({"name": name.strip(), "detail": detail.strip()[:300]})
         else:
             failures.append({"name": rest, "detail": ""})
     return failures
 
 
-def _extract_failures_section(
-    text: str, max_bytes: int = 3000
-) -> str:
+def _extract_failures_section(text: str, max_bytes: int = 3000) -> str:
     """从 pytest 输出提取 FAILURES 段并截断。
 
     Args:
@@ -508,7 +575,7 @@ def _extract_failures_section(
         # 找 "=====" 大分隔线（至少 5 个 =）
         search_from = start + len(marker) + 5
         for i in range(search_from, len(text) - 4):
-            if text[i:i + 5] == "=====":
+            if text[i : i + 5] == "=====":
                 end = i
                 break
     if end < 0:
