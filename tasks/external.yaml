@@ -1,0 +1,39 @@
+# Breeze 非 Python 生态评估集 v1
+#
+# 样例项目 samples/node-app 是一个 CommonJS Node 包。
+# Agent 的 run_shell 不放行 node（防线不变），因此这些任务考察
+# Agent 在无运行时反馈下，仅靠读代码与编辑工具完成外部语言任务；
+# 评分由评估框架直接调用 node 检查脚本，退出码 0 为 True。
+#
+# 每个任务在独立的 git worktree 中运行。
+# eval_command 先用 git diff --quiet 守卫检查脚本（及回归脚本）未被修改，
+# 再运行 node 校验。
+# ext01 同时考察跨文件阅读广度（需梳理三个模块的全部导出）。
+
+version: 1
+repo: breeze
+model: openai/Pro/deepseek-ai/DeepSeek-V3.2
+
+tasks:
+  - id: ext01
+    type: external
+    question: "阅读 samples/node-app/src/ 下的 index.js、stats.js、text.js 三个文件，在 samples/node-app/exports.md 中列出每个文件导出的所有函数名，每行一个，格式为 '文件名: 函数名'（如 'index.js: add'），必须覆盖全部 6 个导出函数；文件最后一行写运行检查脚本的命令：node run_checks.js。不要修改 samples/node-app 下任何已有文件。"
+    success_criteria: "exports.md 覆盖 6 个导出且末行为检查命令，样例已有文件未被修改"
+    eval_command: "git diff --quiet -- samples/node-app && node samples/node-app/check_ext01.js"
+    max_steps: 12
+
+  - id: ext02
+    type: external
+    question: "samples/node-app/src/index.js 中的 multiply 函数有 bug：它对两个数求和而不是求积。修复它，使 multiply(a, b) 返回 a 与 b 的乘积。不要修改 samples/node-app/check_ext02.js 和 samples/node-app/run_checks.js，验证由外部检查脚本完成。"
+    success_criteria: "check_ext02.js 与 run_checks.js 均通过且两文件未被修改"
+    setup:
+      - patch: ext02_bug.patch
+    eval_command: "git diff --quiet -- samples/node-app/check_ext02.js samples/node-app/run_checks.js && node samples/node-app/check_ext02.js && node samples/node-app/run_checks.js"
+    max_steps: 12
+
+  - id: ext03
+    type: external
+    question: "创建 samples/node-app/src/math2.js（CommonJS 风格，module.exports 导出），实现 square(n) 返回 n 的平方、cube(n) 返回 n 的立方。检查脚本会 require('./src/math2') 并断言 square(5)=25、square(-3)=9、cube(3)=27、cube(-2)=-8。不要修改 samples/node-app/check_ext03.js。"
+    success_criteria: "check_ext03.js 通过且该文件未被修改"
+    eval_command: "git diff --quiet -- samples/node-app/check_ext03.js && node samples/node-app/check_ext03.js"
+    max_steps: 12

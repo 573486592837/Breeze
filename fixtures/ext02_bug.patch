@@ -1,0 +1,7 @@
+--- a/samples/node-app/src/index.js
++++ b/samples/node-app/src/index.js
+@@ -11,3 +11,3 @@
+ function multiply(a, b) {
+-  return a * b;
++  return a + b;
+ }

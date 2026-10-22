@@ -1,0 +1,9 @@
+{
+  "name": "breeze-sample-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Breeze 非 Python 评估样例：CommonJS 计算器",
+  "scripts": {
+    "test": "node run_checks.js"
+  }
+}
