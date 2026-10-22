@@ -747,6 +747,13 @@ def run_eval(
         factory = llm_factory or (lambda: LLMClient(model=model))
         llm = factory()
 
+        log("[config] effective settings:")
+        log(f"  model={model or settings.model}")
+        log(f"  context.enable={settings.context_enable}")
+        log(f"  context.max_recent_tokens={settings.context_max_recent_tokens}")
+        log(f"  agent.max_steps(default)={settings.agent_max_steps}")
+        log(f"  agent.max_edit_attempts={settings.agent_max_edit_attempts}")
+
         results: list[TaskResult] = []
         for i, task in enumerate(tasks, start=1):
             log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat}")
