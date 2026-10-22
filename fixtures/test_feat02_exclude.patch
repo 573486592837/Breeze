@@ -1,0 +1,33 @@
+--- /dev/null
++++ b/tests/test_feat02_exclude.py
+@@ -0,0 +1,30 @@
++"""feat02 验收测试：list_files 的 exclude_pattern 参数。"""
++
++from pathlib import Path
++
++import pytest
++
++from breeze.config import settings
++from breeze.tools import registry
++
++
++@pytest.fixture
++def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
++    root = tmp_path.resolve()
++    monkeypatch.setattr(settings, "repo_root", root)
++    (root / "logs").mkdir()
++    (root / "src").mkdir()
++    (root / "logs" / "a.log").write_text("x", encoding="utf-8")
++    (root / "src" / "b.py").write_text("x", encoding="utf-8")
++    return root
++
++
++def test_exclude_pattern_skips_matching_files(repo: Path) -> None:
++    out = registry.execute("list_files", {"path": ".", "max_depth": 2, "exclude_pattern": "*.log"})
++    assert "logs/a.log" not in out
++    assert "src/b.py" in out
++
++
++def test_exclude_pattern_defaults_to_none(repo: Path) -> None:
++    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
++    assert "logs/a.log" in out

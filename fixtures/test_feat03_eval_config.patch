@@ -1,0 +1,37 @@
+--- /dev/null
++++ b/tests/test_feat03_eval_config.py
+@@ -0,0 +1,21 @@
++"""feat03 验收测试：[eval] 配置段与默认 repeat。"""
++
++import os
++
++from breeze.config import DEFAULTS, Settings
++
++
++def test_defaults_contain_eval_section() -> None:
++    assert DEFAULTS["eval"]["default_repeat"] == 1
++
++
++def test_settings_reads_eval_default_repeat(tmp_path, monkeypatch) -> None:
++    for key in list(os.environ):
++        if key.startswith("BREEZE_"):
++            monkeypatch.delenv(key, raising=False)
++    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
++    (tmp_path / "breeze.toml").write_text("[eval]\ndefault_repeat = 3\n", encoding="utf-8")
++
++    s = Settings(repo_root=tmp_path)
++
++    assert s.eval_default_repeat == 3
+--- a/tests/test_config.py
++++ b/tests/test_config.py
+@@ -36,8 +36,8 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+ 
+ 
+ def test_defaults_has_expected_sections() -> None:
+-    """DEFAULTS 应包含四个 section。"""
+-    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace"}
++    """DEFAULTS 应包含五个 section。"""
++    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "eval"}
+ 
+ 
+ def test_defaults_llm_fields() -> None:

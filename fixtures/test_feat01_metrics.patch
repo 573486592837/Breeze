@@ -1,0 +1,24 @@
+--- /dev/null
++++ b/tests/test_feat01_metrics.py
+@@ -0,0 +1,21 @@
++"""feat01 验收测试：metrics 模块的 Counter 类。"""
++
++from breeze.tools.metrics import Counter
++
++
++def test_counter_starts_at_zero() -> None:
++    assert Counter().value == 0
++
++
++def test_inc_returns_new_value() -> None:
++    c = Counter()
++    assert c.inc() == 1
++    assert c.inc(4) == 5
++    assert c.value == 5
++
++
++def test_reset_returns_to_zero() -> None:
++    c = Counter()
++    c.inc(3)
++    c.reset()
++    assert c.value == 0

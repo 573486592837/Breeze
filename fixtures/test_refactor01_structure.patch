@@ -1,0 +1,22 @@
+--- /dev/null
++++ b/tests/test_refactor01_structure.py
+@@ -0,0 +1,19 @@
++"""refactor01 验收测试：_check_options 已拆分为 git/rg 两个函数。"""
++
++import pytest
++
++from breeze.tools import shell
++
++
++def test_git_and_rg_checkers_exist() -> None:
++    assert callable(getattr(shell, "_check_git_options", None))
++    assert callable(getattr(shell, "_check_rg_options", None))
++
++
++def test_combined_checker_removed() -> None:
++    assert not hasattr(shell, "_check_options")
++
++
++def test_git_forbidden_option_still_rejected() -> None:
++    with pytest.raises(ValueError, match="forbidden"):
++        shell.run_shell("git diff --no-index a b", cwd=".")
