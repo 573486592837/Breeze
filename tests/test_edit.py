@@ -117,6 +117,25 @@ def test_apply_patch_not_found(repo: Path) -> None:
     assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
 
 
+def test_apply_patch_not_found_long_old_hint(repo: Path) -> None:
+    """old 超过 10 行且未匹配时，应提示改用 3-5 行小片段。"""
+    _make_file(repo, "foo.py", "".join(f"line{i}\n" for i in range(20)))
+
+    old = "".join(f"missing{i}\n" for i in range(12))
+    out = registry.execute("apply_patch", {"path": "foo.py", "old": old, "new": "x"})
+
+    assert "Try a smaller snippet" in out
+
+
+def test_apply_patch_not_found_short_old_no_hint(repo: Path) -> None:
+    """old 较短且未匹配时，不应出现小片段提示。"""
+    _make_file(repo, "foo.py", "x = 1\n")
+
+    out = registry.execute("apply_patch", {"path": "foo.py", "old": "y = 2", "new": "y = 3"})
+
+    assert "Try a smaller snippet" not in out
+
+
 def test_apply_patch_multiple_occurrences(repo: Path) -> None:
     """old 匹配多处应拒绝。"""
     _make_file(repo, "foo.py", "x = 1\ny = 1\n")
@@ -551,9 +570,7 @@ def test_run_tests_all_pass(python_repo: Path, fake_pytest: dict[str, Any]) -> N
     assert "failures" not in out
 
 
-def test_run_tests_with_failures(
-    python_repo: Path, fake_pytest: dict[str, Any]
-) -> None:
+def test_run_tests_with_failures(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """有失败时列出失败节点 ID 和断言详情。"""
     fake_pytest["returncode"] = 1
     fake_pytest["stdout"] = (
@@ -562,7 +579,7 @@ def test_run_tests_with_failures(
         "______________________ test_x ______________________\n"
         "\n"
         "    def test_x():\n"
-        "        with pytest.raises(ValueError, match=\"expected msg\"):\n"
+        '        with pytest.raises(ValueError, match="expected msg"):\n'
         ">           do_something()\n"
         "E           Failed: DID NOT RAISE <class 'ValueError'>\n"
         "\n"
@@ -587,16 +604,12 @@ def test_run_tests_with_failures(
     assert "expected msg" in out
 
 
-def test_run_tests_traceback_truncated(
-    python_repo: Path, fake_pytest: dict[str, Any]
-) -> None:
+def test_run_tests_traceback_truncated(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
     """FAILURES 段超过 3000 字节应截断。"""
     fake_pytest["returncode"] = 1
     big_traceback = "E   " + "x" * 5000
     fake_pytest["stdout"] = (
-        "================================== FAILURES ===================================\n"
-        + big_traceback
-        + "\n"
+        "================================== FAILURES ===================================\n" + big_traceback + "\n"
         "==================== short test summary info ====================\n"
         "FAILED tests/test_fs.py::test_x - failed\n"
     )
