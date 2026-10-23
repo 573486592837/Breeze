@@ -47,7 +47,8 @@ def _normalize_rg_line(line: str) -> str:
     name="grep",
     description=(
         "在仓库内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。"
-        "用于定位函数、变量、字符串等。"
+        "定位符号的首选工具：先用 grep 得到 文件:行号，再用 read_file 的 "
+        "start_line/end_line 精确读取该范围，比通读整个文件更省上下文。"
         "建议用 path='.' 和合适的 glob（如 '*.py'、'*.js'、'*.ts'、'*.go'）"
         "这比猜测子目录更可靠。"
     ),

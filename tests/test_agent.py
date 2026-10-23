@@ -368,7 +368,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "run_tests" in prompt
     assert "不要修改测试文件" in prompt
     assert "不得以方案、计划或建议结尾" in prompt
-    assert 'grep 搜索 "def <符号名>"' in prompt
+    assert "先 grep 搜索符号名" in prompt
     assert "禁止凭记忆编写 old" in prompt
 
 
