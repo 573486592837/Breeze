@@ -113,6 +113,7 @@ def test_apply_patch_not_found(repo: Path) -> None:
 
     assert out.startswith("Error:")
     assert "not found" in out
+    assert "re-read the target region" in out
     # 原文件不变
     assert (repo / "foo.py").read_text(encoding="utf-8") == "x = 1\n"
 
