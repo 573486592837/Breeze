@@ -75,6 +75,7 @@ Agent Loop
   +-- Context Manager
   |     +-- Sliding Window + Token Budget    (已实现)
   |     +-- Tool Result Compaction           (已实现)
+  |     +-- Summary Findings Extraction      (已实现，v1.0.0)
   |     +-- Repo Map                         (已实现，效果待验证)
   |     +-- Hybrid Retriever                 (计划中)
   |     +-- Structured State                 (计划中)
@@ -89,7 +90,7 @@ Agent Loop
   |     +-- repo_map                         (已实现，效果待验证)
   |     +-- run_shell                        (已实现，白名单)
   |     +-- apply_patch / git_diff / git_restore / run_tests  (已实现)
-  |     +-- create_file                      (计划中)
+  |     +-- create_file                      (已实现，v0.10.0)
   |
   +-- Worktree Isolation                     (已实现，用于评估)
   |
@@ -299,8 +300,8 @@ mt02（修复 `safe_path` 后，条件分支应结束）中模型多做了一步
 新建测试文件却写错导入并遗漏 fixture 定义，步数耗尽后在最终答案中
 **声称已修复但从未执行编辑**。压缩（prompt 稳定在 2.4K–4.5K）丢失了
 早期读到的导入风格与 fixture 位置，导致重复读取与错误重推导。
-这与 v0.9.0 的 fix05 遗忘是同一根因，是下一项改进
-（summary 提取"已确认事实/结论"）的直接依据。
+这与 v0.9.0 的 fix05 遗忘是同一根因，直接催生了 v1.0.0 的
+summary "Confirmed findings" 结论提取改进。
 
 ### 工具与评估修复
 
@@ -309,6 +310,77 @@ mt02（修复 `safe_path` 后，条件分支应结束）中模型多做了一步
 - `grep` 输出跨环境归一化（rg 存在与否路径格式一致）
 - `run_eval` 打印生效配置摘要；未写 `max_steps` 的任务回退到
   `settings.agent_max_steps`（此前硬编码 6），任务起始日志显示实际生效值
+
+---
+
+## Full Evaluation (v1.0.0)
+
+发布时共 35 个评估任务（20 短任务 + 15 长任务，长任务分属 5 类任务集）。
+模型 DeepSeek-V3.2，压缩开启（`max_recent_tokens=6000`）；long.yaml 取
+repeat=3 中位数，其余长任务集 repeat=1。原始数据见 `reports/v1_*.json`。
+
+### 结果总览
+
+| 任务集 | 类型 | repeat | 成功 | 平均 tokens | 平均 LLM 调用 |
+|---|---|---|---|---|---|
+| baseline.yaml | 短任务（解释/定位/测试/分析） | 3 | 未自动判定¹ | 15,170 | 3.5 |
+| long.yaml | bug 修复 | 3 | 5/5 | 54,997 | 12.4 |
+| feature.yaml | 功能添加 | 1 | 3/3 | 54,847 | 10.7 |
+| refactor.yaml | 结构重构 | 1 | 1/2 | 76,709 | 14.0 |
+| multiturn.yaml | 条件分支复合指令 | 1 | 2/2 | 67,321 | 17.5 |
+| external.yaml | 非 Python（Node.js） | 1 | 3/3 | 19,935 | 6.3 |
+
+¹ 短任务的正确性由人工评定，历史判定见 v0.5 基线一节。
+
+长任务合计成功率：**14/15（93.3%）**。
+
+### long.yaml 跨版本演进（同任务集、同模型）
+
+| 指标 | v0.8.0 无压缩 | v0.9.0 压缩 | v1.0.0 压缩+summary 结论 |
+|---|---|---|---|
+| Avg tokens | 83,676 | 57,554 | 54,997 |
+| Avg LLM calls | 14.8 | 14.2 | 12.4 |
+| 个体成功 | 11/15 | 14/15 | 15/15 |
+
+- 调用次数下降主要来自工具端提示（`read_file` 总行数与下一符号提示、
+  `run_tests` 状态行、`create_file`/`apply_patch` 职责划分、`grep` 路径归一化）。
+- 个体成功 14/15 → 15/15 的直接原因是压缩摘要新增 "Confirmed findings" 段
+  （B1）：fix05 从此前的 1/3 失败到 3/3 通过。
+
+### 长任务 per-task 明细
+
+| ID | 任务集 | Tokens | LLM 调用 | 结果 |
+|---|---|---|---|---|
+| fix01 | long | 48,915 | 13 | PASS |
+| fix02 | long | 52,669 | 13 | PASS |
+| fix03 | long | 63,622 | 13 | PASS |
+| fix04 | long | 37,410 | 10 | PASS |
+| fix05 | long | 72,367 | 13 | PASS |
+| feat01 | feature | 15,529 | 5 | PASS |
+| feat02 | feature | 69,727 | 13 | PASS |
+| feat03 | feature | 79,286 | 14 | PASS |
+| refactor01 | refactor | 76,466 | 14 | PASS |
+| refactor02 | refactor | 76,951 | 14 | FAIL |
+| mt01 | multiturn | 74,676 | 19 | PASS |
+| mt02 | multiturn | 59,965 | 16 | PASS |
+| ext01 | external | 15,129 | 5 | PASS |
+| ext02 | external | 14,704 | 5 | PASS |
+| ext03 | external | 29,972 | 9 | PASS |
+
+（fix01-05 的 tokens 为 3 次运行的中位数。）
+
+### 遗留 Known Limitations
+
+1. **重构类"报告而不执行"**：refactor02 的 13 次读取已完整覆盖两处原子写
+   逻辑与验收测试要求，但模型在第 14 步输出了纯文字方案总结并结束，
+   未调用 `apply_patch`。与 v0.9.0 fix05 run2、v0.10.0 mt02 同属一个失败
+   家族（决策边界选择"报告"而非"执行"）；prompt 规则 9/10 与摘要结论段
+   消除了其中两类，纯重构指令下仍会发生（本板 1/15）。
+2. **重复读取**：refactor02 压缩触发后重读了 step 3-6 已读的相同区段——
+   当被保留的"结论"多为疑问式规划文本（"现在我需要查看 X"）时，
+   摘要仍不足以阻止循环，是下一步（Structured State）的动机。
+3. **token 方差大**：单轮长任务 tokens std 常见 ±30%，跨版本结论须以
+   repeat=3 中位数与成功率为准，单跑数字仅作参考。
 
 ---
 
@@ -327,7 +399,8 @@ mt02（修复 `safe_path` 后，条件分支应结束）中模型多做了一步
 | v0.8.0 | 长任务评估（5 个 bug 修复任务） | 已完成 |
 | v0.9.0 | 长任务压缩对比、冗余调用优化 | 已完成 |
 | v0.10.0 | 任务集扩展（feature/refactor/multiturn/external）、create_file、评估守卫与配置修复 | 已完成 |
-| v1.0.0 | 压缩 summary 增强、测试并行化、全量评估与文档收尾 | 计划中 |
+| v1.0.0 | 压缩 summary 增强、全量评估、README/CONTRIBUTING 文档收尾 | 已完成 |
+| v1.1.0 | Small Model 路由、Structured State、Hybrid Retriever | 计划中 |
 
 ---
 
@@ -430,9 +503,6 @@ python scripts/eval.py --no-llm
 
 # 生成报告
 python scripts/report.py --input reports/long_baseline.json --output reports/long_baseline.md
-
-# 对比两份报告
-python scripts/compare.py --baseline reports/long_baseline.json --current reports/long_compressed.json
 ```
 
 ---
@@ -455,12 +525,11 @@ breeze/
 │       ├── fs.py
 │       ├── search.py
 │       ├── shell.py
-│       ├── edit.py       # apply_patch, git_diff, git_restore, run_tests
+│       ├── edit.py       # apply_patch, create_file, git_diff, git_restore, run_tests
 │       └── repo_map.py
 ├── scripts/
 │   ├── eval.py
-│   ├── report.py
-│   └── compare.py
+│   └── report.py
 ├── tasks/
 │   ├── baseline.yaml     # 20 个短任务
 │   ├── long.yaml         # 5 个 bug 修复任务
