@@ -251,7 +251,8 @@ def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
     description=(
         "读取文件内容，带行号。"
         "对于已知目标位置的文件，用 start_line/end_line 读取精确范围，"
-        "避免将整个文件加载到上下文。"
+        "避免将整个文件加载到上下文；目标位置未知时，先用 grep 搜索符号名"
+        "获取行号，再按范围读取。"
         "例如：read_file('src/foo.py', start_line=237, end_line=300)。"
         "不传 start_line/end_line 时读取全文件。"
     ),
