@@ -367,6 +367,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "git_restore" in prompt
     assert "run_tests" in prompt
     assert "不要修改测试文件" in prompt
+    assert "不得以方案、计划或建议结尾" in prompt
 
 
 def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
