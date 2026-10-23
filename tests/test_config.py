@@ -81,6 +81,18 @@ def test_defaults_context_summary_findings() -> None:
     assert ctx["summary_max_findings"] == 12
 
 
+def test_toml_example_covers_all_defaults() -> None:
+    """breeze.toml.example 的字段须与 DEFAULTS 完全一致，防止文档漂移。"""
+    import tomllib
+
+    example = Path(__file__).resolve().parents[1] / "breeze.toml.example"
+    with example.open("rb") as f:
+        data = tomllib.load(f)
+    assert set(data.keys()) == set(DEFAULTS.keys())
+    for section, values in DEFAULTS.items():
+        assert set(data[section].keys()) == set(values.keys()), section
+
+
 def test_load_defaults_only(tmp_path: Path) -> None:
     """无配置文件、无环境变量时返回 DEFAULTS 的拷贝。"""
     cfg = load_config(tmp_path)

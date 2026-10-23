@@ -34,6 +34,10 @@ min_recent_pairs = 1
 max_recent_pairs = 3
 # Characters of tool arguments shown in compressed summaries.
 arguments_preview = 60
+# Characters kept per assistant conclusion inside compressed summaries.
+summary_findings_preview = 240
+# Maximum number of conclusions retained in a summary (most recent kept).
+summary_max_findings = 12
 # Tool results above this size are compacted to head + tail.
 tool_result_max_bytes = 16000
 tool_result_head_bytes = 8000
