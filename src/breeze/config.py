@@ -44,6 +44,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "arguments_preview": 60,
         "summary_findings_preview": 240,
         "summary_max_findings": 12,
+        "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
         "tool_result_head_bytes": 8000,
         "tool_result_tail_bytes": 8000,
@@ -188,6 +189,7 @@ class Settings:
         self.context_arguments_preview: int = int(cfg["context"]["arguments_preview"])
         self.context_summary_findings_preview: int = int(cfg["context"]["summary_findings_preview"])
         self.context_summary_max_findings: int = int(cfg["context"]["summary_max_findings"])
+        self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])
         self.context_tool_result_head_bytes: int = int(cfg["context"]["tool_result_head_bytes"])
         self.context_tool_result_tail_bytes: int = int(cfg["context"]["tool_result_tail_bytes"])

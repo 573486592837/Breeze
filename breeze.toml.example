@@ -38,6 +38,9 @@ arguments_preview = 60
 summary_findings_preview = 240
 # Maximum number of conclusions retained in a summary (most recent kept).
 summary_max_findings = 12
+# Maximum entries per section in the structured session-state block
+# (symbols, reads, edits) injected with the summary on compression.
+state_max_entries = 8
 # Tool results above this size are compacted to head + tail.
 tool_result_max_bytes = 16000
 tool_result_head_bytes = 8000

@@ -11,6 +11,7 @@ from typing import Any
 from breeze.config import settings
 from breeze.context import ContextManager
 from breeze.llm import LLMClient, LLMResponse
+from breeze.state import SessionState
 from breeze.tools import registry
 from breeze.trace import RunTrace
 
@@ -99,6 +100,7 @@ class Agent:
         )
         self.system_prompt = system_prompt
         self.context = context or ContextManager()
+        self.state = SessionState()
 
     def run(self, question: str) -> str:
         """执行 Agent，返回最终答案。
@@ -138,7 +140,7 @@ class Agent:
                 )
 
             tools = registry.schemas() if remaining > 1 else []
-            llm_messages = self.context.build(messages)
+            llm_messages = self.context.build(messages, state=self.state)
 
             try:
                 resp, latency_ms = self._call_llm(llm_messages, tools)
@@ -287,6 +289,8 @@ class Agent:
             latency_ms=latency_ms,
             error=error,
         )
+
+        self.state.update(tc.name, arguments, result, step)
 
         messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
