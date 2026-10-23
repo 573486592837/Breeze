@@ -236,12 +236,12 @@ def test_summarize_counts() -> None:
 
 
 def test_build_report_structure() -> None:
-    """报告应包含所有顶层字段。"""
-    metadata = {"version": 1, "repo": "test", "model": "m"}
-    report = build_report(metadata, [])
+    """报告应包含所有顶层字段，model 取实际使用的模型。"""
+    metadata = {"version": 1, "repo": "test", "model": "yaml-model"}
+    report = build_report(metadata, [], "actual-model")
     assert report["version"] == 1
     assert report["repo"] == "test"
-    assert report["model"] == "m"
+    assert report["model"] == "actual-model"
     assert "generated_at" in report
     assert "summary" in report
     assert "results" in report
@@ -288,6 +288,7 @@ def test_run_eval_writes_json(
 
     loaded = json.loads(output.read_text(encoding="utf-8"))
     assert loaded["repo"] == "test-repo"
+    assert loaded["model"] == "fake-model"
     assert len(loaded["results"]) == 2
     assert loaded["summary"]["total_tasks"] == 2
     assert loaded["summary"]["ungraded"] == 2

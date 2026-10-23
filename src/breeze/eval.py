@@ -102,7 +102,7 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
         path: YAML 文件路径。
 
     Returns:
-        (metadata, tasks)。metadata 包含 version、repo、model 等顶层字段。
+        (metadata, tasks)。metadata 包含 version、repo 等顶层字段。
 
     Raises:
         ValueError: 文件格式非法、字段缺失或 id 重复。
@@ -623,12 +623,14 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
 def build_report(
     metadata: dict[str, Any],
     results: list[TaskResult],
+    model: str,
 ) -> dict[str, Any]:
     """组装报告字典。
 
     Args:
         metadata: 任务集顶层元数据。
         results: 所有任务结果。
+        model: 实际使用的模型名。
 
     Returns:
         可直接序列化为 JSON 的报告字典。
@@ -636,7 +638,7 @@ def build_report(
     return {
         "version": metadata.get("version", 1),
         "repo": metadata.get("repo", "breeze"),
-        "model": metadata.get("model", "unknown"),
+        "model": model,
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "summary": summarize(results),
         "results": [asdict(r) for r in results],
@@ -748,7 +750,7 @@ def run_eval(
         llm = factory()
 
         log("[config] effective settings:")
-        log(f"  model={model or settings.model}")
+        log(f"  model={llm.model}")
         log(f"  context.enable={settings.context_enable}")
         log(f"  context.max_recent_tokens={settings.context_max_recent_tokens}")
         log(f"  agent.max_steps(default)={settings.agent_max_steps}")
@@ -783,7 +785,7 @@ def run_eval(
             if result.tokens_samples is not None:
                 log(f"  samples={result.tokens_samples} std={result.tokens_std}")
 
-        report = build_report(metadata, results)
+        report = build_report(metadata, results, llm.model)
         _merge_manual_grades(report, output_path)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
