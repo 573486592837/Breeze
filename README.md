@@ -317,7 +317,8 @@ summary "Confirmed findings" 结论提取改进。
 
 发布时共 35 个评估任务（20 短任务 + 15 长任务，长任务分属 5 类任务集）。
 模型 DeepSeek-V3.2，压缩开启（`max_recent_tokens=6000`）；long.yaml 取
-repeat=3 中位数，其余长任务集 repeat=1。原始数据见 `reports/v1_*.json`。
+repeat=3 中位数，其余长任务集 repeat=1。原始数据已入库：`reports/v1_*.json`，
+Markdown 汇总见 `reports/v1_*.md`。
 
 ### 结果总览
 
@@ -486,14 +487,15 @@ Breeze 从分层配置系统读取运行参数。
 ## 评估
 
 ```bash
-# 短任务基线
+# 冒烟检查（短任务，仅快速验证链路；自 v1.0.0 起不计入发布回归）
 python scripts/eval.py --tasks tasks/baseline.yaml
 
-# 短任务带重复
-python scripts/eval.py --tasks tasks/baseline.yaml --repeat 3
-
-# 长任务（需要 git 仓库）
+# 发布回归（5 个长任务集）
 python scripts/eval.py --tasks tasks/long.yaml --repeat 3
+python scripts/eval.py --tasks tasks/feature.yaml
+python scripts/eval.py --tasks tasks/refactor.yaml
+python scripts/eval.py --tasks tasks/multiturn.yaml
+python scripts/eval.py --tasks tasks/external.yaml
 
 # 单个任务
 python scripts/eval.py --tasks tasks/long.yaml --task fix01
@@ -540,7 +542,7 @@ breeze/
 ├── fixtures/             # bug 注入与验收测试 patch
 ├── samples/node-app/     # 非 Python 评估样例与检查脚本
 ├── tests/
-├── reports/
+├── reports/              # 评估报告（发布版本入库，其余 gitignore）
 ├── traces/
 ├── breeze.toml.example
 └── README.md

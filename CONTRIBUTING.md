@@ -70,6 +70,15 @@ python -m ruff format src tests
 - 评分只认 `eval_command` 退出码；断言不要依赖 `rg` 等可选外部工具，
   `git` 与 `pytest` 可视为必然存在，Node 仅 external 集依赖。
 
+## 版本发布回归
+
+- 回归范围为 5 个长任务集：`long.yaml`（repeat=3 取中位数）、
+  `feature.yaml`、`refactor.yaml`、`multiturn.yaml`、`external.yaml`。
+- `baseline.yaml` 短任务自 v1.0.0 起不计入发布回归，仅保留为冒烟检查
+  （改完 agent 循环后快速验证链路是否工作）。
+- 发布报告的 JSON 与 Markdown 均入库：用 `scripts/report.py` 生成 md，
+  新 JSON 需在 `.gitignore` 中加白名单例外（`!reports/vX_*.json`）。
+
 ## Trace 与报告
 
 - 每次运行写 JSONL trace（`traces/`），事件类型：`run_start`、`llm_call`、
