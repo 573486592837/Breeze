@@ -303,7 +303,9 @@ def apply_patch(path: str, old: str, new: str) -> str:
         return (
             f"Error: old text not found in {path}\n"
             f"Searched for:\n---\n{old}\n---\n"
-            f"Hint: use read_file to verify the current content.{hint}"
+            f"Hint: re-read the target region with read_file now and copy old "
+            f"verbatim from that output before retrying; do not rewrite old from "
+            f"memory.{hint}"
         )
     if count > 1:
         return f"Error: old text matches {count} locations in {path}, add more context to make it unique"
