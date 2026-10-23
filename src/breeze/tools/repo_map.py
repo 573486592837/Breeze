@@ -18,7 +18,8 @@ from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
 DEFAULT_MAX_FILES = 200
-DEFAULT_MAX_BYTES = 20_000
+# 与上下文层的工具结果预算对齐，兜底压缩不应触发。
+DEFAULT_MAX_BYTES = settings.context_tool_result_max_bytes
 PY_EXTENSIONS = {".py"}
 
 

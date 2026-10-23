@@ -11,11 +11,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
 DEFAULT_TIMEOUT_SECONDS = 60
-DEFAULT_MAX_BYTES = 20_000
+# stdout 与 stderr 各按此上限截断，两者合计不超过上下文工具结果预算，
+# 保证 _compact_tool_result 兜底不被触发。
+DEFAULT_MAX_BYTES = settings.context_tool_result_max_bytes // 2
 
 ALLOWED_EXECUTABLES: frozenset[str] = frozenset(
     {
@@ -146,7 +149,7 @@ def _split_command(command: str) -> list[str]:
             },
             "max_bytes": {
                 "type": "integer",
-                "description": "stdout/stderr 最大字节数。默认为 20000。",
+                "description": f"stdout 与 stderr 各自的字节上限。默认为 {DEFAULT_MAX_BYTES}（工具结果预算的一半）。",
                 "default": DEFAULT_MAX_BYTES,
             },
         },

@@ -275,3 +275,10 @@ def test_list_files_directories_still_listed(repo: Path) -> None:
 
     assert "sub/" in out
     assert "more files" in out
+
+
+def test_read_file_default_cap_matches_context_budget() -> None:
+    """read_file 默认上限与工具结果预算对齐，兜底压缩不应触发。"""
+    from breeze.tools.fs import DEFAULT_MAX_BYTES
+
+    assert settings.context_tool_result_max_bytes == DEFAULT_MAX_BYTES

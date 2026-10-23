@@ -17,6 +17,7 @@ from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
 DEFAULT_MAX_RESULTS = 100
+MAX_LINE_CHARS = 200
 RG_TIMEOUT_SECONDS = 30
 
 _RG_LINE_RE = re.compile(r"^(.*?):(\d+):(.*)$")
@@ -113,8 +114,24 @@ def grep(
     if not lines:
         return "No matches found."
 
-    result = "\n".join(lines)
-    if len(lines) >= max_results:
+    budget = settings.context_tool_result_max_bytes
+    out: list[str] = []
+    used = 0
+    dropped = 0
+    for line in lines:
+        if len(line) > MAX_LINE_CHARS:
+            line = line[:MAX_LINE_CHARS] + " …[line truncated]"
+        cost = len(line.encode("utf-8")) + 1
+        if used + cost > budget:
+            dropped = len(lines) - len(out)
+            break
+        out.append(line)
+        used += cost
+
+    result = "\n".join(out)
+    if dropped:
+        result += f"\n... (dropped {dropped} lines: output budget {budget} bytes reached)"
+    elif len(lines) >= max_results:
         result += f"\n... (max results reached: {max_results})"
     return result
 
