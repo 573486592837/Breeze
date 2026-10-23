@@ -157,3 +157,25 @@ def test_grep_python_fallback_glob(
     out = registry.execute("grep", {"pattern": "foo", "path": ".", "glob": "*.py", "max_results": 20})
     assert "README.md" not in out
     assert "src/a.py" in out
+
+
+def test_grep_caps_long_lines(repo: Path) -> None:
+    """超长匹配行应被截断并标记。"""
+    (repo / "long.txt").write_text("x" * 1000, encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "xxx", "path": ".", "glob": "*.txt"})
+
+    assert "…[line truncated]" in out
+    max_len = max(len(line) for line in out.splitlines())
+    assert max_len <= 200 + len(" …[line truncated]")
+
+
+def test_grep_respects_output_budget(repo: Path) -> None:
+    """累计输出超过工具结果预算时应丢弃剩余行。"""
+    content = "\n".join(f"match {'y' * 180}{i}" for i in range(300))
+    (repo / "many.txt").write_text(content, encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "match", "path": ".", "glob": "*.txt"})
+
+    assert "output budget" in out
+    assert len(out.encode("utf-8")) <= settings.context_tool_result_max_bytes + 128

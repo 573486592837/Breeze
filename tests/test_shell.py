@@ -428,3 +428,10 @@ def test_run_shell_cat_hint(repo: Path) -> None:
     """cat 被拒时应提示不支持文件创建。"""
     with pytest.raises(ValueError, match="file creation"):
         registry.execute("run_shell", {"command": "cat file.txt"})
+
+
+def test_run_shell_default_cap_is_half_budget() -> None:
+    """run_shell 双流各自截断，合计不超过工具结果预算。"""
+    from breeze.tools.shell import DEFAULT_MAX_BYTES
+
+    assert settings.context_tool_result_max_bytes // 2 == DEFAULT_MAX_BYTES

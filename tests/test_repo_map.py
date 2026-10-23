@@ -133,3 +133,10 @@ def test_repo_map_respects_gitignore(repo: Path) -> None:
     out = registry.execute("repo_map", {"path": "."})
     assert "auto.py" not in out
     assert "main.py" in out
+
+
+def test_repo_map_default_cap_matches_context_budget() -> None:
+    """repo_map 默认上限与工具结果预算对齐。"""
+    from breeze.tools.repo_map import DEFAULT_MAX_BYTES
+
+    assert settings.context_tool_result_max_bytes == DEFAULT_MAX_BYTES

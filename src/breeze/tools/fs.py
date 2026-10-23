@@ -45,7 +45,9 @@ IGNORED_DIRS: frozenset[str] = frozenset(
 
 DEFAULT_MAX_ENTRIES = 200
 DEFAULT_MAX_FILES_PER_DIR = 20
-DEFAULT_MAX_BYTES = 200_000
+# 与上下文层的工具结果预算对齐：输出上限由工具自身落实，
+# ContextManager._compact_tool_result 只作为意外情况的兜底。
+DEFAULT_MAX_BYTES = settings.context_tool_result_max_bytes
 
 
 def load_gitignore_patterns(root: Path) -> list[str]:
@@ -274,7 +276,7 @@ def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
             },
             "max_bytes": {
                 "type": "integer",
-                "description": "返回内容的字节上限。",
+                "description": "返回内容的字节上限。默认等于 [context] tool_result_max_bytes。",
                 "default": DEFAULT_MAX_BYTES,
             },
         },
