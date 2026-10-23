@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/report.py
-    python scripts/report.py --input reports/baseline_v1.json --output reports/baseline_v1.md
+    python scripts/report.py --input reports/eval_results.json --output reports/eval_results.md
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import json
 import sys
 from pathlib import Path
 
-DEFAULT_INPUT = Path("reports/baseline_v1.json")
-DEFAULT_OUTPUT = Path("reports/baseline_v1.md")
+DEFAULT_INPUT = Path("reports/eval_results.json")
+DEFAULT_OUTPUT = Path("reports/eval_results.md")
 
 
 def _parse_args() -> argparse.Namespace:

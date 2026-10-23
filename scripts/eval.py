@@ -51,8 +51,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("reports/baseline_v1.json"),
-        help="output JSON (default: reports/baseline_v1.json)",
+        default=Path("reports/eval_results.json"),
+        help="output JSON (default: reports/eval_results.json)",
     )
     parser.add_argument(
         "--repo",

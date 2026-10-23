@@ -113,7 +113,7 @@ v0.5.0 的朴素 ReAct Agent 在 20 个代码任务上的基线表现。
 | Avg duration | 36.2s |
 | Errors | 1 |
 
-任务集覆盖四类：解释（explain）、定位（locate）、测试（test）、分析（analyze），每类 5 个。任务定义见 [`tasks/baseline.yaml`](tasks/baseline.yaml)，完整数据见 [`reports/baseline_v1.md`](reports/baseline_v1.md)。
+任务集覆盖四类：解释（explain）、定位（locate）、测试（test）、分析（analyze），每类 5 个。任务定义见 [`tasks/baseline.yaml`](tasks/baseline.yaml)，完整数据见 [`reports/v0.5.0_baseline.md`](reports/v0.5.0_baseline.md)。
 
 ### 失败案例分析
 
@@ -150,7 +150,7 @@ v0.6.0 引入三项上下文优化：
 | Avg LLM calls | 3.5 | 3.95 | +12.9% |
 | Avg tool calls | 2.5 | 2.95 | +18.0% |
 
-完整对比见 [`reports/context_v1.md`](reports/context_v1.md)。
+完整对比见 [`reports/v0.6.0_context.md`](reports/v0.6.0_context.md)。
 
 **结论：**
 
