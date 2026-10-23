@@ -14,7 +14,6 @@
 
 version: 1
 repo: breeze
-model: openai/Pro/deepseek-ai/DeepSeek-V3.2
 
 tasks:
   # ─── explain：解释类 ───
