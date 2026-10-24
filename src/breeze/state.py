@@ -42,6 +42,7 @@ class SessionState:
         self.max_entries = max_entries or settings.context_state_max_entries
         self.symbols: dict[str, str] = {}
         self.reads: dict[str, str] = {}
+        self.read_counts: dict[tuple[str, Any, Any], int] = {}
         self.edits: dict[str, str] = {}
         self.tests: str = ""
 
@@ -78,6 +79,8 @@ class SessionState:
         end = arguments.get("end_line")
         total_match = _TOTAL_LINES_RE.search(result)
         total = total_match.group(1) if total_match else "?"
+
+        self.read_counts[(path, start, end)] = self.read_counts.get((path, start, end), 0) + 1
 
         if start and end:  # noqa: SIM108
             desc = f"lines {start}-{end} of {total} (step {step})"
@@ -128,6 +131,17 @@ class SessionState:
             items = list(self.edits.items())[-self.max_entries :]
             body = "\n".join(f"- {path}: {desc}" for path, desc in items)
             sections.append(f"Edits:\n{body}")
+
+        rereads = [(key, count) for key, count in self.read_counts.items() if count >= 2]
+        if rereads:
+            body_lines = []
+            for (path, start, end), count in rereads[-self.max_entries :]:
+                rng = f"lines {start}-{end}" if start and end else "full file"
+                body_lines.append(
+                    f"- {path} {rng} read {count} times: earlier copies were "
+                    f"compressed away. Apply the pending edit right after this read."
+                )
+            sections.append("Repeated reads (context amnesia signal):\n" + "\n".join(body_lines))
 
         if self.tests:
             sections.append(f"Tests: {self.tests}")

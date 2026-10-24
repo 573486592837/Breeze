@@ -580,3 +580,54 @@ def test_agent_injects_state_block_on_compression(
     assert answer == "done"
     final_messages = llm.calls[2]["messages"]
     assert any("[Session state" in str(m.get("content", "")) for m in final_messages)
+
+
+def test_agent_halfway_nudge_when_no_edits(trace: RunTrace, fake_tool: None) -> None:
+    """步数过半仍未编辑时应注入收敛提醒。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "a"}),
+            _tool_call("fake_echo", {"text": "b"}),
+            _tool_call("fake_echo", {"text": "c"}),
+            _tool_call("fake_echo", {"text": "d"}),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=8)
+    assert agent.run("explore") == "done"
+
+    def _flatten(call: dict[str, Any]) -> str:
+        return " ".join(str(m.get("content", "")) for m in call["messages"])
+
+    assert not any("一半的步数" in _flatten(call) for call in llm.calls[:4])
+    assert any("一半的步数" in _flatten(call) for call in llm.calls[4:])
+
+
+def test_agent_no_halfway_nudge_after_edit(trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """已有编辑动作时不注入半程提醒。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+    (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    responses = [
+        _tool_call(
+            "apply_patch",
+            {"path": "a.py", "old": "x = 1", "new": "x = 2"},
+            call_id="edit",
+        ),
+    ]
+    # 填充到 step==4 之前，确保越过半程点时 edit_count 已非零。
+    for i in range(3):
+        responses.append(_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}"))
+    responses.append(_text("done"))
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=8)
+    assert agent.run("edit a.py") == "done"
+
+    def _flatten(call: dict[str, Any]) -> str:
+        return " ".join(str(m.get("content", "")) for m in call["messages"])
+
+    assert not any("一半的步数" in _flatten(call) for call in llm.calls)

@@ -121,7 +121,18 @@ class Agent:
         for step in range(self.max_steps):
             remaining = self.max_steps - step
 
-            if remaining == 2:
+            if self.max_steps >= 8 and step == self.max_steps // 2 and edit_count == 0:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你已经用完一半的步数但还没有执行任何编辑。调研必须收敛："
+                            "从现在起，每读完一个待改区域就立即 apply_patch 并运行验证，"
+                            "不要再扩大阅读范围。"
+                        ),
+                    }
+                )
+            elif remaining == 2:
                 messages.append(
                     {
                         "role": "user",

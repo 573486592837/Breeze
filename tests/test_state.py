@@ -109,3 +109,24 @@ def test_render_caps_entries_per_section() -> None:
     assert "f0.py" not in block
     assert "f1.py" not in block
     assert "f2.py" not in block
+
+
+def test_repeated_read_flagged_in_render() -> None:
+    """同一范围第二次读取应在状态块中标注致忆信号。"""
+    st = _state()
+    result = "292 | def f():\n--- (file has 421 lines total) ---"
+    st.update("read_file", {"path": "s.py", "start_line": 292, "end_line": 315}, result, 8)
+    st.update("read_file", {"path": "s.py", "start_line": 292, "end_line": 315}, result, 13)
+
+    assert st.read_counts[("s.py", 292, 315)] == 2
+    block = st.render()
+    assert "Repeated reads" in block
+    assert "read 2 times" in block
+
+
+def test_single_read_not_flagged() -> None:
+    """只读过一次的不应出现重复警示。"""
+    st = _state()
+    st.update("read_file", {"path": "s.py", "start_line": 1, "end_line": 5}, "1 | x", 0)
+
+    assert "Repeated reads" not in st.render()
