@@ -664,3 +664,47 @@ def test_default_tool_result_thresholds_are_generous() -> None:
     cfg = ContextConfig()
     assert cfg.tool_result_max_bytes >= 16_000
     assert cfg.tool_result_head_bytes >= 8_000
+
+
+def test_summary_injects_state_block() -> None:
+    """压缩发生时，摘要应包含结构化状态块。"""
+    from breeze.state import SessionState
+
+    st = SessionState(max_entries=8)
+    st.update("grep", {}, "src/a.py:12:def target():", 1)
+
+    cm = ContextManager(ContextConfig(max_recent_pairs=1))
+    messages = _make_history(3)
+    result = cm.build(messages, state=st)
+
+    summary = result[2]["content"]
+    assert "[Session state" in summary
+    assert "target: src/a.py:12" in summary
+    assert "Symbols located:" in summary
+
+
+def test_summary_state_precedes_findings() -> None:
+    """状态块应位于摘要前部（结论段之前）。"""
+    from breeze.state import SessionState
+
+    st = SessionState(max_entries=8)
+    st.update("grep", {}, "src/a.py:12:def target():", 1)
+
+    cm = ContextManager(ContextConfig(max_recent_pairs=1))
+    result = cm.build(_make_history(3), state=st)
+
+    summary = result[2]["content"]
+    assert summary.index("Session state") < summary.index("Confirmed findings")
+
+
+def test_no_state_injection_without_compression() -> None:
+    """未触发压缩时不注入状态块（原文仍在窗口内）。"""
+    from breeze.state import SessionState
+
+    st = SessionState(max_entries=8)
+    st.update("grep", {}, "src/a.py:12:def target():", 1)
+
+    cm = ContextManager(ContextConfig(max_recent_pairs=3))
+    result = cm.build(_make_history(2), state=st)
+
+    assert not any("[Session state" in str(m.get("content", "")) for m in result)

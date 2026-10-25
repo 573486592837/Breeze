@@ -11,6 +11,7 @@ from typing import Any
 from breeze.config import settings
 from breeze.context import ContextManager
 from breeze.llm import LLMClient, LLMResponse
+from breeze.state import SessionState
 from breeze.tools import registry
 from breeze.trace import RunTrace
 
@@ -99,6 +100,7 @@ class Agent:
         )
         self.system_prompt = system_prompt
         self.context = context or ContextManager()
+        self.state = SessionState()
 
     def run(self, question: str) -> str:
         """执行 Agent，返回最终答案。
@@ -119,7 +121,18 @@ class Agent:
         for step in range(self.max_steps):
             remaining = self.max_steps - step
 
-            if remaining == 2:
+            if self.max_steps >= 8 and step == self.max_steps // 2 and edit_count == 0:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "你已经用完一半的步数但还没有执行任何编辑。调研必须收敛："
+                            "从现在起，每读完一个待改区域就立即 apply_patch 并运行验证，"
+                            "不要再扩大阅读范围。"
+                        ),
+                    }
+                )
+            elif remaining == 2:
                 messages.append(
                     {
                         "role": "user",
@@ -138,7 +151,7 @@ class Agent:
                 )
 
             tools = registry.schemas() if remaining > 1 else []
-            llm_messages = self.context.build(messages)
+            llm_messages = self.context.build(messages, state=self.state)
 
             try:
                 resp, latency_ms = self._call_llm(llm_messages, tools)
@@ -287,6 +300,8 @@ class Agent:
             latency_ms=latency_ms,
             error=error,
         )
+
+        self.state.update(tc.name, arguments, result, step)
 
         messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 

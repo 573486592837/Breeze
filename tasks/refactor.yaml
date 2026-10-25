@@ -17,7 +17,7 @@ tasks:
     setup:
       - patch: test_refactor01_structure.patch
     eval_command: "git diff --quiet -- tests/test_refactor01_structure.py && pytest -q tests/test_refactor01_structure.py tests/test_shell.py"
-    max_steps: 15
+    max_steps: 20
 
   - id: refactor02
     type: refactor

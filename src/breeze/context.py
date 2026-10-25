@@ -95,11 +95,17 @@ class ContextManager:
         """
         self.config = config or ContextConfig()
 
-    def build(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def build(
+        self,
+        messages: list[dict[str, Any]],
+        state: Any | None = None,
+    ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
         Args:
             messages: 完整历史。
+            state: SessionState 实例。压缩发生时其状态块随摘要注入；
+                None 或未发生压缩时不注入。
 
         Returns:
             压缩后的消息列表。轮数不超过阈值时返回原列表的浅拷贝。
@@ -121,7 +127,7 @@ class ContextManager:
             return result
 
         old_rounds = rounds[: len(rounds) - len(kept_rounds)]
-        summary = self._render_summary(old_rounds)
+        summary = self._render_summary(old_rounds, state=state)
 
         result: list[dict[str, Any]] = list(head)
         result.append(summary)
@@ -212,20 +218,31 @@ class ContextManager:
             rounds.append(current)
         return rounds
 
-    def _render_summary(self, old_rounds: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    def _render_summary(
+        self,
+        old_rounds: list[list[dict[str, Any]]],
+        state: Any | None = None,
+    ) -> dict[str, Any]:
         """把旧轮渲染成一条 user 摘要消息。
 
-        摘要包含两部分：assistant 消息中的推理结论（Confirmed
-        findings）和工具调用时间线。保留结论是为了避免压缩在关键
-        决策点触发后，模型丢失已推导的事实而重新推导或幻觉。
+        摘要包含三部分：结构化会话状态（若提供）、assistant 消息中的
+        推理结论（Confirmed findings）和工具调用时间线。保留结论是为了
+        避免压缩在关键决策点触发后，模型丢失已推导的事实而重新推导或幻觉。
 
         Args:
             old_rounds: 被压缩的轮列表。
+            state: SessionState 实例，其渲染块置于摘要顶部。
 
         Returns:
             一条 role=user 的消息字典。
         """
         lines: list[str] = [f"[Compressed history: {len(old_rounds)} earlier rounds]"]
+
+        if state is not None:
+            block = state.render()
+            if block:
+                lines.append("")
+                lines.append(block)
 
         findings: list[str] = []
         actions: list[str] = []

@@ -79,6 +79,7 @@ def test_defaults_context_summary_findings() -> None:
     ctx = DEFAULTS["context"]
     assert ctx["summary_findings_preview"] == 240
     assert ctx["summary_max_findings"] == 12
+    assert ctx["state_max_entries"] == 8
 
 
 def test_toml_example_covers_all_defaults() -> None:
