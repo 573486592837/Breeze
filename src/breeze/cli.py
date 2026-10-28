@@ -18,6 +18,7 @@ from breeze.agent import Agent
 from breeze.chat import run_chat
 from breeze.config import settings
 from breeze.llm import LLMClient
+from breeze.session import SessionStore
 from breeze.trace import RunTrace
 
 app = typer.Typer(
@@ -152,8 +153,29 @@ def chat(
         file_okay=False,
         dir_okay=True,
     ),
+    resume: str = typer.Option(
+        None,
+        "--resume",
+        help="continue a saved session by id, or 'latest' for the most recent one",
+    ),
+    session_dir: Path = typer.Option(
+        None,
+        "--session-dir",
+        help="session storage directory, ~/.breeze/sessions by default",
+        file_okay=False,
+        dir_okay=True,
+    ),
+    list_sessions: bool = typer.Option(
+        False,
+        "--list",
+        help="list saved sessions and exit",
+    ),
 ) -> None:
     """进入交互式多回合会话，输入 /exit 退出。"""
+    if list_sessions:
+        _print_sessions(session_dir)
+        return
+
     repo_root = (repo or Path.cwd()).resolve()
     if not repo_root.is_dir():
         error_console.print(f"[red]invalid repository directory: {repo_root}[/red]")
@@ -169,13 +191,33 @@ def chat(
             error_console.print(f"[red]LLM configuration error: {exc}[/red]")
             raise typer.Exit(code=1) from exc
 
-        console.print(f"[dim]model: {llm.model} | repo: {repo_root} | /help 查看命令[/dim]")
+        try:
+            if resume:
+                session = SessionStore.resume(resume, session_dir)
+            else:
+                session = SessionStore(session_dir, repo_root=repo_root, model=llm.model)
+        except FileNotFoundError as exc:
+            error_console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        console.print(
+            f"[dim]model: {llm.model} | repo: {repo_root} | session: {session.session_id} | /help 查看命令[/dim]"
+        )
+        if resume:
+            info = session.info()
+            if info.repo_root and Path(info.repo_root) != repo_root:
+                console.print(
+                    f"[yellow]提醒：该会话原先在 {info.repo_root} 下运行，"
+                    f"当前仓库是 {repo_root}，历史索引可能指向已不存在的文件。[/yellow]"
+                )
 
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(llm=llm, trace=trace, max_steps=max_steps),
             trace_factory=lambda: RunTrace(trace_dir=trace_dir),
             input_fn=input,
-            print_fn=lambda text: console.print(text),
+            # markup=False：答案里的 Markdown（[文本](链接)、[Note]）不能被 rich 当样式吃掉
+            print_fn=lambda text: console.print(text, markup=False),
+            session=session,
         )
     except typer.Exit:
         raise
@@ -190,6 +232,36 @@ def chat(
 
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+def _print_sessions(session_dir: Path | None) -> None:
+    """列出已保存的会话。"""
+    infos = SessionStore.list_sessions(session_dir)
+    if not infos:
+        console.print("[dim]没有保存的会话[/dim]")
+        return
+
+    table = Table(title="Saved sessions", border_style="cyan")
+    table.add_column("session", style="dim")
+    table.add_column("created")
+    table.add_column("turns", justify="right")
+    table.add_column("tokens", justify="right")
+    table.add_column("first question")
+
+    for info in infos:
+        question = info.first_question
+        if len(question) > 60:
+            question = question[:60] + "..."
+        table.add_row(
+            info.session_id,
+            info.created_at.replace("T", " ")[:16],
+            str(info.turns),
+            str(info.total_tokens),
+            question,
+        )
+
+    console.print(table)
+    console.print("[dim]接续：breeze chat --resume <session>[/dim]")
 
 
 def _print_summary(summary: dict) -> None:

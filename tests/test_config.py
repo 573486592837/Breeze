@@ -36,8 +36,8 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_defaults_has_expected_sections() -> None:
-    """DEFAULTS 应包含四个 section。"""
-    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace"}
+    """DEFAULTS 应包含六个 section。"""
+    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat"}
 
 
 def test_defaults_llm_fields() -> None:
@@ -77,6 +77,15 @@ def test_defaults_context_v2_values() -> None:
     ctx = DEFAULTS["context"]
     assert ctx["intra_turn_budget"] == 24000
     assert ctx["state_max_entries"] == 8
+
+
+def test_defaults_chat_and_sessions_fields() -> None:
+    """会话持久化相关的默认值存在且类型正确。"""
+    chat = DEFAULTS["chat"]
+    assert chat["answer_preview"] == 1500
+    assert chat["max_records"] == 8
+    assert chat["max_chars"] == 6000
+    assert DEFAULTS["sessions"]["dir"] == "~/.breeze/sessions"
 
 
 def test_toml_example_covers_all_defaults() -> None:
@@ -315,6 +324,31 @@ def test_settings_missing_api_key_raises(tmp_path: Path, monkeypatch: pytest.Mon
         Settings(repo_root=tmp_path)
 
 
+def test_settings_reads_chat_and_sessions_config(tmp_path: Path) -> None:
+    """chat/sessions 配置可覆盖，且 dir 展开 ~。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[chat]\nanswer_preview = 300\nmax_records = 2\nmax_chars = 900\n[sessions]\ndir = "my/sessions"\n',
+        encoding="utf-8",
+    )
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.chat_answer_preview == 300
+    assert s.chat_max_records == 2
+    assert s.chat_max_chars == 900
+    # 相对路径与 trace.dir 一样保持原样，由使用方按当前工作目录解析
+    assert s.sessions_dir == Path("my/sessions")
+
+
+def test_settings_sessions_dir_expands_home(tmp_path: Path) -> None:
+    """默认会话目录展开 ~，落在用户主目录下。"""
+    s = Settings(repo_root=tmp_path)
+
+    assert s.sessions_dir.is_absolute()
+    assert s.sessions_dir.name == "sessions"
+    assert "~" not in str(s.sessions_dir)
+
+
 def test_settings_type_coercion(tmp_path: Path) -> None:
     """Settings 字段类型正确。"""
     s = Settings(repo_root=tmp_path)
@@ -325,3 +359,5 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     assert isinstance(s.context_intra_turn_budget, int)
     assert isinstance(s.llm_temperature, float)
     assert isinstance(s.trace_dir, str)
+    assert isinstance(s.chat_answer_preview, int)
+    assert isinstance(s.sessions_dir, Path)

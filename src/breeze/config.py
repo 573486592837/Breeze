@@ -47,6 +47,14 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "trace": {
         "dir": "traces",
     },
+    "sessions": {
+        "dir": "~/.breeze/sessions",
+    },
+    "chat": {
+        "answer_preview": 1500,
+        "max_records": 8,
+        "max_chars": 6000,
+    },
 }
 
 ENV_MAP: dict[str, tuple[str, str]] = {
@@ -185,6 +193,12 @@ class Settings:
         self.context_tool_result_tail_bytes: int = int(cfg["context"]["tool_result_tail_bytes"])
 
         self.trace_dir: str = cfg["trace"]["dir"]
+
+        self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
+        self.chat_max_records: int = int(cfg["chat"]["max_records"])
+        self.chat_max_chars: int = int(cfg["chat"]["max_chars"])
+
+        self.sessions_dir: Path = Path(cfg["sessions"]["dir"]).expanduser()
 
         if not self.api_key:
             raise ValueError("SILICONFLOW_API_KEY 未设置，请检查 .env 文件或环境变量")
