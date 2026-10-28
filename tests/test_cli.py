@@ -523,3 +523,35 @@ def test_chat_resume_injects_archive_into_first_view(
     assert "previous question" in resumed_view[1]["content"]
     assert "prior answer" in resumed_view[1]["content"]
     assert resumed_view[2]["content"] == "next question"
+
+
+def test_chat_without_turns_leaves_no_session_file(repo: Path, tmp_path: Path) -> None:
+    """没跑过回合的会话不留下文件，避免污染 --list 与 --resume latest。"""
+    session_dir = tmp_path / "sessions"
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces"), "--session-dir", str(session_dir)],
+        input="/help\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert not session_dir.exists() or list(session_dir.glob("*.jsonl")) == []
+
+
+def test_chat_without_session_dir_uses_configured_dir(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """未传 --session-dir 时写入 sessions.dir 配置值（测试里由 conftest 指到临时目录）。"""
+    from breeze.config import settings
+
+    configured = tmp_path / "configured-sessions"
+    monkeypatch.setattr(settings, "sessions_dir", configured)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="hello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert len(list(configured.glob("*.jsonl"))) == 1

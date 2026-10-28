@@ -88,29 +88,22 @@ class SessionStore:
         repo_root: str | Path = "",
         model: str = "",
     ) -> None:
-        """绑定会话文件；文件不存在时写入 session_start。
+        """绑定会话文件，文件直到第一个回合落盘时才创建。
+
+        只 /help、直接退出、或跑空的会话不会留下 0 回合的垃圾文件——
+        它们会污染 --list，也会被 --resume latest 选中。
 
         Args:
             session_dir: 会话目录，None 时使用 sessions.dir 配置。
             session_id: 会话 ID，None 时生成"时间戳_短哈希"。
-            repo_root: 仅在新建会话时写入头事件。
-            model: 仅在新建会话时写入头事件。
+            repo_root: 写入 session_start 头事件的仓库根目录。
+            model: 写入 session_start 头事件的模型名。
         """
         self.session_dir = _resolve_dir(session_dir)
-        self.session_dir.mkdir(parents=True, exist_ok=True)
         self.session_id = session_id or _new_session_id()
         self.path = self.session_dir / f"{self.session_id}.jsonl"
-
-        if not self.path.exists():
-            self._write(
-                {
-                    "event": "session_start",
-                    "session_id": self.session_id,
-                    "ts": _now_iso(),
-                    "repo_root": str(repo_root),
-                    "model": model,
-                }
-            )
+        self._repo_root = str(repo_root)
+        self._model = model
 
     @classmethod
     def resume(
@@ -131,6 +124,7 @@ class SessionStore:
             FileNotFoundError: 目录为空或指定 ID 不存在。
         """
         path = _resolve_path(session_dir, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         return cls(session_dir=path.parent, session_id=path.stem)
 
     def record_turn(self, record: TurnRecord, state: SessionState, summary: dict[str, Any]) -> None:
@@ -141,7 +135,8 @@ class SessionStore:
             state: 该回合结束时的 SessionState。
             summary: 该回合 trace 的 summary()。
         """
-        self._write(
+        self._ensure_started()
+        self._append(
             {
                 "event": "turn",
                 "ts": _now_iso(),
@@ -155,8 +150,12 @@ class SessionStore:
         )
 
     def record_reset(self) -> None:
-        """记录 /new：resume 时该事件之前的回合与状态不参与恢复。"""
-        self._write({"event": "reset", "ts": _now_iso()})
+        """记录 /new：resume 时该事件之前的回合与状态不参与恢复。
+
+        会话还没有落盘过任何回合时不写文件——空会话不留痕。
+        """
+        if self.path.exists():
+            self._append({"event": "reset", "ts": _now_iso()})
 
     def load(self) -> tuple[TurnLedger, SessionState]:
         """读回会话，重建回合归档与会话状态。
@@ -209,9 +208,33 @@ class SessionStore:
 
         return [_info_from(path.stem, path) for path in sorted(root.glob("*.jsonl"), reverse=True)]
 
-    def _write(self, event: dict[str, Any]) -> None:
+    def _append(self, event: dict[str, Any]) -> None:
+        """追加一行事件。"""
+        self.session_dir.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+
+    def _ensure_started(self) -> None:
+        """会话文件不存在时先写 session_start 头事件。"""
+        if self.path.exists():
+            return
+
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "event": "session_start",
+                        "session_id": self.session_id,
+                        "ts": _now_iso(),
+                        "repo_root": self._repo_root,
+                        "model": self._model,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
 
     def _events(self) -> list[dict[str, Any]]:
         """读取全部可解析的事件行，非法行与坏行跳过。"""
