@@ -1,6 +1,7 @@
 """Breeze 命令行接口。
 
-提供 breeze ask 命令，接受自然语言问题，运行 Agent 并输出答案与 Token 摘要。
+提供 breeze ask 单轮问答与 breeze chat 交互式多回合会话，
+运行 Agent 并输出答案与 Token 摘要。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from breeze.agent import Agent
+from breeze.chat import run_chat
 from breeze.config import settings
 from breeze.llm import LLMClient
 from breeze.trace import RunTrace
@@ -117,6 +119,77 @@ def ask(
         raise typer.Exit(code=2) from exc
     finally:
         settings.repo_root = original_repo_root
+
+
+@app.command()
+def chat(
+    repo: Path = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="root directory of the repository, current working directory by default",
+        file_okay=False,
+        dir_okay=True,
+        resolve_path=True,
+    ),
+    model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="default model",
+    ),
+    max_steps: int = typer.Option(
+        None,
+        "--max-steps",
+        help="max cycling steps per turn (default: from breeze.toml or DEFAULTS)",
+        min=1,
+        max=50,
+    ),
+    trace_dir: Path = typer.Option(
+        Path("traces"),
+        "--trace-dir",
+        help="trace file output directory, one trace file per turn",
+        file_okay=False,
+        dir_okay=True,
+    ),
+) -> None:
+    """进入交互式多回合会话，输入 /exit 退出。"""
+    repo_root = (repo or Path.cwd()).resolve()
+    if not repo_root.is_dir():
+        error_console.print(f"[red]invalid repository directory: {repo_root}[/red]")
+        raise typer.Exit(code=1)
+
+    original_repo_root = settings.repo_root
+    settings.repo_root = repo_root
+
+    try:
+        try:
+            llm = LLMClient(model=model)
+        except ValueError as exc:
+            error_console.print(f"[red]LLM configuration error: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        console.print(f"[dim]model: {llm.model} | repo: {repo_root} | /help 查看命令[/dim]")
+
+        exit_code = run_chat(
+            agent_factory=lambda trace: Agent(llm=llm, trace=trace, max_steps=max_steps),
+            trace_factory=lambda: RunTrace(trace_dir=trace_dir),
+            input_fn=input,
+            print_fn=lambda text: console.print(text),
+        )
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt:
+        error_console.print("\n[yellow]user interrupt[/yellow]")
+        raise typer.Exit(code=130) from None
+    except Exception as exc:
+        error_console.print(f"[red]runtime error: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+    finally:
+        settings.repo_root = original_repo_root
+
+    if exit_code:
+        raise typer.Exit(code=exit_code)
 
 
 def _print_summary(summary: dict) -> None:

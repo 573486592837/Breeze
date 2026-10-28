@@ -11,7 +11,7 @@ from typing import Any
 from breeze.config import settings
 from breeze.context import ContextManager
 from breeze.llm import LLMClient, LLMResponse
-from breeze.state import SessionState
+from breeze.state import SessionState, TurnLedger
 from breeze.tools import registry
 from breeze.trace import RunTrace
 
@@ -101,9 +101,15 @@ class Agent:
         self.system_prompt = system_prompt
         self.context = context or ContextManager()
         self.state = SessionState()
+        self.ledger = TurnLedger()
+        self.messages: list[dict[str, Any]] = []
 
     def run(self, question: str) -> str:
-        """执行 Agent，返回最终答案。
+        """执行一个用户回合，返回最终答案。
+
+        可在同一 Agent 上重复调用以支持多回合会话：历史回合的完整
+        消息日志保留在 self.messages 供调试，但只有问答结论经
+        TurnLedger 归档注入下一回合，工具过程不进入下一轮窗口。
 
         Args:
             question: 用户问题。
@@ -111,10 +117,10 @@ class Agent:
         Returns:
             最终答案字符串。达到最大步数或出错时返回提示文本。
         """
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": question},
-        ]
+        if not self.messages:
+            self.messages = [{"role": "system", "content": self.system_prompt}]
+        self.messages.append({"role": "user", "content": question})
+        turn_start = len(self.messages) - 1
 
         edit_count = 0
 
@@ -122,7 +128,7 @@ class Agent:
             remaining = self.max_steps - step
 
             if self.max_steps >= 8 and step == self.max_steps // 2 and edit_count == 0:
-                messages.append(
+                self.messages.append(
                     {
                         "role": "user",
                         "content": (
@@ -133,7 +139,7 @@ class Agent:
                     }
                 )
             elif remaining == 2:
-                messages.append(
+                self.messages.append(
                     {
                         "role": "user",
                         "content": (
@@ -143,7 +149,7 @@ class Agent:
                     }
                 )
             elif remaining == 1:
-                messages.append(
+                self.messages.append(
                     {
                         "role": "user",
                         "content": ("这是最后一步。请基于已获取的信息直接给出最终答案，不要再调用工具。"),
@@ -151,13 +157,14 @@ class Agent:
                 )
 
             tools = registry.schemas() if remaining > 1 else []
-            llm_messages = self.context.build(messages, state=self.state)
+            view = [self.messages[0], *self.messages[turn_start:]]
+            llm_messages = self.context.build(view, state=self.state, archive=self.ledger.render())
 
             try:
                 resp, latency_ms = self._call_llm(llm_messages, tools)
             except Exception as exc:
                 self.trace.log_error(step, f"LLM call failed: {exc}")
-                return f"LLM call failed: {exc}"
+                return self._finish_turn(question, f"LLM call failed: {exc}", turn_start)
 
             tool_calls = _convert_tool_calls(resp.tool_calls)
 
@@ -173,9 +180,9 @@ class Agent:
             )
 
             if not tool_calls:
-                return resp.content or "(empty response)"
+                return self._finish_turn(question, resp.content or "(empty response)", turn_start)
 
-            messages.append(
+            self.messages.append(
                 {
                     "role": "assistant",
                     "content": resp.content,
@@ -210,7 +217,7 @@ class Agent:
                             latency_ms=0.0,
                             error=error_msg,
                         )
-                        messages.append(
+                        self.messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -219,9 +226,45 @@ class Agent:
                         )
                         continue
 
-                self._execute_and_append(messages, tc, step)
+                self._execute_and_append(tc, step)
 
-        return f"Reached max steps ({self.max_steps}), task not completed."
+        return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
+
+    def reset(self) -> None:
+        """清空消息日志、回合归档与会话状态，开始新会话。"""
+        self.messages = []
+        self.ledger = TurnLedger()
+        self.state = SessionState()
+
+    def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
+        """把本回合的问答结论与触碰文件归档，返回答案。
+
+        Args:
+            question: 本回合的用户问题。
+            answer: 本回合最终答案。
+            turn_start: 本回合在消息日志中的起始下标。
+
+        Returns:
+            答案原文（便于调用点直接 return）。
+        """
+        self.messages.append({"role": "assistant", "content": answer})
+
+        touched: list[str] = []
+        for msg in self.messages[turn_start:]:
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                raw = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                path = args.get("path") if isinstance(args, dict) else None
+                if isinstance(path, str) and path not in touched:
+                    touched.append(path)
+
+        self.ledger.record(question, answer, touched)
+        return answer
 
     def _call_llm(
         self,
@@ -244,14 +287,12 @@ class Agent:
 
     def _execute_and_append(
         self,
-        messages: list[dict[str, Any]],
         tc: _ToolCall,
         step: int,
     ) -> None:
-        """执行单个工具调用并把结果追加到 messages。
+        """执行单个工具调用并把结果追加到 self.messages。
 
         Args:
-            messages: 消息列表，原地追加 tool 消息。
             tc: 工具调用。
             step: Agent 循环步数。
         """
@@ -267,7 +308,7 @@ class Agent:
                 latency_ms=0.0,
                 error=str(exc),
             )
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             return
 
         if not isinstance(arguments, dict):
@@ -280,7 +321,7 @@ class Agent:
                 latency_ms=0.0,
                 error="invalid arguments type",
             )
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             return
 
         start = time.perf_counter()
@@ -303,7 +344,7 @@ class Agent:
 
         self.state.update(tc.name, arguments, result, step)
 
-        messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 
 def _convert_tool_calls(tool_calls: list[Any]) -> list[_ToolCall]:

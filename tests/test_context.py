@@ -244,3 +244,54 @@ def test_overflow_spill_uses_fallback_when_monkeypatched(tmp_path, monkeypatch) 
 
     tool_msg = next(m for m in result if m["role"] == "tool")
     assert tool_msg["content"].startswith("[read_file compressed]")
+
+
+# ─── 回合归档注入 ───
+
+
+def test_archive_injected_between_system_and_question() -> None:
+    """归档文本作为一条 user 消息注入在 system 之后、当前问题之前。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("current question")]
+    result = cm.build(messages, state=_state(), archive="[Completed turns — 1 most recent of 1]\nTurn 1 Q: old")
+
+    assert [m["role"] for m in result] == ["system", "user", "user"]
+    assert "Completed turns" in result[1]["content"]
+    assert result[2]["content"] == "current question"
+
+
+def test_state_block_injected_when_archive_present() -> None:
+    """有归档时即使未发生降级也注入状态块，让模型看到跨回合索引。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
+    result = cm.build(messages, state=_state({"target": "a.py:1"}), archive="Turn 1 A: done")
+
+    joined = " ".join(str(m.get("content", "")) for m in result)
+    assert "[Session state" in joined
+
+
+def test_no_archive_keeps_layout() -> None:
+    """无归档时不注入额外消息。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
+    result = cm.build(messages, state=_state({"target": "a.py:1"}))
+
+    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool"]
+
+
+def test_archive_counted_in_budget() -> None:
+    """归档占用计入预算：预算不足时回合内的 read_file 应降级为指针。"""
+    body = _code_lines(200)
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
+
+    budget = _count_text_tokens(body) + 300
+    archive = "archive note " * 200
+    assert _count_text_tokens(archive) > 300
+
+    without = ContextManager(ContextConfig(intra_turn_budget=budget))
+    assert [m["content"] for m in without.build(messages) if m["role"] == "tool"] == [body]
+
+    with_archive = ContextManager(ContextConfig(intra_turn_budget=budget))
+    result = with_archive.build(messages, archive=archive)
+    tool_msg = next(m for m in result if m["role"] == "tool")
+    assert tool_msg["content"].startswith("[read_file compressed]")

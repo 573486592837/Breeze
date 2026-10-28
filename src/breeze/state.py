@@ -6,12 +6,17 @@ SessionState 由 Agent 循环在每次工具执行后从真实返回值中维护
 模型记忆，也不被 _render_summary 丢弃，从源头减少“凭记忆写
 apply_patch 的 old”导致的失配。
 
+TurnLedger 记录已完成的问答回合（问题+最终答案的折叠文本），
+供多回合会话在系统提示之后注入：上一回合的工具过程被归档丢弃，
+只有结论保留——这正是回合间压缩的对象。
+
 状态只来自代码可解析的工具结果（参数与输出文本），不来自模型自述。
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from breeze.config import settings
@@ -155,3 +160,112 @@ class SessionState:
             "Before apply_patch, re-read the target range above with read_file and copy old verbatim from that output."
         )
         return "\n".join(lines)
+
+
+def _fold(text: str, limit: int) -> str:
+    """折叠为单行并按 limit 截断。
+
+    Args:
+        text: 任意文本。
+        limit: 最大字符数。
+
+    Returns:
+        单行文本；超长时截断并以省略号结尾。
+    """
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: max(0, limit - 3)] + "..."
+
+
+@dataclass
+class TurnRecord:
+    """一个已完成回合的归档条目。
+
+    Attributes:
+        index: 回合序号（从 1 开始）。
+        question: 用户问题。
+        answer: 该回合的最终答案。
+        touched: 该回合触碰过的文件路径列表。
+    """
+
+    index: int
+    question: str
+    answer: str
+    touched: list[str]
+
+
+class TurnLedger:
+    """跨回合的问答归档。
+
+    每个用户回合结束时记录问题、最终答案与触碰文件；下一回合开始时，
+    把已有记录渲染为一条注入消息（放在系统提示之后、当前回合之前）。
+    这样"上一回合的工具调用结果"不会污染当前回合的窗口——只有其结论
+    保留，正是回合间压缩的对象。记录按 token 预算从最新往前保留，
+    超出部分丢弃最旧的回合。
+
+    Attributes:
+        records: 已完成的回合记录，从旧到新。
+        answer_preview: 归档中答案的最大字符数。
+        max_records: 归档渲染保留的最近回合数上限。
+    """
+
+    def __init__(self, answer_preview: int = 600, max_records: int = 8) -> None:
+        """初始化。
+
+        Args:
+            answer_preview: 单条答案归档的最大字符数。
+            max_records: 渲染时保留的最近回合数。
+        """
+        self.records: list[TurnRecord] = []
+        self.answer_preview = answer_preview
+        self.max_records = max_records
+
+    def record(self, question: str, answer: str, touched: list[str]) -> None:
+        """归档一个刚完成的回合。
+
+        Args:
+            question: 该回合的用户问题。
+            answer: 该回合的最终答案。
+            touched: 该回合读过或改过的文件路径。
+        """
+        self.records.append(
+            TurnRecord(
+                index=len(self.records) + 1,
+                question=_fold(question, 200),
+                answer=_fold(answer, self.answer_preview),
+                touched=list(dict.fromkeys(touched)),
+            )
+        )
+
+    def render(self) -> str:
+        """渲染回合归档文本块。无记录时返回空字符串。
+
+        Returns:
+            多行文本，供 ContextManager 注入到当前回合之前。
+        """
+        if not self.records:
+            return ""
+
+        kept = self.records[-self.max_records :]
+        lines = [f"[Completed turns — {len(kept)} most recent of {len(self.records)}]"]
+        for rec in kept:
+            lines.append(f"Turn {rec.index} Q: {rec.question}")
+            lines.append(f"Turn {rec.index} A: {rec.answer}")
+            if rec.touched:
+                files = ", ".join(rec.touched[:8])
+                more = f" (+{len(rec.touched) - 8} more)" if len(rec.touched) > 8 else ""
+                lines.append(f"Turn {rec.index} touched: {files}{more}")
+        return "\n".join(lines)
+
+    def touched_files(self) -> list[str]:
+        """返回历史回合触碰过的全部文件（去重、按首次出现）。
+
+        Returns:
+            文件路径列表。
+        """
+        seen: dict[str, None] = {}
+        for rec in self.records:
+            for path in rec.touched:
+                seen.setdefault(path, None)
+        return list(seen)

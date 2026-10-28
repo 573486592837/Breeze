@@ -1,6 +1,6 @@
-"""SessionState 的单元测试。"""
+"""SessionState 与 TurnLedger 的单元测试。"""
 
-from breeze.state import SessionState
+from breeze.state import SessionState, TurnLedger
 
 
 def _state(max_entries: int = 8) -> SessionState:
@@ -130,3 +130,79 @@ def test_single_read_not_flagged() -> None:
     st.update("read_file", {"path": "s.py", "start_line": 1, "end_line": 5}, "1 | x", 0)
 
     assert "Repeated reads" not in st.render()
+
+
+# ─── TurnLedger 回合归档 ───
+
+
+def _ledger(answer_preview: int = 600, max_records: int = 8) -> TurnLedger:
+    return TurnLedger(answer_preview=answer_preview, max_records=max_records)
+
+
+def test_record_indexes_from_one_and_dedups_touched() -> None:
+    """回合序号从 1 开始，触碰文件按首次出现去重。"""
+    ledger = _ledger()
+    ledger.record("q1", "a1", ["b.py", "a.py", "b.py"])
+    ledger.record("q2", "a2", ["a.py", "c.py"])
+
+    assert [r.index for r in ledger.records] == [1, 2]
+    assert ledger.records[0].touched == ["b.py", "a.py"]
+    assert ledger.touched_files() == ["b.py", "a.py", "c.py"]
+
+
+def test_record_folds_question_to_single_line() -> None:
+    """多行问题折叠为一行，避免破坏归档的行结构。"""
+    ledger = _ledger()
+    ledger.record("first line\n   second line", "answer", [])
+
+    assert ledger.records[0].question == "first line second line"
+
+
+def test_record_truncates_long_answer() -> None:
+    """超长答案按 answer_preview 截断并加省略号。"""
+    ledger = _ledger(answer_preview=10)
+    ledger.record("q", "x" * 40, [])
+
+    answer = ledger.records[0].answer
+    assert len(answer) == 10
+    assert answer.endswith("...")
+
+
+def test_render_empty_returns_blank() -> None:
+    """无记录时渲染为空字符串。"""
+    assert _ledger().render() == ""
+
+
+def test_render_contains_q_a_and_touched() -> None:
+    """渲染文本含问答与触碰文件行。"""
+    ledger = _ledger()
+    ledger.record("why does it fail?", "because of x", ["src/a.py"])
+
+    text = ledger.render()
+    assert text.startswith("[Completed turns")
+    assert "Turn 1 Q: why does it fail?" in text
+    assert "Turn 1 A: because of x" in text
+    assert "Turn 1 touched: src/a.py" in text
+
+
+def test_render_keeps_most_recent_records() -> None:
+    """超过 max_records 时丢弃最旧回合，标题说明保留数量。"""
+    ledger = _ledger(max_records=2)
+    for i in range(1, 6):
+        ledger.record(f"q{i}", f"a{i}", [])
+
+    text = ledger.render()
+    assert "[Completed turns — 2 most recent of 5]" in text
+    assert "Turn 5 Q: q5" in text
+    assert "Turn 4 Q: q4" in text
+    assert "Turn 1 Q: q1" not in text
+
+
+def test_render_caps_touched_files_with_more_marker() -> None:
+    """单个回合触碰文件过多时只列前 8 个并标注剩余数量。"""
+    ledger = _ledger()
+    ledger.record("q", "a", [f"f{i}.py" for i in range(11)])
+
+    line = next(ln for ln in ledger.render().splitlines() if "touched" in ln)
+    assert " (+3 more)" in line
+    assert "f8.py" not in line
