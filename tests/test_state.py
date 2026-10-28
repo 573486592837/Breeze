@@ -132,11 +132,51 @@ def test_single_read_not_flagged() -> None:
     assert "Repeated reads" not in st.render()
 
 
+# ─── 符号索引的完整性与用途 ───
+
+
+def test_symbols_of_one_file_are_never_truncated() -> None:
+    """单个文件的符号不受 max_entries 截断，避免"列一遍"被迫重读全文。"""
+    st = _state(max_entries=3)
+    lines = "\n".join(f"{i * 10 + 1} | def f{i}():" for i in range(10))
+    st.update("read_file", {"path": "big.py"}, f"{lines}\n--- (file has 100 lines total) ---", 0)
+
+    block = st.render()
+    assert len(st.symbols) == 10
+    for i in range(10):
+        assert f"- f{i}: big.py:{i * 10 + 1}" in block
+
+
+def test_symbols_cap_drops_oldest_files() -> None:
+    """超上限时按文件丢弃最旧的，而不是丢弃文件内的尾部符号。"""
+    st = _state(max_entries=2)
+    st.update("read_file", {"path": "old.py"}, "1 | def a():\n--- (file has 2 lines total) ---", 0)
+    st.update("read_file", {"path": "mid.py"}, "1 | def b():\n--- (file has 2 lines total) ---", 1)
+    st.update("read_file", {"path": "new.py"}, "1 | def c():\n2 | def d():\n--- (file has 3 lines total) ---", 2)
+
+    block = st.render()
+    assert "- c: new.py:1" in block
+    assert "- d: new.py:2" in block
+    assert "- b: mid.py:1" in block
+    assert "a: old.py" not in block
+
+
+def test_state_block_answers_locate_questions() -> None:
+    """状态块应说明它是定位/列举类问题的权威来源，缺失时才重读。"""
+    st = _state()
+    st.update("grep", {}, "src/a.py:12:def target():", 1)
+
+    block = st.render()
+    assert "authoritative for locate/list questions" in block
+    assert "read_file when a needed fact is missing" in block
+    assert "Before apply_patch" in block
+
+
 # ─── TurnLedger 回合归档 ───
 
 
-def _ledger(answer_preview: int = 600, max_records: int = 8) -> TurnLedger:
-    return TurnLedger(answer_preview=answer_preview, max_records=max_records)
+def _ledger(answer_preview: int = 1500, max_records: int = 8, max_chars: int = 6000) -> TurnLedger:
+    return TurnLedger(answer_preview=answer_preview, max_records=max_records, max_chars=max_chars)
 
 
 def test_record_indexes_from_one_and_dedups_touched() -> None:
@@ -206,3 +246,34 @@ def test_render_caps_touched_files_with_more_marker() -> None:
     line = next(ln for ln in ledger.render().splitlines() if "touched" in ln)
     assert " (+3 more)" in line
     assert "f8.py" not in line
+
+
+def test_answer_keeps_line_structure() -> None:
+    """答案归档保留换行与列表结构，只按长度截断。"""
+    ledger = _ledger()
+    answer = "## 校验逻辑\n1. _check_allowed\n2. _check_options\n"
+    ledger.record("q", answer, [])
+
+    assert ledger.records[0].answer == "## 校验逻辑\n1. _check_allowed\n2. _check_options"
+    assert "\n" in ledger.render()
+
+
+def test_long_answer_still_clipped() -> None:
+    """多行答案超长时同样按 answer_preview 截断。"""
+    ledger = _ledger(answer_preview=20)
+    ledger.record("q", "line one\nline two\nline three", [])
+
+    assert ledger.records[0].answer == "line one\nline two..."
+
+
+def test_render_respects_total_char_budget() -> None:
+    """整块归档超过 max_chars 时丢弃更早的回合，最新回合始终保留。"""
+    ledger = _ledger(max_chars=200)
+    for i in range(5):
+        ledger.record(f"q{i}", "x" * 150, [])
+
+    text = ledger.render()
+    assert "[Completed turns — 1 most recent of 5]" in text
+    assert "Turn 5 Q: q4" in text
+    assert "Turn 4 Q: q3" not in text
+    assert len(text) < 200 + 60
