@@ -385,6 +385,52 @@ Markdown 汇总见 `reports/v1_*.md`。
 
 ---
 
+## Milestone: Context v2 与多回合会话（v1.1.0 – v1.2.0）
+
+### 背景
+
+v1.0.0 的压缩单位是"轮"（一问一答的工具轮），实测发现长任务的失败不是 Token 省得不够，而是**有效信息被挤出窗口**：模型在编辑前已经丢失了 `old` 原文，于是反复重读、凭记忆写补丁。这一阶段把目标从"省 Token"改成"把任务做对"。
+
+### Context v2（v1.1.0，tag `v1.1.0-context-v2`）
+
+压缩单位改为**用户回合**，工具结果分级：
+
+| 类别 | 工具 | 处理 |
+|---|---|---|
+| 定位类 | grep、list_files、repo_map | 恒降级为一行指针（事实在 SessionState 索引里） |
+| 内容类 | read_file | 回合内原样保留，保证编辑前 `old` 可见 |
+| 可再生类 | run_shell、run_tests、git_diff、apply_patch、create_file | 预算溢出时从旧到新降级 |
+
+仅当回合实测 Token（tiktoken cl100k_base）超过 `context.intra_turn_budget = 24000` 才逐级降级；任何降级都会注入 SessionState 状态块。
+
+### Structured State
+
+`SessionState` 由代码从**真实工具结果**解析（不采信模型自述）：符号位置、每个文件的读取范围、编辑结果、最近测试状态、重复读取计数。它同时承担两类问题的答案来源——"这个函数在哪"直接查索引，不必重读文件。
+
+### 多回合会话（v1.2.0，tag `v1.2.0-chat`）
+
+`breeze chat` 让 Agent 跨回合存活。上一回合的工具过程不进入下一回合窗口，只保留 `TurnLedger` 归档的**问题 / 最终答案 / 触碰文件**；事实索引由跨回合累积的 SessionState 继续承担。回合结束落盘到 `~/.breeze/sessions`，`--resume` 同时恢复归档与状态。
+
+### 效果
+
+| 场景 | 指标 | 优化前 | 优化后 |
+|---|---|---|---|
+| refactor 任务集 | repeat=3 通过率 | 5/6 及以下 | **6/6 PASS** |
+| 两回合追问"把刚才的函数列一遍" | LLM 调用 | 5 | **1** |
+| 同上 | 工具调用（全文重读） | 4 | **0** |
+| 同上 | 回合 Token | 29385 | **3969** |
+| 同上 | 函数清单完整性 | 缺 2 个 | 10/10 |
+
+一个诚实的边界：归档策略在**短会话 + 小文件**下比直接保留上一次读取更贵（多花约 900 Token 的归档），它的收益要等会话长到窗口必须封顶时才显现。
+
+同一阶段的另一处过时描述：架构图小节里 Context Manager 仍写作"Sliding Window + Token Budget (已实现)"，已由上面的回合制分级保留取代，待 v1.3.0 检查点连同 README 精简一起改。
+
+### 遗留
+
+并行工具调用（#28）已实现且 provider 支持，但 DeepSeek-V3.2 在 ReAct 中不主动批量发起调用；换更强模型后再验证，当前记录并搁置。
+
+---
+
 ## 路线图
 
 | 版本 | 内容 | 状态 |
@@ -401,7 +447,10 @@ Markdown 汇总见 `reports/v1_*.md`。
 | v0.9.0 | 长任务压缩对比、冗余调用优化 | 已完成 |
 | v0.10.0 | 任务集扩展（feature/refactor/multiturn/external）、create_file、评估守卫与配置修复 | 已完成 |
 | v1.0.0 | 压缩 summary 增强、全量评估、README/CONTRIBUTING 文档收尾 | 已完成 |
-| v1.1.0 | Small Model 路由、Structured State、Hybrid Retriever | 计划中 |
+| v1.1.0 | 检索纪律（grep-first）、Structured State、工具输出上限对齐、Context v2（回合制分级保留） | 已完成 |
+| v1.2.0 | 交互式多回合会话 `breeze chat`、并行工具调用、会话持久化与 `--resume` | 已完成 |
+| v1.3.0 | release/debug 打包分离、pyproject 版本与 tag 对齐、README 架构图与篇幅收尾 | 计划中 |
+| v1.4.0 | QoL：Small Model 路由、压缩参数默认值调优、Hybrid Retriever | 计划中 |
 
 ---
 
@@ -449,8 +498,13 @@ breeze ask "修复 src/breeze/tools/safety.py 的路径逃逸问题"
 # 限制步数
 breeze ask "找出 read_file 的实现位置" --max-steps 4
 
-# 交互式多回合会话（/new 重置，/exit 退出）
+# 交互式多回合会话（/new 重置，/help 命令，/exit 退出）
 breeze chat
+
+# 列出并接续已保存的会话（会话文件默认在 ~/.breeze/sessions）
+breeze chat --list
+breeze chat --resume latest
+breeze chat --resume 20261028T143041_a9a3ac  # 也可用 breeze chat --list 里的任意 session id
 ```
 
 ---
