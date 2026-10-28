@@ -6,9 +6,9 @@ SessionState 由 Agent 循环在每次工具执行后从真实返回值中维护
 模型记忆，也不被 _render_summary 丢弃，从源头减少“凭记忆写
 apply_patch 的 old”导致的失配。
 
-TurnLedger 记录已完成的问答回合（问题+最终答案的折叠文本），
-供多回合会话在系统提示之后注入：上一回合的工具过程被归档丢弃，
-只有结论保留——这正是回合间压缩的对象。
+TurnLedger 记录已完成的问答回合（问题折叠为一行、答案保留原文换行并受
+字符预算约束），供多回合会话在系统提示之后注入：上一回合的工具过程被
+归档丢弃，只有结论保留——这正是回合间压缩的对象。
 
 状态只来自代码可解析的工具结果（参数与输出文本），不来自模型自述。
 """
@@ -123,9 +123,7 @@ class SessionState:
         sections: list[str] = []
 
         if self.symbols:
-            items = list(self.symbols.items())[-self.max_entries :]
-            body = "\n".join(f"- {name}: {loc}" for name, loc in items)
-            sections.append(f"Symbols located:\n{body}")
+            sections.append(f"Symbols located:\n{self._render_symbols()}")
 
         if self.reads:
             items = list(self.reads.items())[-self.max_entries :]
@@ -157,9 +155,32 @@ class SessionState:
         lines = ["[Session state — maintained from real tool results]"]
         lines.extend(sections)
         lines.append(
+            "This index is authoritative for locate/list questions: answer from it, and only re-read with "
+            "read_file when a needed fact is missing here."
+        )
+        lines.append(
             "Before apply_patch, re-read the target range above with read_file and copy old verbatim from that output."
         )
         return "\n".join(lines)
+
+    def _render_symbols(self) -> str:
+        """按文件最近出现顺序保留 max_entries 个文件，文件内符号全部列出。
+
+        单文件的符号不因上限被截断——"把函数列一遍"这类追问需要完整清单，
+        截断会迫使模型重新通读文件。
+
+        Returns:
+            每行 "- 符号名: 文件:行号" 的正文文本。
+        """
+        grouped: dict[str, list[str]] = {}
+        recency: dict[str, int] = {}
+        for idx, (name, loc) in enumerate(self.symbols.items()):
+            path = loc.rsplit(":", 1)[0]
+            grouped.setdefault(path, []).append(f"- {name}: {loc}")
+            recency[path] = idx
+
+        recent = sorted(grouped, key=lambda path: recency[path])[-self.max_entries :]
+        return "\n".join(line for path in recent for line in grouped[path])
 
 
 def _fold(text: str, limit: int) -> str:
@@ -176,6 +197,22 @@ def _fold(text: str, limit: int) -> str:
     if len(flat) <= limit:
         return flat
     return flat[: max(0, limit - 3)] + "..."
+
+
+def _clip(text: str, limit: int) -> str:
+    """保留换行结构地按 limit 截断文本。
+
+    Args:
+        text: 任意文本。
+        limit: 最大字符数。
+
+    Returns:
+        去除首尾空白后的文本；超长时截断并以省略号结尾。
+    """
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: max(0, limit - 3)] + "..."
 
 
 @dataclass
@@ -201,25 +238,31 @@ class TurnLedger:
     每个用户回合结束时记录问题、最终答案与触碰文件；下一回合开始时，
     把已有记录渲染为一条注入消息（放在系统提示之后、当前回合之前）。
     这样"上一回合的工具调用结果"不会污染当前回合的窗口——只有其结论
-    保留，正是回合间压缩的对象。记录按 token 预算从最新往前保留，
-    超出部分丢弃最旧的回合。
+    保留，正是回合间压缩的对象。
+
+    答案保留原文的换行结构（列表、小节标题），并设两道预算：单条答案
+    answer_preview 字符上限，整块归档 max_chars 字符上限——从最新回合
+    往前累加，装不下的旧回合丢弃，避免长会话里归档吃满回合内预算。
 
     Attributes:
         records: 已完成的回合记录，从旧到新。
         answer_preview: 归档中答案的最大字符数。
-        max_records: 归档渲染保留的最近回合数上限。
+        max_records: 渲染时保留的最近回合数上限。
+        max_chars: 归档整块的最大字符数。
     """
 
-    def __init__(self, answer_preview: int = 600, max_records: int = 8) -> None:
+    def __init__(self, answer_preview: int = 1500, max_records: int = 8, max_chars: int = 6000) -> None:
         """初始化。
 
         Args:
             answer_preview: 单条答案归档的最大字符数。
             max_records: 渲染时保留的最近回合数。
+            max_chars: 归档渲染的总字符数上限。
         """
         self.records: list[TurnRecord] = []
         self.answer_preview = answer_preview
         self.max_records = max_records
+        self.max_chars = max_chars
 
     def record(self, question: str, answer: str, touched: list[str]) -> None:
         """归档一个刚完成的回合。
@@ -233,7 +276,7 @@ class TurnLedger:
             TurnRecord(
                 index=len(self.records) + 1,
                 question=_fold(question, 200),
-                answer=_fold(answer, self.answer_preview),
+                answer=_clip(answer, self.answer_preview),
                 touched=list(dict.fromkeys(touched)),
             )
         )
@@ -247,15 +290,26 @@ class TurnLedger:
         if not self.records:
             return ""
 
-        kept = self.records[-self.max_records :]
-        lines = [f"[Completed turns — {len(kept)} most recent of {len(self.records)}]"]
-        for rec in kept:
-            lines.append(f"Turn {rec.index} Q: {rec.question}")
-            lines.append(f"Turn {rec.index} A: {rec.answer}")
-            if rec.touched:
-                files = ", ".join(rec.touched[:8])
-                more = f" (+{len(rec.touched) - 8} more)" if len(rec.touched) > 8 else ""
-                lines.append(f"Turn {rec.index} touched: {files}{more}")
+        blocks: list[str] = []
+        used = 0
+        for rec in reversed(self.records[-self.max_records :]):
+            block = self._block(rec)
+            if blocks and used + len(block) > self.max_chars:
+                break
+            blocks.append(block)
+            used += len(block)
+
+        header = f"[Completed turns — {len(blocks)} most recent of {len(self.records)}]"
+        return "\n".join([header, *reversed(blocks)])
+
+    @staticmethod
+    def _block(rec: TurnRecord) -> str:
+        """渲染单条回合记录。"""
+        lines = [f"Turn {rec.index} Q: {rec.question}", f"Turn {rec.index} A: {rec.answer}"]
+        if rec.touched:
+            files = ", ".join(rec.touched[:8])
+            more = f" (+{len(rec.touched) - 8} more)" if len(rec.touched) > 8 else ""
+            lines.append(f"Turn {rec.index} touched: {files}{more}")
         return "\n".join(lines)
 
     def touched_files(self) -> list[str]:
