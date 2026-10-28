@@ -320,3 +320,206 @@ def test_chat_restores_repo_root(repo: Path, tmp_path: Path) -> None:
         input="/exit\n",
     )
     assert cli_module.settings.repo_root == original
+
+
+# ─── chat 会话持久化 ───
+
+
+def test_chat_writes_session_file_and_prints_id(repo: Path, tmp_path: Path) -> None:
+    """每回合落盘到新会话文件，并在头部打印 session id。"""
+    session_dir = tmp_path / "sessions"
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "traces"),
+            "--session-dir",
+            str(session_dir),
+        ],
+        input="hello\nagain\n/exit\n",
+    )
+    files = list(session_dir.glob("*.jsonl"))
+
+    assert result.exit_code == 0
+    assert len(files) == 1
+    assert f"session: {files[0].stem}" in result.stdout
+    text = files[0].read_text(encoding="utf-8")
+    assert text.count('"event": "turn"') == 2
+
+
+def test_chat_list_sessions_without_llm(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--list 只读目录，不需要 LLM 配置也能用。"""
+
+    class NoLLM:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("--list 不应构造 LLMClient")
+
+    monkeypatch.setattr(cli_module, "LLMClient", NoLLM)
+
+    from breeze.session import SessionStore
+    from breeze.state import SessionState, TurnLedger
+
+    session_dir = tmp_path / "sessions"
+    store = SessionStore(session_dir, "20260101T000000_aaa", repo_root=repo, model="fake-model")
+    ledger = TurnLedger()
+    ledger.record("第一个问题", "答案是 x", ["src/a.py"])
+    store.record_turn(ledger.records[0], SessionState(), {"trace_path": "t", "llm_calls": 1, "total_tokens": 123})
+
+    result = runner.invoke(app, ["chat", "--list", "--session-dir", str(session_dir)])
+
+    assert result.exit_code == 0
+    assert "20260101T000000_aaa" in result.stdout
+    assert "Saved sessions" in result.stdout
+    assert "第一个问题" in result.stdout
+
+
+def test_chat_list_sessions_empty(tmp_path: Path) -> None:
+    """没有会话时给出提示而非报错。"""
+    result = runner.invoke(app, ["chat", "--list", "--session-dir", str(tmp_path / "sessions")])
+
+    assert result.exit_code == 0
+    assert "没有保存的会话" in result.stdout
+
+
+def test_chat_resume_continues_same_session(repo: Path, tmp_path: Path) -> None:
+    """--resume latest 沿用同一会话文件并接上历史归档。"""
+    session_dir = tmp_path / "sessions"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "t1"), "--session-dir", str(session_dir)],
+        input="first question\n/exit\n",
+    )
+    first_file = next(session_dir.glob("*.jsonl"))
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "t2"),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+        ],
+        input="second question\n/exit\n",
+    )
+    text = first_file.read_text(encoding="utf-8")
+
+    assert result.exit_code == 0
+    assert first_file.stem in result.stdout
+    assert "[turn 1]" in result.stdout
+    assert text.count('"event": "session_start"') == 1
+    assert text.count('"event": "turn"') == 2
+    assert "first question" in text
+
+
+def test_chat_resume_unknown_id(repo: Path, tmp_path: Path) -> None:
+    """不存在的 session id 退出码 1 并提示 --list。"""
+    (tmp_path / "sessions").mkdir()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--session-dir",
+            str(tmp_path / "sessions"),
+            "--resume",
+            "20990101T000000_deadbeef",
+        ],
+        input="/exit\n",
+    )
+
+    assert result.exit_code == 1
+    assert "--list" in result.stdout + (result.stderr or "")
+
+
+def test_chat_resume_warns_on_repo_mismatch(repo: Path, tmp_path: Path) -> None:
+    """会话原仓库与当前 --repo 不一致时给出提醒。"""
+    session_dir = tmp_path / "sessions"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "t1"), "--session-dir", str(session_dir)],
+        input="hello\n/exit\n",
+    )
+
+    other = tmp_path / "other"
+    other.mkdir()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(other),
+            "--trace-dir",
+            str(tmp_path / "t2"),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+        ],
+        input="/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "原先在" in result.stdout
+
+
+def test_chat_resume_injects_archive_into_first_view(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """resume 后的首个 LLM 视图应含 system + 归档 + 当前问题。"""
+    views: list[list[dict]] = []
+
+    class RecordingLLM:
+        model = "rec"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, messages, tools=None, temperature=0.0):
+            views.append(list(messages))
+            return LLMResponse(
+                content="prior answer",
+                tool_calls=[],
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+
+    monkeypatch.setattr(cli_module, "LLMClient", RecordingLLM)
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir), "--session-dir", str(session_dir)],
+        input="previous question\n/exit\n",
+    )
+    runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(trace_dir),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+        ],
+        input="next question\n/exit\n",
+    )
+
+    resumed_view = views[-1]
+    assert [m["role"] for m in resumed_view] == ["system", "user", "user"]
+    assert "[Completed turns" in resumed_view[1]["content"]
+    assert "previous question" in resumed_view[1]["content"]
+    assert "prior answer" in resumed_view[1]["content"]
+    assert resumed_view[2]["content"] == "next question"

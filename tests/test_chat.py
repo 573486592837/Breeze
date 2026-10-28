@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from breeze.chat import HELP_TEXT, run_chat
+from breeze.state import SessionState, TurnLedger
 
 
 class StubAgent:
@@ -15,16 +16,21 @@ class StubAgent:
         self.answers = list(answers)
         self.questions: list[str] = []
         self.resets = 0
+        self.ledger = TurnLedger()
+        self.state = SessionState()
 
     def run(self, question: str) -> str:
         self.questions.append(question)
         answer = self.answers.pop(0)
         if answer == "INTERRUPT":
             raise KeyboardInterrupt
+        self.ledger.record(question, answer, ["a.py"])
         return answer
 
     def reset(self) -> None:
         self.resets += 1
+        self.ledger = TurnLedger()
+        self.state = SessionState()
 
 
 class StubTrace:
@@ -63,9 +69,28 @@ class ScriptInput:
         return self.lines.pop(0)
 
 
+class StubSession:
+    """假 SessionStore：可提供恢复内容并记录落盘调用。"""
+
+    def __init__(self, ledger: TurnLedger | None = None, state: SessionState | None = None) -> None:
+        self.restore = (ledger or TurnLedger(), state or SessionState())
+        self.saved: list[tuple[Any, dict[str, Any]]] = []
+        self.resets = 0
+
+    def load(self) -> tuple[TurnLedger, SessionState]:
+        return self.restore
+
+    def record_turn(self, record: Any, state: Any, summary: dict[str, Any]) -> None:
+        self.saved.append((record, summary))
+
+    def record_reset(self) -> None:
+        self.resets += 1
+
+
 def _run(
     lines: list[str],
     answers: list[str] | None = None,
+    session: StubSession | None = None,
 ) -> tuple[int, list[str], list[StubTrace], list[StubAgent]]:
     """执行 run_chat，返回 (退出码, 输出行, traces, agents)。"""
     traces: list[StubTrace] = []
@@ -87,6 +112,7 @@ def _run(
         trace_factory=trace_factory,
         input_fn=ScriptInput(lines),
         print_fn=outputs.append,
+        session=session,
     )
     return code, outputs, traces, agents
 
@@ -193,3 +219,58 @@ def test_trace_closed_when_turn_raises() -> None:
             print_fn=lambda _: None,
         )
     assert trace.closed == 1
+
+
+# ─── 会话持久化接线 ───
+
+
+def test_session_records_each_completed_turn() -> None:
+    """每回合结束后落盘该回合的归档条目与 Token 摘要。"""
+    session = StubSession()
+    _run(["q1", "q2", "/exit"], answers=["a1", "a2"], session=session)
+
+    assert [(r.index, r.question, r.touched) for r, _ in session.saved] == [
+        (1, "q1", ["a.py"]),
+        (2, "q2", ["a.py"]),
+    ]
+    assert session.saved[1][1]["trace_path"] == "traces/2.jsonl"
+
+
+def test_session_restores_before_first_turn() -> None:
+    """首个回合前把恢复出的 ledger/state 挂到 Agent 上。"""
+    ledger = TurnLedger()
+    ledger.record("历史问题", "历史答案", ["old.py"])
+    state = SessionState()
+    state.symbols["target"] = "old.py:1"
+    session = StubSession(ledger=ledger, state=state)
+
+    _, _, _, agents = _run(["next question", "/exit"], answers=["a"], session=session)
+
+    assert agents[0].ledger.records == ledger.records
+    assert agents[0].state is state
+
+
+def test_interrupted_turn_is_not_recorded() -> None:
+    """中断的回合没有归档条目，因而不落盘。"""
+    session = StubSession()
+    _run(["boom", "next", "/exit"], answers=["INTERRUPT", "ok"], session=session)
+
+    assert [r.index for r, _ in session.saved] == [1]
+
+
+def test_new_writes_reset_event() -> None:
+    """/new 写入 reset 事件，恢复时以此分界。"""
+    session = StubSession()
+    _run(["q1", "/new", "q2", "/exit"], answers=["a1", "a2"], session=session)
+
+    assert session.resets == 1
+    assert [r.index for r, _ in session.saved] == [1, 1]
+
+
+def test_without_session_no_persistence_calls() -> None:
+    """未传 session 时行为不变（回归保护）。"""
+    code, _, traces, agents = _run(["q1", "/exit"])
+
+    assert code == 0
+    assert len(traces) == 1
+    assert len(agents[0].ledger.records) == 1

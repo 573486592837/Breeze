@@ -114,6 +114,40 @@ class SessionState:
             text += f" — failing: {failure.group(1)}"
         self.tests = f"{text} (step {step})"
 
+    def to_dict(self) -> dict[str, Any]:
+        """序列化为 JSON 友好的字典，供会话持久化使用。
+
+        Returns:
+            含 symbols/reads/edits/tests/read_counts 的字典。
+        """
+        return {
+            "symbols": dict(self.symbols),
+            "reads": dict(self.reads),
+            "edits": dict(self.edits),
+            "tests": self.tests,
+            "read_counts": [[path, start, end, count] for (path, start, end), count in self.read_counts.items()],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionState:
+        """从 to_dict 的字典恢复状态。
+
+        Args:
+            data: 序列化后的状态字典，缺字段按空处理。
+
+        Returns:
+            恢复出的 SessionState。
+        """
+        st = cls()
+        st.symbols.update(data.get("symbols") or {})
+        st.reads.update(data.get("reads") or {})
+        st.edits.update(data.get("edits") or {})
+        st.tests = data.get("tests") or ""
+        for entry in data.get("read_counts") or []:
+            path, start, end, count = entry
+            st.read_counts[(path, start, end)] = count
+        return st
+
     def render(self) -> str:
         """渲染紧凑状态块。空状态返回空字符串。
 
@@ -251,18 +285,23 @@ class TurnLedger:
         max_chars: 归档整块的最大字符数。
     """
 
-    def __init__(self, answer_preview: int = 1500, max_records: int = 8, max_chars: int = 6000) -> None:
+    def __init__(
+        self,
+        answer_preview: int | None = None,
+        max_records: int | None = None,
+        max_chars: int | None = None,
+    ) -> None:
         """初始化。
 
         Args:
-            answer_preview: 单条答案归档的最大字符数。
-            max_records: 渲染时保留的最近回合数。
-            max_chars: 归档渲染的总字符数上限。
+            answer_preview: 单条答案归档的最大字符数，None 时使用配置值。
+            max_records: 渲染时保留的最近回合数，None 时使用配置值。
+            max_chars: 归档渲染的总字符数上限，None 时使用配置值。
         """
         self.records: list[TurnRecord] = []
-        self.answer_preview = answer_preview
-        self.max_records = max_records
-        self.max_chars = max_chars
+        self.answer_preview = answer_preview or settings.chat_answer_preview
+        self.max_records = max_records or settings.chat_max_records
+        self.max_chars = max_chars or settings.chat_max_chars
 
     def record(self, question: str, answer: str, touched: list[str]) -> None:
         """归档一个刚完成的回合。

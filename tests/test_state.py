@@ -1,5 +1,7 @@
 """SessionState 与 TurnLedger 的单元测试。"""
 
+import pytest
+
 from breeze.state import SessionState, TurnLedger
 
 
@@ -277,3 +279,16 @@ def test_render_respects_total_char_budget() -> None:
     assert "Turn 5 Q: q4" in text
     assert "Turn 4 Q: q3" not in text
     assert len(text) < 200 + 60
+
+
+def test_ledger_defaults_come_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """归档预算未显式传值时用 chat.* 配置。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "chat_answer_preview", 30)
+    monkeypatch.setattr(settings, "chat_max_records", 2)
+    monkeypatch.setattr(settings, "chat_max_chars", 90)
+
+    ledger = TurnLedger()
+
+    assert (ledger.answer_preview, ledger.max_records, ledger.max_chars) == (30, 2, 90)

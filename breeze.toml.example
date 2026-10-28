@@ -41,3 +41,18 @@ tool_result_tail_bytes = 8000
 [trace]
 # Directory for JSONL trace files.
 dir = "traces"
+
+[sessions]
+# Directory for `breeze chat` session files (JSONL, resumable conversations).
+dir = "~/.breeze/sessions"
+
+[chat]
+# Turn archive injected before the current question in every later turn.
+# Max characters kept per archived answer (line structure preserved).
+answer_preview = 1500
+# Max most-recent turns rendered into the archive block.
+max_records = 8
+# Total character budget for the archive block; older turns are dropped
+# once it overflows, so long sessions cannot let the archive eat the
+# turn budget.
+max_chars = 6000
