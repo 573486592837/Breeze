@@ -26,6 +26,7 @@ class LLMClient:
         api_key: str | None = None,
         api_base: str | None = None,
         temperature: float | None = None,
+        parallel_tool_calls: bool = True,
     ) -> None:
         """初始化 LLM 客户端。
 
@@ -34,11 +35,13 @@ class LLMClient:
             api_key: API 密钥。None 时从配置读取。
             api_base: API 基础地址。None 时从配置读取。
             temperature: 温度。None 时从配置读取。
+            parallel_tool_calls: 请求模型在同一轮返回多个工具调用。
         """
         self.model = model or settings.model
         self.api_key = api_key or settings.api_key
         self.api_base = api_base or settings.api_base
         self.temperature = temperature if temperature is not None else settings.llm_temperature
+        self.parallel_tool_calls = parallel_tool_calls
 
     def chat(
         self,
@@ -67,7 +70,18 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
 
-        resp = litellm.completion(**kwargs)
+        use_parallel = self.parallel_tool_calls and bool(tools)
+        if use_parallel:
+            kwargs["parallel_tool_calls"] = True
+
+        try:
+            resp = litellm.completion(**kwargs)
+        except Exception:
+            if not use_parallel:
+                raise
+            kwargs.pop("parallel_tool_calls")
+            resp = litellm.completion(**kwargs)
+
         choice = resp.choices[0]
         usage = resp.usage
 
