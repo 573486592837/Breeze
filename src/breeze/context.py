@@ -1,27 +1,111 @@
-"""上下文管理。
+"""上下文管理（策略 v2：回合内分级保留）。
 
-ContextManager 负责把完整的消息历史压缩成适合发送给 LLM 的版本。
+压缩单位从"轮"改为"用户回合"：在一轮提问到最终答案之间，
+工具结果按类型分级处理——
+
+- 定位类工具（grep、list_files、repo_map）的信息已被 SessionState
+  提取为符号/范围索引，其结果本体恒降级为一行指针。
+- 内容类工具（read_file 等）默认原样保留，避免模型在编辑前丢失原文。
+- 仅当回合实际 Token 超过 intra_turn_budget 时，按从旧到新依次把
+  read_file 降级为"路径+行范围"指针，再不够降级其他可再生工具。
+
+任何降级发生时，把 SessionState 状态块注入消息头部之后，让模型基于
+索引（而不是被丢弃的原文）定点重读并立即编辑。
 原始消息列表保持不变，仅供 trace 和调试使用。
 """
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import tiktoken
 
 from breeze.config import settings
 
-# Deprecated: values come from settings via ContextConfig.__post_init__.
-# Kept for backward compatibility with code that imports these constants.
-DEFAULT_MAX_RECENT_TOKENS = 3000
-DEFAULT_MAX_RECENT_PAIRS = 3
-DEFAULT_MIN_RECENT_PAIRS = 1
-DEFAULT_MAX_RECENT_TOKENS = 3_000
-DEFAULT_ARGUMENTS_PREVIEW = 60
+os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(Path.home() / ".breeze" / "tiktoken_cache"))
 
+# Deprecated: values come from settings via ContextConfig.__post_init__.
+DEFAULT_INTRA_TURN_BUDGET = 24_000
 DEFAULT_TOOL_RESULT_MAX_BYTES = 16_000
 DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
 DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
+
+POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files", "repo_map"})
+READ_TOOLS: frozenset[str] = frozenset({"read_file"})
+SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
+
+_encoding: tiktoken.Encoding | None = None
+_encoding_failed = False
+
+
+def _get_encoding() -> tiktoken.Encoding | None:
+    """获取 cl100k_base 编码器；加载失败时返回 None 并记住失败。"""
+    global _encoding, _encoding_failed
+    if _encoding is None and not _encoding_failed:
+        try:
+            _encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _encoding_failed = True
+    return _encoding
+
+
+def _count_text_tokens(text: str) -> int:
+    """计算一段文本的实际 Token 数。
+
+    Args:
+        text: 任意文本。
+
+    Returns:
+        tiktoken 计数；编码器不可用时回退为 4 字符约 1 Token 的粗估。
+    """
+    enc = _get_encoding()
+    if enc is None:
+        return len(text) // 4
+    return len(enc.encode(text, disallowed_special=()))
+
+
+def _parse_arguments(raw: str) -> dict[str, Any]:
+    """尽力解析 tool_call 的 arguments JSON，失败返回空 dict。"""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
+    """把一条工具结果降级为一行指针。
+
+    Args:
+        tool: 工具名。
+        arguments: 该调用的参数（解析失败时为空 dict）。
+        result: 原始结果文本，用于统计行数或摘录首行。
+
+    Returns:
+        指针文本。
+    """
+    n = len([ln for ln in result.splitlines() if ln.strip()])
+
+    if tool == "read_file":
+        path = arguments.get("path", "?")
+        start, end = arguments.get("start_line"), arguments.get("end_line")
+        rng = f"lines {start}-{end}" if start and end else "full file"
+        return (
+            f"[read_file compressed] {path} ({rng}) dropped by budget; re-read this exact range and edit immediately."
+        )
+
+    if tool in POINTER_TOOLS:
+        arg_bits = " ".join(f"{k}={v}" for k, v in list(arguments.items())[:3] if isinstance(v, (str, int)))
+        return (
+            f"[{tool} compressed] {arg_bits} → {n} lines; locations are in the session state; re-run if details needed."
+        )
+
+    detail = result.splitlines()[0][:80] if result.strip() else ""
+    return f"[{tool} compressed] {detail} (output dropped by budget; re-run if needed)"
 
 
 @dataclass
@@ -33,25 +117,15 @@ class ContextConfig:
     After __post_init__, every field holds a concrete non-None value.
 
     Attributes:
-        enable: 是否启用压缩。
-        max_recent_tokens: 保留的最近轮估计 Token 上限。
-        min_recent_pairs: 无论多大，至少保留的最近轮数。
-        max_recent_pairs: 保留的最近轮数硬上限。
-        arguments_preview: 摘要中工具参数的最大字符数。
-        summary_findings_preview: 摘要中每条推理结论的最大字符数。
-        summary_max_findings: 摘要中保留的推理结论条数上限。
-        tool_result_max_bytes: 单条工具结果的字节上限。
-        tool_result_head_bytes: 压缩时保留的头部字节数。
-        tool_result_tail_bytes: 压缩时保留的尾部字节数。
+        enable: 是否启用上下文管理（False 时原样透传）。
+        intra_turn_budget: 单回合发送给 LLM 的实际 Token 上限。
+        tool_result_max_bytes: 单条工具结果的字节上限（兜底）。
+        tool_result_head_bytes: 兜底压缩保留的头部字节数。
+        tool_result_tail_bytes: 兜底压缩保留的尾部字节数。
     """
 
     enable: bool | None = None
-    max_recent_tokens: int | None = None
-    min_recent_pairs: int | None = None
-    max_recent_pairs: int | None = None
-    arguments_preview: int | None = None
-    summary_findings_preview: int | None = None
-    summary_max_findings: int | None = None
+    intra_turn_budget: int | None = None
     tool_result_max_bytes: int | None = None
     tool_result_head_bytes: int | None = None
     tool_result_tail_bytes: int | None = None
@@ -60,18 +134,8 @@ class ContextConfig:
         """Fill unset fields from settings."""
         if self.enable is None:
             self.enable = settings.context_enable
-        if self.max_recent_tokens is None:
-            self.max_recent_tokens = settings.context_max_recent_tokens
-        if self.min_recent_pairs is None:
-            self.min_recent_pairs = settings.context_min_recent_pairs
-        if self.max_recent_pairs is None:
-            self.max_recent_pairs = settings.context_max_recent_pairs
-        if self.arguments_preview is None:
-            self.arguments_preview = settings.context_arguments_preview
-        if self.summary_findings_preview is None:
-            self.summary_findings_preview = settings.context_summary_findings_preview
-        if self.summary_max_findings is None:
-            self.summary_max_findings = settings.context_summary_max_findings
+        if self.intra_turn_budget is None:
+            self.intra_turn_budget = settings.context_intra_turn_budget
         if self.tool_result_max_bytes is None:
             self.tool_result_max_bytes = settings.context_tool_result_max_bytes
         if self.tool_result_head_bytes is None:
@@ -81,10 +145,10 @@ class ContextConfig:
 
 
 class ContextManager:
-    """消息历史压缩器。
+    """回合内上下文分级管理器。
 
-    把历史消息切分成 system、初始 user、若干轮 assistant+tool。
-    当轮数超过 max_recent_pairs 时，把旧轮压缩成一条 user 摘要消息。
+    取代旧的"轮滑窗+摘要"策略：不再按轮数/估计 Token 挤出历史，
+    而是在实际 Token 超预算时按工具类型分级降级，保留编辑所需的原文。
     """
 
     def __init__(self, config: ContextConfig | None = None) -> None:
@@ -103,185 +167,145 @@ class ContextManager:
         """构建发给 LLM 的消息列表。
 
         Args:
-            messages: 完整历史。
-            state: SessionState 实例。压缩发生时其状态块随摘要注入；
-                None 或未发生压缩时不注入。
+            messages: 完整历史（单回合：system、user、若干轮）。
+            state: SessionState 实例；发生降级时其状态块随之注入。
 
         Returns:
-            压缩后的消息列表。轮数不超过阈值时返回原列表的浅拷贝。
+            分级处理后的消息列表。原始消息不被修改。
         """
         if not self.config.enable or len(messages) <= 2:
             return list(messages)
 
-        head = messages[:2]
+        head = list(messages[:2])
         body = messages[2:]
-        rounds = self._split_rounds(body)
 
-        kept_rounds = self._select_recent_rounds(head, rounds)
+        id_to_name, id_to_args = self._index_tool_calls(body)
 
-        if len(kept_rounds) == len(rounds):
-            result: list[dict[str, Any]] = list(head)
-            for rnd in rounds:
-                for msg in rnd:
-                    result.append(self._compact_tool_result(msg))
-            return result
+        converted: list[dict[str, Any]] = []
+        demoted = False
+        for msg in body:
+            if msg.get("role") != "tool":
+                converted.append(msg)
+                continue
+            tool = id_to_name.get(msg.get("tool_call_id", ""), "")
+            content = msg.get("content")
+            if tool in POINTER_TOOLS and isinstance(content, str):
+                new_msg = dict(msg)
+                new_msg["content"] = _render_pointer(tool, id_to_args.get(msg.get("tool_call_id", ""), {}), content)
+                demoted = True
+                converted.append(self._compact_tool_result(new_msg))
+            else:
+                converted.append(self._compact_tool_result(msg))
 
-        old_rounds = rounds[: len(rounds) - len(kept_rounds)]
-        summary = self._render_summary(old_rounds, state=state)
+        budget = self.config.intra_turn_budget
+        if self._measure(head, converted, state) > budget:
+            converted, spilled = self._spill(head, converted, id_to_name, id_to_args, budget, state, READ_TOOLS)
+            demoted = demoted or spilled
+        if self._measure(head, converted, state) > budget:
+            converted, spilled = self._spill(head, converted, id_to_name, id_to_args, budget, state, SPILL_TOOLS)
+            demoted = demoted or spilled
 
-        result: list[dict[str, Any]] = list(head)
-        result.append(summary)
-        for rnd in kept_rounds:
-            for msg in rnd:
-                result.append(self._compact_tool_result(msg))
+        result = list(head)
+        if demoted and state is not None:
+            block = state.render()
+            if block:
+                result.append({"role": "user", "content": block})
+        result.extend(converted)
         return result
 
-    def _select_recent_rounds(
+    def _spill(
         self,
         head: list[dict[str, Any]],
-        rounds: list[list[dict[str, Any]]],
-    ) -> list[list[dict[str, Any]]]:
-        """从尾部开始保留轮，直到触及 Token 或轮数上限。
+        converted: list[dict[str, Any]],
+        id_to_name: dict[str, str],
+        id_to_args: dict[str, dict[str, Any]],
+        budget: int,
+        state: Any | None,
+        classes: frozenset[str],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """预算溢出时，从最旧开始把指定类别的工具结果降级为指针。
 
         Args:
-            head: system + 初始 user 消息。
-            rounds: 全部轮。
+            head: system+user 头部。
+            converted: 当前消息列表。
+            id_to_name: tool_call_id -> 工具名。
+            id_to_args: tool_call_id -> 参数 dict。
+            budget: Token 上限。
+            state: 用于计入状态块开销，可为 None。
+            classes: 本次允许降级的工具类别。
 
         Returns:
-            保留的轮列表，从旧到新。
+            (新列表, 是否发生降级)。
         """
-        kept: list[list[dict[str, Any]]] = []
-        current_tokens = self._estimate_tokens(head)
-
-        for rnd in reversed(rounds):
-            rnd_tokens = self._estimate_tokens(rnd)
-            at_min_pairs = len(kept) < self.config.min_recent_pairs
-
-            if not at_min_pairs and current_tokens + rnd_tokens > self.config.max_recent_tokens:
+        out = list(converted)
+        changed = False
+        for i, msg in enumerate(out):
+            if self._measure(head, out, state) <= budget:
                 break
-
-            if len(kept) >= self.config.max_recent_pairs:
-                break
-
-            kept.insert(0, rnd)
-            current_tokens += rnd_tokens
-
-        return kept
+            if msg.get("role") != "tool":
+                continue
+            tc_id = msg.get("tool_call_id", "")
+            tool = id_to_name.get(tc_id, "")
+            if tool not in classes:
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or content.startswith(f"[{tool} compressed]"):
+                continue
+            new_msg = dict(msg)
+            new_msg["content"] = _render_pointer(tool, id_to_args.get(tc_id, {}), content)
+            out[i] = new_msg
+            changed = True
+        return out, changed
 
     @staticmethod
-    def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
-        """粗估消息列表的 Token 数。
+    def _index_tool_calls(
+        body: list[dict[str, Any]],
+    ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+        """建立 tool_call_id 到工具名与参数的索引。"""
+        id_to_name: dict[str, str] = {}
+        id_to_args: dict[str, dict[str, Any]] = {}
+        for msg in body:
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id", "")
+                func = tc.get("function", {})
+                id_to_name[tc_id] = func.get("name", "")
+                id_to_args[tc_id] = _parse_arguments(func.get("arguments", "{}"))
+        return id_to_name, id_to_args
 
-        采用 4 字符约 1 Token 的经验比例。不做精确定量，
-        仅用于上下文预算判断。
+    def _measure(
+        self,
+        head: list[dict[str, Any]],
+        body: list[dict[str, Any]],
+        state: Any | None,
+    ) -> int:
+        """估算 head+body(+状态块) 的实际 Token 总量。"""
+        total = self._count_messages(head) + self._count_messages(body)
+        if state is not None:
+            block = state.render()
+            if block:
+                total += _count_text_tokens(block) + 10
+        return total
 
-        Args:
-            messages: 消息列表。
-
-        Returns:
-            估计的 Token 数。
-        """
+    @staticmethod
+    def _count_messages(messages: list[dict[str, Any]]) -> int:
+        """统计消息列表 Token（内容+工具调用参数+每条结构开销）。"""
         total = 0
         for msg in messages:
             content = msg.get("content")
             if isinstance(content, str):
-                total += len(content) // 4
+                total += _count_text_tokens(content)
             for tc in msg.get("tool_calls") or []:
-                args = ContextManager._extract_arguments(tc)
-                total += len(args) // 4 + 10  # 加常数近似工具调用开销
+                func = tc.get("function", {}) if isinstance(tc, dict) else {}
+                total += _count_text_tokens(str(func.get("arguments", ""))) + 10
+            total += 4
         return total
 
-    def _split_rounds(self, body: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        """把 assistant+tool 序列切分成轮。
-
-        每轮以 assistant 消息开始，包含其后所有 tool 消息，
-        直到下一个 assistant 或列表结束。
-
-        Args:
-            body: 去掉头部 system 和 user 后的消息列表。
-
-        Returns:
-            轮的列表。
-        """
-        rounds: list[list[dict[str, Any]]] = []
-        current: list[dict[str, Any]] = []
-
-        for msg in body:
-            if msg.get("role") == "assistant":
-                if current:
-                    rounds.append(current)
-                current = [msg]
-            else:
-                current.append(msg)
-
-        if current:
-            rounds.append(current)
-        return rounds
-
-    def _render_summary(
-        self,
-        old_rounds: list[list[dict[str, Any]]],
-        state: Any | None = None,
-    ) -> dict[str, Any]:
-        """把旧轮渲染成一条 user 摘要消息。
-
-        摘要包含三部分：结构化会话状态（若提供）、assistant 消息中的
-        推理结论（Confirmed findings）和工具调用时间线。保留结论是为了
-        避免压缩在关键决策点触发后，模型丢失已推导的事实而重新推导或幻觉。
-
-        Args:
-            old_rounds: 被压缩的轮列表。
-            state: SessionState 实例，其渲染块置于摘要顶部。
-
-        Returns:
-            一条 role=user 的消息字典。
-        """
-        lines: list[str] = [f"[Compressed history: {len(old_rounds)} earlier rounds]"]
-
-        if state is not None:
-            block = state.render()
-            if block:
-                lines.append("")
-                lines.append(block)
-
-        findings: list[str] = []
-        actions: list[str] = []
-
-        for idx, rnd in enumerate(old_rounds):
-            for msg in rnd:
-                if msg.get("role") != "assistant":
-                    continue
-                content = msg.get("content")
-                if isinstance(content, str) and content.strip():
-                    flat = self._collapse(content, self.config.summary_findings_preview)
-                    findings.append(f"- step {idx} concluded: {flat}")
-                for tc in msg.get("tool_calls", []) or []:
-                    name = self._extract_name(tc)
-                    args = self._extract_arguments(tc)
-                    preview = self._truncate(args, self.config.arguments_preview)
-                    actions.append(f"- step {idx}: {name}({preview})")
-
-        if findings:
-            kept = findings[-self.config.summary_max_findings :]
-            lines.append("")
-            lines.append("Confirmed findings from earlier reasoning:")
-            lines.extend(kept)
-
-        if actions:
-            lines.append("")
-            lines.append("Tool calls:")
-            lines.extend(actions)
-
-        lines.append("")
-        lines.append("Note: earlier tool results are omitted. Re-invoke tools if you need the full content.")
-
-        return {"role": "user", "content": "\n".join(lines)}
-
     def _compact_tool_result(self, msg: dict[str, Any]) -> dict[str, Any]:
-        """压缩单条 tool 消息的内容。
+        """兜底：单条 tool 消息超过字节上限时保留头尾。
 
-        只处理 role=tool 且 content 为字符串且超过字节上限的情况。
-        其他消息原样返回。
+        工具输出上限已在各工具内部对齐预算，这里只处理意外情况。
 
         Args:
             msg: 一条消息。
@@ -311,54 +335,9 @@ class ContextManager:
         new_msg["content"] = compacted
         return new_msg
 
-    @staticmethod
-    def _extract_name(tool_call: Any) -> str:
-        """兼容 dict 和对象形式的 tool_call。"""
-        if isinstance(tool_call, dict):
-            func = tool_call.get("function", {})
-            return func.get("name", "unknown")
-        func = getattr(tool_call, "function", None)
-        if func is None:
-            return "unknown"
-        return getattr(func, "name", "unknown")
-
-    @staticmethod
-    def _extract_arguments(tool_call: Any) -> str:
-        """提取参数 JSON 字符串。"""
-        if isinstance(tool_call, dict):
-            func = tool_call.get("function", {})
-            return func.get("arguments", "{}")
-        func = getattr(tool_call, "function", None)
-        if func is None:
-            return "{}"
-        return getattr(func, "arguments", "{}")
-
-    @staticmethod
-    def _collapse(text: str, limit: int) -> str:
-        """把多行文本折叠为单行并按 limit 截断。"""
-        flat = " ".join(text.split())
-        if len(flat) <= limit:
-            return flat
-        return flat[:limit] + "..."
-
-    @staticmethod
-    def _truncate(text: str, limit: int) -> str:
-        """截断字符串，超长时保留前 limit 字符并加省略号。"""
-        if len(text) <= limit:
-            return text
-        return text[:limit] + "..."
-
 
 def _safe_head(encoded: bytes, n: int) -> bytes:
-    """返回最多 n 字节，按 UTF-8 字符边界对齐。
-
-    Args:
-        encoded: UTF-8 编码的字节串。
-        n: 期望保留的头部字节数。
-
-    Returns:
-        边界对齐后的头部字节串。
-    """
+    """返回最多 n 字节，按 UTF-8 字符边界对齐。"""
     if len(encoded) <= n:
         return encoded
     end = n
@@ -368,15 +347,7 @@ def _safe_head(encoded: bytes, n: int) -> bytes:
 
 
 def _safe_tail(encoded: bytes, n: int) -> bytes:
-    """返回最多 n 字节，按 UTF-8 字符边界对齐。
-
-    Args:
-        encoded: UTF-8 编码的字节串。
-        n: 期望保留的尾部字节数。
-
-    Returns:
-        边界对齐后的尾部字节串。
-    """
+    """返回最多 n 字节，按 UTF-8 字符边界对齐。"""
     if len(encoded) <= n:
         return encoded
     start = len(encoded) - n

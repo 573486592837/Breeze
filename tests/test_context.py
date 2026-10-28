@@ -1,15 +1,15 @@
-"""ContextManager 的单元测试。"""
+"""ContextManager v2（回合内分级保留）的单元测试。"""
 
 from typing import Any
 
 import pytest
 
-from breeze.context import ContextConfig, ContextManager
+from breeze.context import ContextConfig, ContextManager, _count_text_tokens
 
 
 @pytest.fixture(autouse=True)
 def _force_context_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """测试假设压缩默认开启，隔离外部配置。"""
+    """测试假设上下文管理默认开启，隔离外部配置。"""
     from breeze.config import settings
 
     monkeypatch.setattr(settings, "context_enable", True)
@@ -23,26 +23,16 @@ def _user(content: str) -> dict[str, Any]:
     return {"role": "user", "content": content}
 
 
-def _assistant(
-    content: str | None,
-    calls: list[tuple[str, str, str]],
-) -> dict[str, Any]:
-    """构造 assistant 消息。
-
-    Args:
-        content: 助手文本。
-        calls: (id, name, arguments_json) 三元组列表。
-    """
+def _assistant(call_id: str, name: str, args: str, content: str | None = None) -> dict[str, Any]:
     return {
         "role": "assistant",
         "content": content,
         "tool_calls": [
             {
-                "id": cid,
+                "id": call_id,
                 "type": "function",
                 "function": {"name": name, "arguments": args},
             }
-            for cid, name, args in calls
         ],
     }
 
@@ -51,660 +41,206 @@ def _tool(call_id: str, content: str) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": call_id, "content": content}
 
 
-def _make_history(n_rounds: int) -> list[dict[str, Any]]:
-    """构造一个有 n_rounds 轮工具调用的历史。"""
-    messages: list[dict[str, Any]] = [_system(), _user("question")]
-    for i in range(n_rounds):
-        messages.append(
-            _assistant(
-                f"step {i}",
-                [(f"c{i}", f"tool_{i}", f'{{"arg": {i}}}')],
-            )
-        )
-        messages.append(_tool(f"c{i}", f"result {i}"))
-    return messages
+def _round(call_id: str, name: str, args: str, result: str) -> list[dict[str, Any]]:
+    return [_assistant(call_id, name, args), _tool(call_id, result)]
 
 
-# ─── 不压缩场景 ───
+def _code_lines(n: int, prefix: str = "def f") -> str:
+    return "\n".join(f"{prefix}{i}(): pass" for i in range(n))
+
+
+def _state(symbols: dict[str, str] | None = None):
+    from breeze.state import SessionState
+
+    st = SessionState(max_entries=8)
+    for name, loc in (symbols or {}).items():
+        st.symbols[name] = loc
+    return st
+
+
+# ─── 透传场景 ───
 
 
 def test_disabled_returns_original() -> None:
-    """enable=False 时不做任何压缩。"""
+    """enable=False 时原样透传。"""
     cm = ContextManager(ContextConfig(enable=False))
-    messages = _make_history(10)
-    result = cm.build(messages)
+    messages = [_system(), _user("q"), *_round("c1", "grep", '{"pattern": "x"}', _code_lines(50))]
+    result = cm.build(messages, state=_state())
     assert result == messages
 
 
-def test_below_threshold_returns_full() -> None:
-    """轮数不超过阈值时返回完整列表。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=3))
-    messages = _make_history(2)
-    result = cm.build(messages)
-    assert len(result) == len(messages)
-    assert result == messages
-
-
-def test_empty_messages() -> None:
-    """空列表不应崩溃。"""
-    cm = ContextManager()
-    assert cm.build([]) == []
-
-
-def test_only_head() -> None:
-    """只有 system 和 user 时原样返回。"""
+def test_head_only_returns_original() -> None:
+    """只有 system+user 时原样返回。"""
     cm = ContextManager()
     messages = [_system(), _user("q")]
     assert cm.build(messages) == messages
 
 
-# ─── 压缩场景 ───
+# ─── 定位类恒降级 ───
 
 
-def test_compresses_old_rounds() -> None:
-    """轮数超过阈值时压缩旧轮。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=2))
-    messages = _make_history(5)
+def test_pointer_tools_always_demoted() -> None:
+    """grep/list_files/repo_map 结果应始终替换为一行指针。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    for tool, args in (("grep", '{"pattern": "def f"}'), ("list_files", '{"path": "."}')):
+        messages = [_system(), _user("q"), *_round("c1", tool, args, _code_lines(50))]
+        result = cm.build(messages)
+
+        tool_msg = next(m for m in result if m["role"] == "tool")
+        assert tool_msg["content"].startswith(f"[{tool} compressed]")
+        assert "session state" in tool_msg["content"]
+
+
+def test_content_tools_kept_within_budget() -> None:
+    """预算内的 read_file 原文保留。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    body = _code_lines(100)
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
     result = cm.build(messages)
 
-    # 头部保留
-    assert result[0] == messages[0]
-    assert result[1] == messages[1]
+    tool_msg = next(m for m in result if m["role"] == "tool")
+    assert tool_msg["content"] == body
 
-    # 第 2 条应该是压缩摘要
+
+def test_unknown_tools_kept() -> None:
+    """未知工具结果不在降级类别内，原样保留。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q"), *_round("c1", "fake_thing", "{}", "some result")]
+    result = cm.build(messages)
+
+    tool_msg = next(m for m in result if m["role"] == "tool")
+    assert tool_msg["content"] == "some result"
+
+
+# ─── 预算溢出分级 ───
+
+
+def test_overflow_demotes_oldest_read_first() -> None:
+    """溢出时最旧 read_file 先降级为指针，最新的保留原文。"""
+    big = _code_lines(600)
+    cm = ContextManager(ContextConfig(intra_turn_budget=4_500))
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "read_file", '{"path": "a.py"}', big),
+        *_round("c2", "read_file", '{"path": "b.py"}', big),
+    ]
+    result = cm.build(messages)
+
+    contents = [m.get("content", "") for m in result if m["role"] == "tool"]
+    assert any(c.startswith("[read_file compressed] a.py") for c in contents)
+    assert any(c == big for c in contents)
+
+
+def test_pointer_after_demotion_carries_range() -> None:
+    """read_file 指针应携带路径与行范围，指导定点重读。"""
+    big = _code_lines(600)
+    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "read_file", '{"path": "s.py", "start_line": 292, "end_line": 315}', big),
+    ]
+    result = cm.build(messages)
+
+    contents = [m.get("content", "") for m in result if m["role"] == "tool"]
+    pointer = next(c for c in contents if c.startswith("[read_file compressed]"))
+    assert "s.py (lines 292-315)" in pointer
+    assert "re-read" in pointer
+
+
+def test_extreme_overflow_demotes_spill_tools_too() -> None:
+    """read_file 降完后仍溢出时，run_tests 等可再生结果也降级。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600)),
+        *_round("c2", "run_tests", '{"pattern": ""}', _code_lines(600, "test f")),
+    ]
+    result = cm.build(messages)
+
+    contents = [m.get("content", "") for m in result if m["role"] == "tool"]
+    assert all(c.startswith("[") for c in contents)
+
+
+# ─── 状态块注入 ───
+
+
+def test_state_block_injected_only_with_demotion() -> None:
+    """无降级时不注入状态块；有降级时紧随 head。"""
+    state = _state({"target": "a.py:1"})
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    kept = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(10))]
+    assert not any("[Session state" in str(m.get("content", "")) for m in cm.build(kept, state=state))
+
+    cm_low = ContextManager(ContextConfig(intra_turn_budget=200))
+    spill = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
+    result = cm_low.build(spill, state=state)
     assert result[2]["role"] == "user"
-    assert "Compressed history" in result[2]["content"]
-    assert "3 earlier rounds" in result[2]["content"]
-
-    # 后面保留最近 2 轮，共 4 条消息（2 轮 × 2 条）
-    assert len(result) == 3 + 4
+    assert "[Session state" in result[2]["content"]
+    assert "target: a.py:1" in result[2]["content"]
 
 
-def test_summary_lists_each_call() -> None:
-    """摘要里应逐条列出被压缩轮的工具调用。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = _make_history(4)
+def test_no_state_block_without_state() -> None:
+    """未提供 state 时不注入状态块。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=200))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
     result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "tool_0" in summary
-    assert "tool_1" in summary
-    assert "tool_2" in summary
-    assert "tool_3" not in summary  # 最近一轮不压缩
-
-
-def test_summary_truncates_arguments() -> None:
-    """参数预览应被截断。"""
-    long_args = '{"path": "' + "x" * 200 + '"}'
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "read_file", long_args)]),
-        _tool("c0", "result"),
-        _assistant("", [("c1", "read_file", '{"path": "y"}')]),
-        _tool("c1", "result"),
-        _assistant("", [("c2", "read_file", '{"path": "z"}')]),
-        _tool("c2", "result"),
-    ]
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=1, arguments_preview=30))
-    result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "..." in summary
-
-
-def test_summary_mentions_reinvoke() -> None:
-    """摘要应提示可以重新调用工具。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = _make_history(3)
-    result = cm.build(messages)
-    assert "Re-invoke" in result[2]["content"]
-
-
-def test_summary_keeps_findings() -> None:
-    """摘要应保留被压缩轮 assistant 的推理结论。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = _make_history(3)
-    messages[2]["content"] = "已确认 registry 是模块，不是对象"
-    result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "Confirmed findings" in summary
-    assert "step 0 concluded: 已确认 registry 是模块，不是对象" in summary
-    assert "step 1 concluded: step 1" in summary
-
-
-def test_summary_findings_collapse_and_truncate() -> None:
-    """结论应折叠为单行，超长时截断加省略号。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1, summary_findings_preview=20))
-    messages = _make_history(2)
-    messages[2]["content"] = "第一行\n第二行   第三行\n第四行内容特别特别长需要被截断处理"
-    result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "第一行 第二行 第三行 第四行内容特别特..." in summary
-    assert "\n第一行" not in summary
-
-
-def test_summary_findings_capped() -> None:
-    """结论条数超过上限时保留最近的。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1, summary_max_findings=2))
-    messages = _make_history(4)
-    result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "step 0 concluded" not in summary
-    assert "step 1 concluded" in summary
-    assert "step 2 concluded" in summary
-    # 工具调用时间线不受结论上限影响
-    assert "step 0: tool_0" in summary
-
-
-def test_summary_no_findings_section_when_content_empty() -> None:
-    """assistant 无文本时不应出现结论段。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = [_system(), _user("question")]
-    for i in range(3):
-        messages.append(_assistant(None, [(f"c{i}", f"tool_{i}", "{}")]))
-        messages.append(_tool(f"c{i}", "r"))
-    result = cm.build(messages)
-
-    summary = result[2]["content"]
-    assert "Confirmed findings" not in summary
-    assert "tool_0" in summary
-
-
-def test_recent_rounds_kept_intact() -> None:
-    """最近 K 轮的消息应与原始一致。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=2))
-    messages = _make_history(5)
-    result = cm.build(messages)
-
-    original_tail = messages[-4:]
-    assert result[-4:] == original_tail
-
-
-# ─── 边界情况 ───
-
-
-def test_assistant_without_tool_calls_kept() -> None:
-    """assistant 消息没有 tool_calls 时也应作为一轮处理。"""
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("thinking", []),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", "r"),
-        _assistant("", [("c1", "t", "{}")]),
-        _tool("c1", "r"),
-        _assistant("", [("c2", "t", "{}")]),
-        _tool("c2", "r"),
-    ]
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    result = cm.build(messages)
-    assert result[0] == messages[0]
-    assert result[1] == messages[1]
-    assert "Compressed history" in result[2]["content"]
-
-
-def test_multiple_tool_calls_per_assistant() -> None:
-    """一个 assistant 调用多个工具时应作为一轮压缩。"""
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "a", "{}"), ("c1", "b", "{}")]),
-        _tool("c0", "r0"),
-        _tool("c1", "r1"),
-        _assistant("", [("c2", "c", "{}")]),
-        _tool("c2", "r2"),
-        _assistant("", [("c3", "d", "{}")]),
-        _tool("c3", "r3"),
-    ]
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    result = cm.build(messages)
-    summary = result[2]["content"]
-    assert "step 0: a(" in summary
-    assert "step 0: b(" in summary
-
-
-def test_original_messages_unchanged() -> None:
-    """build 不应修改传入的 messages 列表。"""
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = _make_history(5)
-    original_snapshot = [m.copy() for m in messages]
-
-    cm.build(messages)
-
-    assert messages == original_snapshot
-
-
-def test_build_returns_new_list() -> None:
-    """即使不压缩，也应返回新列表，避免调用方误改内部状态。"""
-    cm = ContextManager()
-    messages = _make_history(1)
-    result = cm.build(messages)
-    assert result is not messages
-
-
-# ─── 工具结果压缩 ───
-
-
-def test_small_tool_result_unchanged() -> None:
-    """未超过阈值的工具结果不应被修改。"""
-    cm = ContextManager(ContextConfig(tool_result_max_bytes=1000))
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "read_file", "{}")]),
-        _tool("c0", "short content"),
-    ]
-    result = cm.build(messages)
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    assert len(tool_msgs) == 1
-    assert tool_msgs[0]["content"] == "short content"
-    assert tool_msgs[0] is messages[3]
-
-
-def test_large_tool_result_compacted() -> None:
-    """超过阈值的工具结果应被压缩。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=5,
-            tool_result_max_bytes=200,
-            tool_result_head_bytes=80,
-            tool_result_tail_bytes=80,
-        )
-    )
-    big = "A" * 1000
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "read_file", "{}")]),
-        _tool("c0", big),
-    ]
-    result = cm.build(messages)
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    content = tool_msgs[0]["content"]
-
-    assert len(content.encode("utf-8")) < len(big)
-    assert "bytes omitted" in content
-    assert content.startswith("A")
-    assert content.endswith("A")
-
-
-def test_compaction_preserves_head_and_tail() -> None:
-    """压缩后应保留指定的头部和尾部。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=5,
-            tool_result_max_bytes=200,
-            tool_result_head_bytes=50,
-            tool_result_tail_bytes=50,
-        )
-    )
-    big = "HEAD" + "M" * 500 + "TAIL"
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "read_file", "{}")]),
-        _tool("c0", big),
-    ]
-    result = cm.build(messages)
-    content = result[-1]["content"]
-
-    assert content.startswith("HEAD")
-    assert content.endswith("TAIL")
-    assert "M" * 500 not in content
-
-
-def test_compaction_omitted_byte_count() -> None:
-    """省略标记里的字节数应正确。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=5,
-            tool_result_max_bytes=100,
-            tool_result_head_bytes=40,
-            tool_result_tail_bytes=40,
-        )
-    )
-    big = "x" * 1000
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", big),
-    ]
-    result = cm.build(messages)
-    content = result[-1]["content"]
-
-    # 1000 - 40 - 40 = 920
-    assert "920 bytes omitted" in content
-
-
-def test_compaction_does_not_mutate_original() -> None:
-    """压缩不应修改原始 messages。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=5,
-            tool_result_max_bytes=50,
-            tool_result_head_bytes=20,
-            tool_result_tail_bytes=20,
-        )
-    )
-    big = "y" * 500
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", big),
-    ]
-    cm.build(messages)
-    assert messages[3]["content"] == big
-
-
-def test_compaction_disabled() -> None:
-    """enable=False 时不应压缩工具结果。"""
-    cm = ContextManager(ContextConfig(enable=False))
-    big = "z" * 1000
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", big),
-    ]
-    result = cm.build(messages)
-    assert result[3]["content"] == big
-
-
-def test_compaction_only_tool_role() -> None:
-    """非 tool 角色的长消息不应被压缩。"""
-    cm = ContextManager(ContextConfig(tool_result_max_bytes=50))
-    big = "a" * 500
-    messages = [
-        _system(),
-        _user(big),  # 长 user 消息
-        _assistant("b" * 500, []),  # 长 assistant 消息
-    ]
-    result = cm.build(messages)
-    assert result[1]["content"] == big
-    assert result[2]["content"] == "b" * 500
-
-
-def test_compaction_utf8_boundary() -> None:
-    """多字节 UTF-8 字符不应被从中间截断。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=5,
-            tool_result_max_bytes=100,
-            tool_result_head_bytes=50,
-            tool_result_tail_bytes=50,
-        )
-    )
-    # 中文：每个字符 3 字节
-    big = "中" * 500
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", big),
-    ]
-    result = cm.build(messages)
-    content = result[-1]["content"]
-
-    assert "\ufffd" not in content
-
-    parts = content.split("\n\n...")
-    assert parts[0].endswith("中")
-    tail_part = parts[-1].split("...\n\n", 1)[-1]
-    assert tail_part.startswith("中")
-
-
-def test_compaction_in_recent_rounds() -> None:
-    """压缩应在最近轮中同样生效。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=2,
-            tool_result_max_bytes=100,
-            tool_result_head_bytes=40,
-            tool_result_tail_bytes=40,
-        )
-    )
-    big1 = "1" * 500
-    big2 = "2" * 500
-    big3 = "3" * 500
-    messages = [
-        _system(),
-        _user("q"),
-        _assistant("", [("c0", "t", "{}")]),
-        _tool("c0", big1),
-        _assistant("", [("c1", "t", "{}")]),
-        _tool("c1", big2),
-        _assistant("", [("c2", "t", "{}")]),
-        _tool("c2", big3),
-    ]
-    result = cm.build(messages)
-
-    # 找到所有 tool 消息
-    tool_contents = [m["content"] for m in result if m.get("role") == "tool"]
-    # 最近 2 轮都应该被压缩
-    for c in tool_contents:
-        assert len(c.encode("utf-8")) < 500
-
-
-def test_safe_head_boundary() -> None:
-    """_safe_head 应回退到字符边界。"""
-    from breeze.context import _safe_head
-
-    # "中" 是 3 字节 e4 b8 ad
-    encoded = "中".encode()
-    assert _safe_head(encoded, 1) == b""
-    assert _safe_head(encoded, 2) == b""
-    assert _safe_head(encoded, 3) == encoded
-
-
-def test_safe_tail_boundary() -> None:
-    """_safe_tail 应前进到字符边界。"""
-    from breeze.context import _safe_tail
-
-    encoded = "中".encode()
-    assert _safe_tail(encoded, 1) == b""
-    assert _safe_tail(encoded, 2) == b""
-    assert _safe_tail(encoded, 3) == encoded
-
-
-# ─── Token 预算驱动 ───
-
-
-def test_token_budget_triggers_compaction() -> None:
-    """大轮触发压缩，即使轮数未超 max_recent_pairs。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=10,
-            max_recent_tokens=200,
-            min_recent_pairs=1,
-        )
-    )
-    # 每轮大约 100 tokens（400 字符 // 4）
-    messages = [_system(), _user("q")]
-    for i in range(5):
-        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
-        messages.append(_tool(f"c{i}", "x" * 400))
-
-    result = cm.build(messages)
-    # 触发压缩，应含摘要
-    assert any("Compressed history" in (m.get("content") or "") for m in result if m.get("role") == "user")
-
-
-def test_token_budget_keeps_all_when_small() -> None:
-    """内容很小时不触发压缩。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=10,
-            max_recent_tokens=10_000,
-            min_recent_pairs=1,
-        )
-    )
-    messages = [_system(), _user("q")]
-    for i in range(3):
-        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
-        messages.append(_tool(f"c{i}", "short"))
-
-    result = cm.build(messages)
-    assert not any("Compressed history" in (m.get("content") or "") for m in result if m.get("role") == "user")
-
-
-def test_token_budget_respects_min_recent_pairs() -> None:
-    """即使超预算，也应保留 min_recent_pairs 轮。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=10,
-            max_recent_tokens=50,  # 极小，必然触发
-            min_recent_pairs=2,
-        )
-    )
-    messages = [_system(), _user("q")]
-    for i in range(5):
-        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
-        messages.append(_tool(f"c{i}", "y" * 400))
-
-    result = cm.build(messages)
-    # 最近 2 轮应完整保留
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    assert len(tool_msgs) >= 2
-    # 最近一条 tool 消息不应被摘要覆盖
-    assert tool_msgs[-1]["content"].startswith("y")
-
-
-def test_token_budget_respects_max_recent_pairs() -> None:
-    """Token 未超时，仍受 max_recent_pairs 上限约束。"""
-    cm = ContextManager(
-        ContextConfig(
-            max_recent_pairs=2,
-            max_recent_tokens=100_000,  # 极大，不触发
-            min_recent_pairs=1,
-        )
-    )
-    messages = [_system(), _user("q")]
-    for i in range(5):
-        messages.append(_assistant("", [(f"c{i}", "t", "{}")]))
-        messages.append(_tool(f"c{i}", "z"))
-
-    result = cm.build(messages)
-    # 应保留最近 2 轮
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    assert len(tool_msgs) == 2
-
-
-def test_estimate_tokens_counts_content_and_args() -> None:
-    """估算应包含 content 和 tool_calls 参数。"""
-    msg = {
-        "role": "assistant",
-        "content": "a" * 400,
-        "tool_calls": [
-            {
-                "id": "c0",
-                "type": "function",
-                "function": {"name": "t", "arguments": '{"k": "' + "x" * 400 + '"}'},
-            }
-        ],
-    }
-    est = ContextManager._estimate_tokens([msg])
-    assert est >= 100  # 400/4 + 400/4 粗略下限
-
-
-# ─── 配置集成 ───
-
-
-def test_context_config_defaults_from_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ContextConfig() 字段取自 settings。"""
-    from breeze.config import settings
-
-    monkeypatch.setattr(settings, "context_max_recent_tokens", 5000)
-    monkeypatch.setattr(settings, "context_max_recent_pairs", 4)
-
-    cfg = ContextConfig()
-
-    assert cfg.max_recent_tokens == 5000
-    assert cfg.max_recent_pairs == 4
-
-
-def test_context_config_explicit_overrides_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """显式传参覆盖 settings。"""
-    from breeze.config import settings
-
-    monkeypatch.setattr(settings, "context_max_recent_tokens", 5000)
-
-    cfg = ContextConfig(max_recent_tokens=1000)
-
-    assert cfg.max_recent_tokens == 1000
-
-
-def test_context_config_enable_false_respected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """enable=False 不被 settings 覆盖。"""
-    from breeze.config import settings
-
-    monkeypatch.setattr(settings, "context_enable", True)
-
-    cfg = ContextConfig(enable=False)
-
-    assert cfg.enable is False
-
-
-def test_default_tool_result_thresholds_are_generous() -> None:
-    """默认阈值应大于 8KB，避免误压缩工具结果。"""
-    cfg = ContextConfig()
-    assert cfg.tool_result_max_bytes >= 16_000
-    assert cfg.tool_result_head_bytes >= 8_000
-
-
-def test_summary_injects_state_block() -> None:
-    """压缩发生时，摘要应包含结构化状态块。"""
-    from breeze.state import SessionState
-
-    st = SessionState(max_entries=8)
-    st.update("grep", {}, "src/a.py:12:def target():", 1)
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    messages = _make_history(3)
-    result = cm.build(messages, state=st)
-
-    summary = result[2]["content"]
-    assert "[Session state" in summary
-    assert "target: src/a.py:12" in summary
-    assert "Symbols located:" in summary
-
-
-def test_summary_state_precedes_findings() -> None:
-    """状态块应位于摘要前部（结论段之前）。"""
-    from breeze.state import SessionState
-
-    st = SessionState(max_entries=8)
-    st.update("grep", {}, "src/a.py:12:def target():", 1)
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    result = cm.build(_make_history(3), state=st)
-
-    summary = result[2]["content"]
-    assert summary.index("Session state") < summary.index("Confirmed findings")
-
-
-def test_no_state_injection_without_compression() -> None:
-    """未触发压缩时不注入状态块（原文仍在窗口内）。"""
-    from breeze.state import SessionState
-
-    st = SessionState(max_entries=8)
-    st.update("grep", {}, "src/a.py:12:def target():", 1)
-
-    cm = ContextManager(ContextConfig(max_recent_pairs=3))
-    result = cm.build(_make_history(2), state=st)
-
     assert not any("[Session state" in str(m.get("content", "")) for m in result)
+
+
+# ─── 兜底压缩 ───
+
+
+def test_single_result_fallback_compaction() -> None:
+    """单条超 16KB 的工具结果被头尾兜底压缩（预算内也会）。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    huge = _code_lines(2000)
+    assert len(huge.encode("utf-8")) > 16_000
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', huge)]
+    result = cm.build(messages)
+
+    tool_msg = next(m for m in result if m["role"] == "tool")
+    assert "bytes omitted" in tool_msg["content"]
+
+
+# ─── Token 计量 ───
+
+
+def test_count_text_tokens_prefers_tiktoken() -> None:
+    """tiktoken 可用时给出真实计数；不可用时回退粗估。"""
+    import breeze.context as ctx
+
+    tokens = _count_text_tokens("def _check_options(tokens):")
+    assert tokens > 0
+
+    if ctx._get_encoding() is not None:
+        # 中文 token 密度与 4 字符粗估明显不同
+        text = "重构拆分检查函数并验证测试通过"
+        assert _count_text_tokens(text) != len(text) // 4
+
+
+def test_count_tokens_fallback_without_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """编码器不可用时回退为 4 字符估算。"""
+    import breeze.context as ctx
+
+    monkeypatch.setattr(ctx, "_encoding", None)
+    monkeypatch.setattr(ctx, "_encoding_failed", True)
+    assert ctx._count_text_tokens("x" * 40) == 10
+
+
+def test_overflow_spill_uses_fallback_when_monkeypatched(tmp_path, monkeypatch) -> None:
+    """兜底估算路径下分级逻辑同样生效。"""
+    import breeze.context as ctx
+
+    monkeypatch.setattr(ctx, "_encoding", None)
+    monkeypatch.setattr(ctx, "_encoding_failed", True)
+
+    big = _code_lines(600)
+    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', big)]
+    result = cm.build(messages)
+
+    tool_msg = next(m for m in result if m["role"] == "tool")
+    assert tool_msg["content"].startswith("[read_file compressed]")

@@ -24,24 +24,16 @@ max_steps = 10
 max_edit_attempts = 5
 
 [context]
-# Set to false to disable context compression entirely.
+# Set to false to disable context management entirely.
 enable = true
-# Budget of the LLM-facing message list (excluding tool schemas).
-max_recent_tokens = 3000
-# Always keep at least this many recent rounds, even if over budget.
-min_recent_pairs = 1
-# Hard upper bound on retained recent rounds.
-max_recent_pairs = 3
-# Characters of tool arguments shown in compressed summaries.
-arguments_preview = 60
-# Characters kept per assistant conclusion inside compressed summaries.
-summary_findings_preview = 240
-# Maximum number of conclusions retained in a summary (most recent kept).
-summary_max_findings = 12
+# Real-token budget for one user-turn episode (tiktoken). Only when the
+# turn exceeds it are the oldest read_file results demoted to pointers.
+intra_turn_budget = 24000
 # Maximum entries per section in the structured session-state block
 # (symbols, reads, edits) injected with the summary on compression.
 state_max_entries = 8
-# Tool results above this size are compacted to head + tail.
+# Tool results above this size are compacted to head + tail (fallback
+# only; per-tool caps align with this budget).
 tool_result_max_bytes = 16000
 tool_result_head_bytes = 8000
 tool_result_tail_bytes = 8000

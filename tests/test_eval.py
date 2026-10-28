@@ -332,7 +332,7 @@ def test_run_eval_logs_effective_config(
     joined = "\n".join(messages)
     assert "model=" in joined
     assert "context.enable=" in joined
-    assert "context.max_recent_tokens=" in joined
+    assert "context.intra_turn_budget=" in joined
 
 
 def test_run_eval_merges_manual_grades(
