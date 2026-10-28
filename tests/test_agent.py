@@ -325,33 +325,36 @@ def test_agent_disables_tools_on_last_step(trace: RunTrace, fake_tool: None) -> 
     assert last_tools == []
 
 
-def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Agent 应在调用 LLM 前压缩 messages。"""
-    from breeze.context import ContextConfig, ContextManager
+def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
+    """Agent 应在每轮调用 LLM 前用 ContextManager 构建消息并传入 state。"""
+    from breeze.context import ContextManager
 
-    captured_lengths: list[int] = []
+    seen_state: list[bool] = []
+    calls: list[int] = []
+
+    class RecordingContext(ContextManager):
+        def build(self, messages, state=None):
+            seen_state.append(state is not None)
+            return super().build(messages, state=state)
 
     class RecordingLLM:
         model = "recorder"
 
         def __init__(self) -> None:
-            self.responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(5)] + [
+            self.responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(3)] + [
                 _text("done")
             ]
 
         def chat(self, messages, tools=None, temperature=0.0):
-            captured_lengths.append(len(messages))
+            calls.append(len(messages))
             return self.responses.pop(0)
 
-    cm = ContextManager(ContextConfig(max_recent_pairs=1))
-    agent = Agent(llm=RecordingLLM(), trace=trace, max_steps=6, context=cm)
-    agent.run("go")
+    agent = Agent(llm=RecordingLLM(), trace=trace, max_steps=6, context=RecordingContext())
+    assert agent.run("go") == "done"
 
-    # 未压缩时长度会线性增长到 13 左右（6 轮 × 2 + 2 head + 注入提示）
-    # 压缩后应稳定在小范围内，由 head(2) + summary(1) + recent 轮决定
-    # max_recent_pairs=1 时 recent 轮最多 3 条（含收尾注入），上限为 6
-    assert max(captured_lengths) <= 7
-    assert len(captured_lengths) == 6
+    # 每轮 build 都传入了 SessionState
+    assert seen_state == [True] * 4
+    assert len(calls) == 4
 
 
 # ─── 编辑能力集成 ───
@@ -574,12 +577,14 @@ def test_agent_injects_state_block_on_compression(
             _text("done"),
         ]
     )
-    agent = Agent(llm=llm, trace=trace, context=ContextManager(ContextConfig(max_recent_pairs=1)))
+    agent = Agent(llm=llm, trace=trace, context=ContextManager(ContextConfig(intra_turn_budget=1)))
     answer = agent.run("read a.py twice")
 
     assert answer == "done"
     final_messages = llm.calls[2]["messages"]
-    assert any("[Session state" in str(m.get("content", "")) for m in final_messages)
+    joined = " ".join(str(m.get("content", "")) for m in final_messages)
+    assert "[Session state" in joined
+    assert "[read_file compressed]" in joined
 
 
 def test_agent_halfway_nudge_when_no_edits(trace: RunTrace, fake_tool: None) -> None:

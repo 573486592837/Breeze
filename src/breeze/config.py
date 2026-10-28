@@ -38,12 +38,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "context": {
         "enable": True,
-        "max_recent_tokens": 3000,
-        "min_recent_pairs": 1,
-        "max_recent_pairs": 3,
-        "arguments_preview": 60,
-        "summary_findings_preview": 240,
-        "summary_max_findings": 12,
+        "intra_turn_budget": 24000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
         "tool_result_head_bytes": 8000,
@@ -61,7 +56,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
     "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
-    "BREEZE_CONTEXT_MAX_RECENT_TOKENS": ("context", "max_recent_tokens"),
+    "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
     "BREEZE_TRACE_DIR": ("trace", "dir"),
 }
 
@@ -183,12 +178,7 @@ class Settings:
         self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])
 
         self.context_enable: bool = bool(cfg["context"]["enable"])
-        self.context_max_recent_tokens: int = int(cfg["context"]["max_recent_tokens"])
-        self.context_min_recent_pairs: int = int(cfg["context"]["min_recent_pairs"])
-        self.context_max_recent_pairs: int = int(cfg["context"]["max_recent_pairs"])
-        self.context_arguments_preview: int = int(cfg["context"]["arguments_preview"])
-        self.context_summary_findings_preview: int = int(cfg["context"]["summary_findings_preview"])
-        self.context_summary_max_findings: int = int(cfg["context"]["summary_max_findings"])
+        self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
         self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])
         self.context_tool_result_head_bytes: int = int(cfg["context"]["tool_result_head_bytes"])

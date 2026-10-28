@@ -752,7 +752,7 @@ def run_eval(
         log("[config] effective settings:")
         log(f"  model={llm.model}")
         log(f"  context.enable={settings.context_enable}")
-        log(f"  context.max_recent_tokens={settings.context_max_recent_tokens}")
+        log(f"  context.intra_turn_budget={settings.context_intra_turn_budget}")
         log(f"  agent.max_steps(default)={settings.agent_max_steps}")
         log(f"  agent.max_edit_attempts={settings.agent_max_edit_attempts}")
 

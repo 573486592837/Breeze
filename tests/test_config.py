@@ -62,10 +62,8 @@ def test_defaults_context_fields() -> None:
     ctx = DEFAULTS["context"]
     for key in (
         "enable",
-        "max_recent_tokens",
-        "min_recent_pairs",
-        "max_recent_pairs",
-        "arguments_preview",
+        "intra_turn_budget",
+        "state_max_entries",
         "tool_result_max_bytes",
         "tool_result_head_bytes",
         "tool_result_tail_bytes",
@@ -74,11 +72,10 @@ def test_defaults_context_fields() -> None:
     assert isinstance(ctx["enable"], bool)
 
 
-def test_defaults_context_summary_findings() -> None:
-    """summary 结论提取的默认值存在且类型正确。"""
+def test_defaults_context_v2_values() -> None:
+    """回合制上下文策略的默认值存在且类型正确。"""
     ctx = DEFAULTS["context"]
-    assert ctx["summary_findings_preview"] == 240
-    assert ctx["summary_max_findings"] == 12
+    assert ctx["intra_turn_budget"] == 24000
     assert ctx["state_max_entries"] == 8
 
 
@@ -117,11 +114,11 @@ def test_repo_config_overrides_defaults(tmp_path: Path) -> None:
 
 def test_user_config_overrides_defaults(tmp_path: Path, isolated_config: Path) -> None:
     """用户级配置覆盖默认值。"""
-    isolated_config.write_text("[context]\nmax_recent_tokens = 1234\n", encoding="utf-8")
+    isolated_config.write_text("[context]\nintra_turn_budget = 1234\n", encoding="utf-8")
 
     cfg = load_config(tmp_path)
 
-    assert cfg["context"]["max_recent_tokens"] == 1234
+    assert cfg["context"]["intra_turn_budget"] == 1234
 
 
 def test_repo_overrides_user(tmp_path: Path, isolated_config: Path) -> None:
@@ -270,7 +267,7 @@ def test_settings_reads_repo_config(tmp_path: Path) -> None:
     """Settings 从 repo_root 下的 breeze.toml 读值。"""
     (tmp_path / "breeze.toml").write_text(
         "[agent]\nmax_steps = 3\nmax_edit_attempts = 2\n"
-        "[context]\nmax_recent_tokens = 500\n"
+        "[context]\nintra_turn_budget = 500\n"
         '[llm]\nmodel = "openai/test-model"\ntemperature = 0.5\n',
         encoding="utf-8",
     )
@@ -279,7 +276,7 @@ def test_settings_reads_repo_config(tmp_path: Path) -> None:
 
     assert s.agent_max_steps == 3
     assert s.agent_max_edit_attempts == 2
-    assert s.context_max_recent_tokens == 500
+    assert s.context_intra_turn_budget == 500
     assert s.model == "openai/test-model"
     assert s.llm_temperature == 0.5
 
@@ -289,7 +286,7 @@ def test_settings_uses_defaults_without_config(tmp_path: Path) -> None:
     s = Settings(repo_root=tmp_path)
 
     assert s.agent_max_steps == DEFAULTS["agent"]["max_steps"]
-    assert s.context_max_recent_tokens == DEFAULTS["context"]["max_recent_tokens"]
+    assert s.context_intra_turn_budget == DEFAULTS["context"]["intra_turn_budget"]
     assert s.model == DEFAULTS["llm"]["model"]
 
 
@@ -325,6 +322,6 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     assert isinstance(s.agent_max_steps, int)
     assert isinstance(s.agent_max_edit_attempts, int)
     assert isinstance(s.context_enable, bool)
-    assert isinstance(s.context_max_recent_tokens, int)
+    assert isinstance(s.context_intra_turn_budget, int)
     assert isinstance(s.llm_temperature, float)
     assert isinstance(s.trace_dir, str)
