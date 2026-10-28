@@ -163,17 +163,19 @@ class ContextManager:
         self,
         messages: list[dict[str, Any]],
         state: Any | None = None,
+        archive: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
         Args:
-            messages: 完整历史（单回合：system、user、若干轮）。
-            state: SessionState 实例；发生降级时其状态块随之注入。
+            messages: 当前回合的完整历史（system、user、若干轮）。
+            state: SessionState 实例；发生降级或存在回合归档时注入。
+            archive: TurnLedger 渲染的已完成回合文本；注入在 system 之后。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
         """
-        if not self.config.enable or len(messages) <= 2:
+        if not self.config.enable or len(messages) < 2:
             return list(messages)
 
         head = list(messages[:2])
@@ -198,15 +200,22 @@ class ContextManager:
                 converted.append(self._compact_tool_result(msg))
 
         budget = self.config.intra_turn_budget
-        if self._measure(head, converted, state) > budget:
-            converted, spilled = self._spill(head, converted, id_to_name, id_to_args, budget, state, READ_TOOLS)
+        if self._measure(head, converted, state, archive) > budget:
+            converted, spilled = self._spill(
+                head, converted, id_to_name, id_to_args, budget, state, archive, READ_TOOLS
+            )
             demoted = demoted or spilled
-        if self._measure(head, converted, state) > budget:
-            converted, spilled = self._spill(head, converted, id_to_name, id_to_args, budget, state, SPILL_TOOLS)
+        if self._measure(head, converted, state, archive) > budget:
+            converted, spilled = self._spill(
+                head, converted, id_to_name, id_to_args, budget, state, archive, SPILL_TOOLS
+            )
             demoted = demoted or spilled
 
-        result = list(head)
-        if demoted and state is not None:
+        result: list[dict[str, Any]] = [head[0]]
+        if archive:
+            result.append({"role": "user", "content": archive})
+        result.append(head[1])
+        if state is not None and (demoted or archive):
             block = state.render()
             if block:
                 result.append({"role": "user", "content": block})
@@ -221,6 +230,7 @@ class ContextManager:
         id_to_args: dict[str, dict[str, Any]],
         budget: int,
         state: Any | None,
+        archive: str | None,
         classes: frozenset[str],
     ) -> tuple[list[dict[str, Any]], bool]:
         """预算溢出时，从最旧开始把指定类别的工具结果降级为指针。
@@ -232,6 +242,7 @@ class ContextManager:
             id_to_args: tool_call_id -> 参数 dict。
             budget: Token 上限。
             state: 用于计入状态块开销，可为 None。
+            archive: 回合归档文本，计入 head 开销，可为 None。
             classes: 本次允许降级的工具类别。
 
         Returns:
@@ -240,7 +251,7 @@ class ContextManager:
         out = list(converted)
         changed = False
         for i, msg in enumerate(out):
-            if self._measure(head, out, state) <= budget:
+            if self._measure(head, out, state, archive) <= budget:
                 break
             if msg.get("role") != "tool":
                 continue
@@ -279,9 +290,12 @@ class ContextManager:
         head: list[dict[str, Any]],
         body: list[dict[str, Any]],
         state: Any | None,
+        archive: str | None = None,
     ) -> int:
-        """估算 head+body(+状态块) 的实际 Token 总量。"""
+        """估算 head+archive(+状态块)+body 的实际 Token 总量。"""
         total = self._count_messages(head) + self._count_messages(body)
+        if archive:
+            total += _count_text_tokens(archive) + 10
         if state is not None:
             block = state.render()
             if block:

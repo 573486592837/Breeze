@@ -448,6 +448,9 @@ breeze ask "修复 src/breeze/tools/safety.py 的路径逃逸问题"
 
 # 限制步数
 breeze ask "找出 read_file 的实现位置" --max-steps 4
+
+# 交互式多回合会话（/new 重置，/exit 退出）
+breeze chat
 ```
 
 ---

@@ -333,9 +333,9 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
     calls: list[int] = []
 
     class RecordingContext(ContextManager):
-        def build(self, messages, state=None):
+        def build(self, messages, state=None, archive=None):
             seen_state.append(state is not None)
-            return super().build(messages, state=state)
+            return super().build(messages, state=state, archive=archive)
 
     class RecordingLLM:
         model = "recorder"
@@ -636,6 +636,103 @@ def test_agent_no_halfway_nudge_after_edit(trace: RunTrace, tmp_path: Path, monk
         return " ".join(str(m.get("content", "")) for m in call["messages"])
 
     assert not any("一半的步数" in _flatten(call) for call in llm.calls)
+
+
+# ─── 多回合会话 ───
+
+
+def test_agent_archives_completed_turns(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第二回合的 LLM 视图应含上一回合问答，且不含其工具结果原文。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+    (root / "a.py").write_text("def target():\n    pass\n", encoding="utf-8")
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}),
+            _text("turn1 conclusion"),
+            _text("turn2 answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("where is target defined?") == "turn1 conclusion"
+    assert agent.run("thanks") == "turn2 answer"
+
+    turn2_view = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in turn2_view)
+    assert "[Completed turns" in joined
+    assert "where is target defined?" in joined
+    assert "turn1 conclusion" in joined
+    assert "def target():" not in joined
+
+    # 归档的触碰文件来自真实工具参数
+    assert agent.ledger.records[0].touched == ["a.py"]
+    assert agent.ledger.touched_files() == ["a.py"]
+
+    # 完整消息日志仍在 self.messages 里供调试
+    assert any("def target():" in str(m.get("content", "")) for m in agent.messages)
+
+
+def test_agent_second_turn_view_only_grows_within_turn(
+    trace: RunTrace,
+    fake_tool: None,
+) -> None:
+    """回合内视图含本回合工具轮，不含上一回合的轮。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "one"}, call_id="t1c1"),
+            _text("first answer"),
+            _tool_call("fake_echo", {"text": "two"}, call_id="t2c1"),
+            _text("second answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("q1")
+    agent.run("q2")
+
+    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题
+    roles = [m["role"] for m in llm.calls[2]["messages"]]
+    assert roles == ["system", "user", "user"]
+
+    # 第三次调用带上了本回合的工具轮
+    roles = [m["role"] for m in llm.calls[3]["messages"]]
+    assert roles == ["system", "user", "user", "assistant", "tool"]
+    assert "echo: two" in str(llm.calls[3]["messages"][-1]["content"])
+    assert "echo: one" not in " ".join(str(m.get("content", "")) for m in llm.calls[3]["messages"])
+
+
+def test_agent_reset_clears_history_and_ledger(trace: RunTrace, fake_tool: None) -> None:
+    """reset 后消息日志、归档与状态全部清空，下一回合无归档注入。"""
+    llm = FakeLLMClient([_text("a1"), _text("a2")])
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("q1")
+    agent.reset()
+
+    assert agent.messages == []
+    assert agent.ledger.records == []
+    assert agent.state.reads == {}
+
+    agent.run("q2")
+    joined = " ".join(str(m.get("content", "")) for m in llm.calls[1]["messages"])
+    assert "[Completed turns" not in joined
+
+
+def test_agent_archives_failed_turns(trace: RunTrace, fake_tool: None) -> None:
+    """失败回合（步数耗尽）也进入归档，供下一回合知道未完成任务。"""
+    responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(3)]
+    llm = FakeLLMClient(responses + [_text("recovered")])
+    agent = Agent(llm=llm, trace=trace, max_steps=3)
+
+    result = agent.run("loop forever")
+    assert "max steps" in result.lower()
+    assert agent.ledger.records[0].answer.startswith("Reached max steps")
 
 
 def test_agent_executes_parallel_tool_calls_in_one_step(trace: RunTrace, fake_tool: None) -> None:

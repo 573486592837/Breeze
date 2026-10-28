@@ -243,3 +243,80 @@ def test_ask_uses_settings_max_steps_when_not_specified(
 
     assert result.exit_code == 0
     assert captured["resolved_max_steps"] == 4
+
+
+# ─── chat 命令 ───
+
+
+def test_chat_runs_turns_until_exit(repo: Path, tmp_path: Path) -> None:
+    """chat 逐回合执行并退出。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="hello\nagain\n/exit\n",
+    )
+    assert result.exit_code == 0
+    assert result.stdout.count("fake answer") == 2
+    assert "bye." in result.stdout
+
+
+def test_chat_writes_one_trace_per_turn(repo: Path, tmp_path: Path) -> None:
+    """每回合生成独立 trace 文件。"""
+    trace_dir = tmp_path / "traces"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir)],
+        input="hello\nagain\n/exit\n",
+    )
+    assert len(list(trace_dir.glob("*.jsonl"))) == 2
+
+
+def test_chat_help_command(repo: Path, tmp_path: Path) -> None:
+    """/help 输出命令说明且不进入回合。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/help\n/exit\n",
+    )
+    assert result.exit_code == 0
+    assert "/new" in result.stdout
+    assert "fake answer" not in result.stdout
+
+
+def test_chat_invalid_repo(tmp_path: Path) -> None:
+    """仓库路径无效时退出码为 1。"""
+    result = runner.invoke(app, ["chat", "--repo", str(tmp_path / "not-exist")], input="/exit\n")
+    assert result.exit_code == 1
+
+
+def test_chat_runtime_error(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回合内异常退出码为 2。"""
+
+    class ExplodingAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def reset(self) -> None:
+            pass
+
+        def run(self, question):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli_module, "Agent", ExplodingAgent)
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="hello\n",
+    )
+    assert result.exit_code == 2
+
+
+def test_chat_restores_repo_root(repo: Path, tmp_path: Path) -> None:
+    """退出后 settings.repo_root 应恢复为原值。"""
+    original = cli_module.settings.repo_root
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/exit\n",
+    )
+    assert cli_module.settings.repo_root == original
