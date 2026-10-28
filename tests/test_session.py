@@ -35,28 +35,46 @@ def _state() -> SessionState:
     return st
 
 
-# ─── 落盘与恢复 ───
+def _events(store: SessionStore) -> list[dict]:
+    return [json.loads(ln) for ln in store.path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_new_session_writes_start_event(tmp_path: Path) -> None:
-    """新建会话写入 session_start，含仓库与模型。"""
+# ─── 落盘时机 ───
+
+
+def test_empty_session_writes_no_file(tmp_path: Path) -> None:
+    """没有回合的会话不落盘：只 /help 就退出、或测试跑空都不留垃圾文件。"""
     store = _store(tmp_path)
-    events = [json.loads(ln) for ln in store.path.read_text(encoding="utf-8").splitlines()]
+    store.record_reset()
 
-    assert store.path.parent == tmp_path / "sessions"
-    assert events[0]["event"] == "session_start"
+    assert not store.path.exists()
+
+
+def test_first_turn_writes_start_event_then_turn(tmp_path: Path) -> None:
+    """第一个回合先写 session_start，再写 turn。"""
+    store = _store(tmp_path)
+    store.record_turn(_record(1, "为什么失败", "因为 x"), _state(), _summary())
+
+    events = _events(store)
+
+    assert [e["event"] for e in events] == ["session_start", "turn"]
     assert events[0]["session_id"] == "s1"
     assert events[0]["model"] == "fake-model"
     assert events[0]["repo_root"] == str(tmp_path)
 
 
-def test_existing_session_is_not_restarted(tmp_path: Path) -> None:
-    """同 ID 再次绑定不重复写 session_start。"""
-    _store(tmp_path)
-    again = _store(tmp_path)
-    text = again.path.read_text(encoding="utf-8")
+def test_start_event_written_once(tmp_path: Path) -> None:
+    """同 ID 反复写回合只保留一个头事件。"""
+    _store(tmp_path).record_turn(_record(1), _state(), _summary())
+    _store(tmp_path).record_turn(_record(2), _state(), _summary("r2"))
+
+    text = _store(tmp_path).path.read_text(encoding="utf-8")
 
     assert text.count('"event": "session_start"') == 1
+    assert text.count('"event": "turn"') == 2
+
+
+# ─── 恢复 ───
 
 
 def test_round_trip_restores_ledger_and_state(tmp_path: Path) -> None:
@@ -120,10 +138,7 @@ def test_corrupt_lines_are_skipped(tmp_path: Path) -> None:
 
 def test_load_without_file_returns_empty(tmp_path: Path) -> None:
     """会话文件不存在时恢复为空归档。"""
-    store = SessionStore(tmp_path / "sessions", "never-written")
-    store.path.unlink()
-
-    ledger, state = store.load()
+    ledger, state = SessionStore(tmp_path / "sessions", "never-written").load()
 
     assert ledger.records == []
     assert state.render() == ""
@@ -146,7 +161,7 @@ def test_resume_latest_picks_newest(tmp_path: Path) -> None:
 
 def test_resume_by_id_accepts_suffix(tmp_path: Path) -> None:
     """传入带 .jsonl 的 ID 也能解析。"""
-    SessionStore(tmp_path / "sessions", "20260101T000000_aaa")
+    SessionStore(tmp_path / "sessions", "20260101T000000_aaa").record_turn(_record(1), _state(), _summary())
 
     store = SessionStore.resume("20260101T000000_aaa.jsonl", tmp_path / "sessions")
 
@@ -155,7 +170,7 @@ def test_resume_by_id_accepts_suffix(tmp_path: Path) -> None:
 
 def test_resume_unknown_id_raises(tmp_path: Path) -> None:
     """ID 不存在时报错并提示 --list。"""
-    SessionStore(tmp_path / "sessions", "20260101T000000_aaa")
+    SessionStore(tmp_path / "sessions", "20260101T000000_aaa").record_turn(_record(1), _state(), _summary())
 
     with pytest.raises(FileNotFoundError, match="--list"):
         SessionStore.resume("20990101T000000_zzz", tmp_path / "sessions")
@@ -212,9 +227,9 @@ def test_list_sessions_counts_turns_after_reset(tmp_path: Path) -> None:
 
 
 def test_list_sessions_sorted_newest_first(tmp_path: Path) -> None:
-    """按 ID 从新到旧排列。"""
+    """按 ID 从新到旧排列；只有写过回合的会话才存在于目录里。"""
     for sid in ("20260101T000000_aaa", "20260201T000000_bbb", "20260301T000000_ccc"):
-        SessionStore(tmp_path / "sessions", sid)
+        SessionStore(tmp_path / "sessions", sid).record_turn(_record(1), _state(), _summary())
 
     infos = SessionStore.list_sessions(tmp_path / "sessions")
 
@@ -248,6 +263,7 @@ def test_default_dir_comes_from_settings(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(settings, "sessions_dir", tmp_path / "configured")
 
     store = SessionStore(session_id="20260101T000000_aaa")
+    store.record_turn(_record(1), _state(), _summary())
 
     assert store.path == tmp_path / "configured" / "20260101T000000_aaa.jsonl"
     assert SessionStore.list_sessions()[0].session_id == "20260101T000000_aaa"
