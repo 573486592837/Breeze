@@ -733,3 +733,37 @@ def test_agent_archives_failed_turns(trace: RunTrace, fake_tool: None) -> None:
     result = agent.run("loop forever")
     assert "max steps" in result.lower()
     assert agent.ledger.records[0].answer.startswith("Reached max steps")
+
+
+def test_agent_executes_parallel_tool_calls_in_one_step(trace: RunTrace, fake_tool: None) -> None:
+    """一轮返回多个工具调用时，应全部执行且只消耗一步。"""
+    resp = LLMResponse(
+        content=None,
+        tool_calls=[
+            {
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "fake_echo", "arguments": json.dumps({"text": "a"})},
+            },
+            {
+                "id": "c2",
+                "type": "function",
+                "function": {"name": "fake_echo", "arguments": json.dumps({"text": "b"})},
+            },
+        ],
+        prompt_tokens=5,
+        completion_tokens=5,
+        total_tokens=10,
+    )
+    llm = FakeLLMClient([resp, _text("done")])
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("echo both") == "done"
+    assert len(llm.calls) == 2
+
+    messages = llm.calls[1]["messages"]
+    assistant = next(m for m in messages if m["role"] == "assistant")
+    assert len(assistant["tool_calls"]) == 2
+    tool_msgs = [m for m in messages if m["role"] == "tool"]
+    assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
+    assert "echo: a" in tool_msgs[0]["content"] and "echo: b" in tool_msgs[1]["content"]
