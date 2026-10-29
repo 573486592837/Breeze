@@ -32,6 +32,35 @@ python -m ruff format src tests
   中声明的默认值。修改这些常量需要在 PR 里单独说明理由，并补防回归测试。
 - commit 前必须跑 `ruff check` 与 `ruff format`。
 
+## 打包与版本边界
+
+- 版本号只在 `src/breeze/__init__.py` 的 `__version__` 定义一次；
+  `pyproject.toml` 用 `[tool.setuptools.dynamic] version = { attr = ... }`
+  读取它，因此 wheel 文件名、`breeze --version` 与代码里的值必然同源。
+- **release 与开发面分离**：评估框架放在包外的顶层 `breeze_eval/`，
+  不进 wheel（`tests/test_packaging.py` 会断言这一点）。历史原因：它曾在
+  `src/breeze/eval.py`，于是 pip 安装的用户也拿到一套跑不起来的评估代码。
+- sdist 反过来要保留 `tests/`、`breeze_eval/`、`tasks/`、`fixtures/`、
+  `samples/`、`scripts/`（能从发行包复现评估），只 `prune` 运行产物
+  `traces/`、`reports/`。边界写在 `MANIFEST.in`。
+- 手工构建与检查（未装 `build` 也能做）：
+
+  ```bash
+  python -c "from setuptools import build_meta as bm; print(bm.build_wheel('dist'), bm.build_sdist('dist'))"
+  python -m zipfile -l dist/breeze-<ver>-py3-none-any.whl
+  ```
+
+## 版本发布流程
+
+1. 把 `src/breeze/__init__.py` 的 `__version__` bump 到目标版本，单独一个
+   commit（`chore(release): bump version to vX.Y.Z`）。
+2. 全量测试 + `scripts/report.py` 出发布报告。
+3. PR 合并进 `main` 后，在合并 commit 上打带注释 tag：
+   `git tag -a vX.Y.Z-<slug> <merge-sha> -m "..."`，tag 正文写清实测数据。
+4. 推送 tag：`git push origin vX.Y.Z-<slug>`（GitHub 连不上时用
+   `git -c http.proxy=http://127.0.0.1:7897`）。
+5. 删除远端与本地已合并分支。
+
 ## 分支与发布流程
 
 1. 从 `main` 切出 `feat/...`、`fix/...` 或 `docs/...` 分支；不在 main 上直接提交。
@@ -42,7 +71,7 @@ python -m ruff format src tests
 
 ## 添加评估任务
 
-任务集在 `tasks/*.yaml`，字段说明见 `src/breeze/eval.py` 的 `TaskSpec`。
+任务集在 `tasks/*.yaml`，字段说明见 `breeze_eval/harness.py` 的 `TaskSpec`。
 
 - 长任务通过 `setup: [{patch: xxx.patch}]` 注入初始状态，patch 风格与
   `fixtures/` 现有文件一致：以 `--- /dev/null`（新文件）或 `--- a/...`
@@ -92,5 +121,7 @@ python -m ruff format src tests
 - [ ] `python -m pytest` 全绿
 - [ ] `ruff check` / `ruff format` 无改动
 - [ ] 新配置项走 DEFAULTS → Settings → example → 测试 四处
-- [ ] 新评估任务完成红/绿验证
+- [ ] 写用户主目录/仓库外路径的功能：测试用 `tests/conftest.py` 隔离目标目录，
+      且空运行不留文件（提交前数一遍真实目录的文件数）
+- [ ] 新任务必须做红/绿验证
 - [ ] 用户可见行为变化已同步 README 对应小节

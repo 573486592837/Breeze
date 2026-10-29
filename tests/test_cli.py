@@ -555,3 +555,16 @@ def test_chat_without_session_dir_uses_configured_dir(
 
     assert result.exit_code == 0
     assert len(list(configured.glob("*.jsonl"))) == 1
+
+
+# ─── 版本 ───
+
+
+def test_version_flag() -> None:
+    """breeze --version 输出与 breeze.__version__ 一致。"""
+    from breeze import __version__
+
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert __version__ in result.stdout

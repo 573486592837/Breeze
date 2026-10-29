@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from breeze import __version__
 from breeze.agent import Agent
 from breeze.chat import run_chat
 from breeze.config import settings
@@ -32,8 +33,24 @@ console = Console()
 error_console = Console(stderr=True)
 
 
+def _version_callback(value: bool) -> None:
+    """打印版本后退出。"""
+    if value:
+        console.print(f"breeze {__version__}")
+        raise typer.Exit()
+
+
 @app.callback()
-def breeze_callback() -> None:
+def breeze_callback(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="print version and exit",
+    ),
+) -> None:
     """Register a callback so Typer keeps the `breeze ask <question>` command group."""
 
 

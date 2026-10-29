@@ -572,11 +572,13 @@ python scripts/report.py --input reports/long_baseline.json --output reports/lon
 breeze/
 ├── src/breeze/
 │   ├── agent.py          # ReAct 循环
+│   ├── chat.py           # 交互式多回合会话循环
 │   ├── cli.py            # CLI 入口
 │   ├── config.py         # 分层配置
 │   ├── context.py        # 上下文管理
-│   ├── eval.py           # 评估核心（含 worktree 隔离）
 │   ├── llm.py            # LLM 客户端
+│   ├── session.py        # 会话持久化（~/.breeze/sessions）
+│   ├── state.py          # 跨压缩的会话事实索引
 │   ├── trace.py          # JSONL trace
 │   └── tools/
 │       ├── registry.py
@@ -586,6 +588,8 @@ breeze/
 │       ├── shell.py
 │       ├── edit.py       # apply_patch, create_file, git_diff, git_restore, run_tests
 │       └── repo_map.py
+├── breeze_eval/
+│   └── harness.py        # 评估框架（包外的开发面，不进 wheel）
 ├── scripts/
 │   ├── eval.py
 │   └── report.py

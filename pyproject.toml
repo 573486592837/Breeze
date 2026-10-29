@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "breeze"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Token-efficient coding agent"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,6 +28,9 @@ breeze = "breeze.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "breeze.__version__" }
 
 # ─── Ruff：lint + format ───
 
@@ -68,4 +71,5 @@ indent-style = "space"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# src 提供 breeze 包；仓库根提供包外的开发模块 breeze_eval
+pythonpath = ["src", "."]
