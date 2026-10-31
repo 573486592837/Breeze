@@ -279,6 +279,17 @@ def chat(
                     f"当前仓库是 {repo_root}，历史索引可能指向已不存在的文件。[/yellow]"
                 )
 
+        summaries: list[dict] = []
+
+        def _on_turn_summary(summary: dict, turn: int) -> None:
+            summaries.append(summary)
+            console.print(
+                f"[turn {turn}] 本轮 tokens：{summary['total_tokens']} "
+                f"(prompt {summary['prompt_tokens']} / completion {summary['completion_tokens']})",
+                style="dim",
+                markup=False,
+            )
+
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(
                 llm=controller.llm,
@@ -292,10 +303,12 @@ def chat(
             print_fn=lambda text: console.print(text, markup=False),
             session=session,
             answer_fn=lambda answer: console.print(_answer_panel(answer)),
-            summary_fn=lambda summary, turn: _print_summary(summary, title=f"Trace Summary · turn {turn}"),
+            summary_fn=_on_turn_summary,
             command_fn=controller.handle,
             agent_setup_fn=controller.apply_to_agent,
         )
+        if summaries:
+            _print_chat_summary(summaries)
     except typer.Exit:
         raise
     except KeyboardInterrupt:
@@ -366,6 +379,22 @@ def _print_summary(summary: dict, title: str = "Trace Summary") -> None:
     table.add_row("llm_latency_ms", f"{summary['llm_latency_ms']:.1f}")
     table.add_row("tool_latency_ms", f"{summary['tool_latency_ms']:.1f}")
     table.add_row("errors", str(summary["errors"]))
+
+    console.print()
+    console.print(table)
+
+
+def _print_chat_summary(summaries: list[dict]) -> None:
+    """会话结束时汇总本次对话的调用与 Token。"""
+    table = Table(title="Trace Summary", show_header=False, border_style="cyan")
+    table.add_column("key", style="dim")
+    table.add_column("value", justify="right")
+
+    table.add_row("turns", str(len(summaries)))
+    for key in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens", "total_tokens", "errors"):
+        table.add_row(key, str(sum(int(s.get(key, 0)) for s in summaries)))
+    for key in ("llm_latency_ms", "tool_latency_ms"):
+        table.add_row(key, f"{sum(float(s.get(key, 0.0)) for s in summaries):.1f}")
 
     console.print()
     console.print(table)
