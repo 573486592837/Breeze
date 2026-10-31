@@ -373,3 +373,25 @@ wheel 里唯一的开发面泄漏是 `src/breeze/eval.py`（799 行评估框架�
 
 验证：wheel 24 → 23 个成员（去掉 `breeze/eval.py`），名为 `breeze-1.3.0-py3-none-any.whl`；
 sdist 顶层含 `src/tests/breeze_eval/tasks/fixtures/samples/scripts`，不含 `traces/reports`。
+
+---
+
+## wheel 安装读不到 .env (v1.3.1)
+
+打包分离之后，用 wheel 装的 `breeze` 第一次跑就报 `SILICONFLOW_API_KEY 未设置`，
+而运行目录里明明有 `.env`。
+
+原因是 `config.py` 用的是 `load_dotenv()` 的默认查找：python-dotenv 以**调用方文件**
+为起点逐级向上找。editable 安装时调用方文件是 `D:\prog\Breeze\src\breeze\config.py`，
+向上第一站就是仓库根，`.env` 命中；wheel 安装时起点变成
+`<env>\Lib\site-packages\breeze\config.py`，向上走的是 site-packages → env → …，
+项目目录根本不在这条链上，于是永远读不到。`python -c` 手测不出来，因为解释器把
+交互模式回退成 cwd 查找 —— 只有控制台入口（脚本文件模式）才暴露。
+
+修复：`find_dotenv_path()` 自己从 `Path.cwd()` 逐级向上找，与安装方式无关；
+`breeze.config` 模块级加载最近的一份 `.env`，已存在的同名环境变量仍然优先
+（`load_dotenv` 默认不覆盖）。
+
+防回归：`tests/test_config.py` 把包复制到独立目录（模拟 site-packages），
+用脚本文件子进程从另一个目录运行，断言读到的 key 来自**运行目录**的 `.env`。
+这个测试在旧实现下是红的。

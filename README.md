@@ -176,9 +176,10 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 
 可选：复制 `breeze.toml.example` 为 `breeze.toml`，调整 Agent 参数。
 
-`.env` 的查找位置是**当前工作目录及其父目录**（python-dotenv 的 `find_dotenv`
-行为），已存在的同名环境变量优先级更高；不需要调用模型的命令
-（`breeze --version`、`breeze chat --list`）没有 API Key 也能用。
+`.env` 的查找位置是**当前工作目录及其父目录**，最近的一份生效（不依赖
+安装方式：editable 与 wheel 安装都从运行目录往上找），已存在的同名环境
+变量优先级更高；不需要调用模型的命令（`breeze --version`、
+`breeze chat --list`）没有 API Key 也能用。
 
 ### 使用
 
