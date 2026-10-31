@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from breeze.config import settings
-from breeze.tools import registry
+from breeze.tools import registry, shell
 
 
 @pytest.fixture
@@ -162,6 +162,19 @@ def test_run_shell_success_returns_stdout(repo: Path, fake_run: dict[str, Any]) 
     assert "exit_code: 0" in out
     assert "hello" in out
     assert "--- stdout ---" in out
+
+
+def test_decode_process_output_prefers_utf8() -> None:
+    """UTF-8 输出按 UTF-8 解码。"""
+    assert shell.decode_process_output("通过".encode()) == "通过"
+
+
+def test_decode_process_output_falls_back_to_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows 控制台编码输出的中文应能正确回退解码。"""
+    monkeypatch.setattr(shell.locale, "getpreferredencoding", lambda _do_setlocale=True: "gbk")
+    assert shell.decode_process_output("失败".encode("gbk")) == "失败"
 
 
 def test_run_shell_uses_shell_false(repo: Path, fake_run: dict[str, Any]) -> None:
