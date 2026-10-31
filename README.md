@@ -184,8 +184,9 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 变量优先级更高；不需要调用模型的命令（`breeze --version`、
 `breeze chat --list`）没有 API Key 也能用。
 
-最终答案按 Markdown 渲染后放进绿色面板；`ask` 与 `chat` 在每回合结束后
-都会显示 Trace Summary（调用次数、Token、trace 路径）。`--quiet` 仍输出
+最终答案按 Markdown 渲染后放进绿色面板；`ask` 结束后显示 Trace Summary。
+`breeze chat` 每回合只报本轮 Token 消耗，退出时再显示整场对话的
+Trace Summary（回合数、调用次数、Token 与耗时合计）。`--quiet` 仍输出
 纯文本答案，便于脚本消费。
 
 ### 使用

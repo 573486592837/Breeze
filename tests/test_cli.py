@@ -362,8 +362,8 @@ def test_chat_trace_name_override(repo: Path, tmp_path: Path) -> None:
     assert traces[0].name.startswith("refactor-run_")
 
 
-def test_chat_shows_summary_after_each_turn(repo: Path, tmp_path: Path) -> None:
-    """每回合答案后显示独立的 Trace Summary，而不是单行摘要。"""
+def test_chat_shows_turn_tokens_then_final_summary(repo: Path, tmp_path: Path) -> None:
+    """每回合只报本轮 Token，退出时再汇总整场对话。"""
     result = runner.invoke(
         app,
         ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
@@ -371,8 +371,22 @@ def test_chat_shows_summary_after_each_turn(repo: Path, tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert result.stdout.count("Trace Summary") == 2
-    assert "turn 2" in result.stdout
+    assert result.stdout.count("本轮 tokens：15") == 2
+    assert result.stdout.count("Trace Summary") == 1
+    assert "turns" in result.stdout
+    assert "30" in result.stdout
+
+
+def test_chat_exit_without_turn_prints_no_summary(repo: Path, tmp_path: Path) -> None:
+    """没有跑过回合就退出时不显示汇总。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/help\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Trace Summary" not in result.stdout
 
 
 def test_chat_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
