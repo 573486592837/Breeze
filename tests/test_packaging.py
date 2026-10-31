@@ -62,8 +62,19 @@ def test_harness_importable_from_repo_root() -> None:
 
 
 def test_sdist_keeps_reproducible_sources(sdist_tops: set[str]) -> None:
-    """sdist 保留 tests 与其依赖的评估框架，可从发行包跑测试。"""
-    for entry in ("src", "tests", "breeze_eval", "tasks", "fixtures", "samples", "scripts"):
+    """sdist 保留 tests 与其依赖的评估框架，可从发行包跑测试。
+
+    fixtures/ 与 samples/ 按源码树是否存在来断言：评估 harness 在运行任务前
+    会删掉 worktree 里的 fixtures/（防止模型直接读答案补丁），若写死要求
+    fixtures，`pytest -q` 在评估环境里必然失败，既误判任务又干扰模型。
+    """
+    root = Path(__file__).resolve().parents[1]
+    expected = {"src", "tests", "breeze_eval", "tasks", "scripts"}
+    for optional in ("fixtures", "samples"):
+        if (root / optional).is_dir():
+            expected.add(optional)
+
+    for entry in expected:
         assert entry in sdist_tops, entry
 
 
