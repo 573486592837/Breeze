@@ -47,6 +47,9 @@ python -m ruff format src tests
 - sdist 反过来要保留 `tests/`、`breeze_eval/`、`tasks/`、`fixtures/`、
   `samples/`、`scripts/`（能从发行包复现评估），只 `prune` 运行产物
   `traces/`、`reports/`。边界写在 `MANIFEST.in`。
+- 测试不能假定仓库目录完整：评估 worktree 会移除 `fixtures/`（防止模型读
+  答案补丁），`pytest -q` 在那里也要全绿。依赖可选目录的断言应先检查其
+  是否存在（见 `tests/test_packaging.py` 的 sdist 用例）。
 - 手工构建与检查（未装 `build` 也能做）：
 
   ```bash
