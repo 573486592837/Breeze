@@ -1,10 +1,6 @@
 """registry 模块的单元测试。"""
 
-import os
-import subprocess
-import sys
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 
@@ -20,23 +16,9 @@ def _isolate_registry() -> Iterator[None]:
     registry.TOOLS.update(snapshot)
 
 
-def test_repo_map_not_registered_when_disabled(tmp_path: Path) -> None:
-    """BREEZE_TOOLS_REPO_MAP=0 时 repo_map 不进入工具表。"""
-    src = Path(__file__).resolve().parents[1] / "src"
-    env = {k: v for k, v in os.environ.items() if not k.startswith("BREEZE_")}
-    env["PYTHONPATH"] = str(src)
-    env["BREEZE_TOOLS_REPO_MAP"] = "0"
-
-    proc = subprocess.run(
-        [sys.executable, "-c", "from breeze.tools import registry; print(sorted(registry.TOOLS))"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "repo_map" not in proc.stdout
+def test_repo_map_not_registered() -> None:
+    """repo_map 已移除：评估 trace 显示它只增加探索步数，未降低 Token。"""
+    assert "repo_map" not in registry.TOOLS
 
 
 def test_register_creates_schema() -> None:

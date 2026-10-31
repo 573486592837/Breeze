@@ -80,9 +80,6 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "max_records": 8,
         "max_chars": 6000,
     },
-    "tools": {
-        "repo_map": True,
-    },
 }
 
 ENV_MAP: dict[str, tuple[str, str]] = {
@@ -98,7 +95,6 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
     "BREEZE_CHAT_MAX_CHARS": ("chat", "max_chars"),
-    "BREEZE_TOOLS_REPO_MAP": ("tools", "repo_map"),
     "BREEZE_TRACE_DIR": ("trace", "dir"),
 }
 
@@ -288,8 +284,6 @@ class Settings:
         self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
         self.chat_max_records: int = int(cfg["chat"]["max_records"])
         self.chat_max_chars: int = int(cfg["chat"]["max_chars"])
-
-        self.tools_repo_map: bool = bool(cfg["tools"]["repo_map"])
 
         self.sessions_dir: Path = Path(cfg["sessions"]["dir"]).expanduser()
 

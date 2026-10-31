@@ -54,11 +54,6 @@ dir = "traces"
 # Directory for `breeze chat` session files (JSONL, resumable conversations).
 dir = "~/.breeze/sessions"
 
-[tools]
-# Register the repo_map tool (one-shot AST index of the repository).
-# Disable it to compare exploration cost without the extra step.
-repo_map = true
-
 [chat]
 # Turn archive injected before the current question in every later turn.
 # Max characters kept per archived answer (line structure preserved).

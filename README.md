@@ -55,7 +55,7 @@ Breeze 当前不计划做：
 
 1. **信息密度优先**：给模型看最相关、最结构化的信息，而不是最多信息。
 2. **评估驱动**：先建立朴素 ReAct 基线，再逐步优化。
-3. **先检索，再生成**：通过 repo map、grep、混合检索定位代码，再读取片段。
+3. **先检索，再生成**：通过 grep、list_files 定位代码，再读取片段。
 4. **上下文可压缩**：旧对话、工具输出和中间状态应被摘要为结构化状态。
 5. **工具结果要裁剪**：错误日志、测试输出、文件内容都应限制大小并结构化。
 6. **模型分级**：小模型做分类、摘要、检索；大模型做规划与复杂推理。
@@ -73,11 +73,10 @@ CLI  (breeze ask 单轮 | breeze chat 多回合 / --resume / --list)
 Agent Loop  (ReAct；步数预算、半程收敛提醒、编辑次数上限)
   |
   +-- Context Manager  策略 v2：压缩单位是"用户回合"，不是"轮"
-  |     +-- 定位类结果恒降级为一行指针 (grep/list_files/repo_map)  (已实现)
+  |     +-- 定位类结果恒降级为一行指针 (grep/list_files)           (已实现)
   |     +-- 内容类回合内保留原文 (read_file)，超 24K 实测预算才降级  (已实现)
   |     +-- 可再生类最后降级 (run_shell/run_tests/git_diff/apply_patch…)  (已实现)
   |     +-- Tool Result Compaction（工具端上限 + 兜底裁剪）        (已实现)
-  |     +-- Repo Map                                             (已实现)
   |     +-- Hybrid Retriever                                     (计划中)
   |
   +-- SessionState   从真实工具结果解析的符号/读取范围/编辑/测试索引  (已实现，v1.1.0)
@@ -90,7 +89,7 @@ Agent Loop  (ReAct；步数预算、半程收敛提醒、编辑次数上限)
   |     +-- Semantic Cache                                          (计划中)
   |
   +-- Tool System
-  |     +-- list_files / read_file / grep / repo_map               (已实现)
+  |     +-- list_files / read_file / grep                         (已实现)
   |     +-- run_shell（可执行文件与子命令白名单、shell=False）        (已实现)
   |     +-- apply_patch / create_file / git_diff / git_restore / run_tests  (已实现)
   |
@@ -233,7 +232,6 @@ Breeze 从分层配置系统读取运行参数。
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
 - `[trace]`：dir
-- `[tools]`：repo_map（是否注册一次性仓库地图工具，默认开启）
 
 ### 上下文档位
 
@@ -313,8 +311,7 @@ breeze/
 │       ├── fs.py
 │       ├── search.py
 │       ├── shell.py
-│       ├── edit.py       # apply_patch, create_file, git_diff, git_restore, run_tests
-│       └── repo_map.py
+│       └── edit.py       # apply_patch, create_file, git_diff, git_restore, run_tests
 ├── breeze_eval/
 │   └── harness.py        # 评估框架（包外的开发面，不进 wheel）
 ├── scripts/

@@ -99,22 +99,10 @@ def test_read_file_byte_truncation(repo: Path) -> None:
 
 
 def test_read_file_rejects_dir(repo: Path) -> None:
-    """对目录调用 read_file 应抛 ValueError。"""
+    """对目录调用 read_file 应抛 ValueError，并指向 list_files。"""
     (repo / "src").mkdir()
-    with pytest.raises(ValueError, match="list_files or repo_map"):
+    with pytest.raises(ValueError, match="list_files"):
         registry.execute("read_file", {"path": "src"})
-
-
-def test_read_file_dir_hint_omits_disabled_repo_map(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """关闭 repo_map 后，提示不应再指向该工具。"""
-    (repo / "src").mkdir()
-    monkeypatch.setattr(settings, "tools_repo_map", False)
-
-    with pytest.raises(ValueError) as exc:
-        registry.execute("read_file", {"path": "src"})
-
-    assert "list_files" in str(exc.value)
-    assert "repo_map" not in str(exc.value)
 
 
 def test_read_file_rejects_escape(repo: Path) -> None:

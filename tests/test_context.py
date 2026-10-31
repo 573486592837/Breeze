@@ -80,7 +80,7 @@ def test_head_only_returns_original() -> None:
 
 
 def test_pointer_tools_always_demoted() -> None:
-    """grep/list_files/repo_map 结果应始终替换为一行指针。"""
+    """grep/list_files 结果应始终替换为一行指针。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     for tool, args in (("grep", '{"pattern": "def f"}'), ("list_files", '{"path": "."}')):
         messages = [_system(), _user("q"), *_round("c1", tool, args, _code_lines(50))]
