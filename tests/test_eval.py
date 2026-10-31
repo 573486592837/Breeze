@@ -856,6 +856,285 @@ def test_run_eval_short_tasks_unaffected_by_worktree(
     assert data["results"][0]["auto_graded"] is False
 
 
+def test_load_tasks_parses_protect(tmp_path: Path) -> None:
+    """protect 应解析为路径列表，缺省为空。"""
+    yaml_path = tmp_path / "tasks.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "protect": ["tests/", "samples/node-app/src/"],
+                        "eval_command": "{python} -m pytest -q",
+                    },
+                    {
+                        "id": "e01",
+                        "type": "explain",
+                        "question": "q",
+                        "success_criteria": "c",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, tasks = load_tasks(yaml_path)
+    assert tasks[0].protect == ["tests/", "samples/node-app/src/"]
+    assert tasks[1].protect == []
+
+
+def test_load_tasks_rejects_protect_outside_repo(tmp_path: Path) -> None:
+    """protect 只接受仓库内相对路径。"""
+    yaml_path = tmp_path / "tasks.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "x",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "protect": ["../outside"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be relative"):
+        load_tasks(yaml_path)
+
+
+def test_load_tasks_validates_suite_ids(tmp_path: Path) -> None:
+    """suites 引用不存在的任务 id 应报错。"""
+    yaml_path = tmp_path / "tasks.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "suites": {"core": ["nope"]},
+                "tasks": [
+                    {
+                        "id": "x",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown task ids"):
+        load_tasks(yaml_path)
+
+
+def test_run_eval_unknown_suite_raises(task_yaml: Path, fake_repo: Path, tmp_path: Path) -> None:
+    """suite 名称不存在时应给出可用列表。"""
+    with pytest.raises(ValueError, match="unknown suite"):
+        run_eval(
+            tasks_path=task_yaml,
+            output_path=tmp_path / "out.json",
+            repo_root=fake_repo,
+            dry_run=True,
+            suite="core",
+        )
+
+
+def test_run_eval_suite_filters_tasks(
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """suite 应只保留档位内任务。"""
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "suites": {"core": ["b"], "full": ["a", "b"]},
+                "tasks": [
+                    {"id": "a", "type": "explain", "question": "qa", "success_criteria": "c"},
+                    {"id": "b", "type": "explain", "question": "qb", "success_criteria": "c"},
+                ],
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+
+    messages: list[str] = []
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=tmp_path / "out.json",
+        repo_root=fake_repo,
+        dry_run=True,
+        suite="core",
+        progress=messages.append,
+    )
+
+    joined = "\n".join(messages)
+    assert "suite=core" in joined
+    assert "qb" in joined
+    assert "qa" not in joined
+
+
+def test_expand_command_replaces_python() -> None:
+    """{python} 应替换为当前解释器，避免 PATH 上的 python 与评估环境不一致。"""
+    import sys
+
+    from breeze_eval.harness import _expand_command
+
+    expanded = _expand_command("{python} -m pytest -q")
+    assert sys.executable in expanded
+    assert "{python}" not in expanded
+
+
+def test_run_eval_fails_when_protected_paths_change(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Agent 新增受保护文件时应判失败并跳过 eval_command。"""
+    from breeze_eval import harness
+
+    def fake_run_task(task, llm, trace_dir):
+        tests = settings.repo_root / "tests"
+        tests.mkdir(exist_ok=True)
+        (tests / "test_hack.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        return _make_result(None, 0)
+
+    monkeypatch.setattr(harness, "run_task", fake_run_task)
+
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "protect": ["tests/"],
+                        "eval_command": '{python} -c "import sys; sys.exit(0)"',
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        llm_factory=FakeLLM,
+    )
+
+    r = json.loads(output.read_text(encoding="utf-8"))["results"][0]
+    assert r["success"] is False
+    assert r["auto_graded"] is True
+    assert "protected paths modified" in r["notes"]
+    assert "tests/" in r["notes"]
+    assert r["passes"] == [False]
+
+
+def test_run_eval_pass_metrics_single_run(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """repeat=1 也填充按 run 的通过统计。"""
+    import sys
+
+    eval_cmd = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "eval_command": eval_cmd,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    r = data["results"][0]
+    assert r["runs"] == 1
+    assert r["passes"] == [True]
+    assert r["pass_count"] == 1
+    assert r["success_rate"] == 1.0
+    assert r["pass_all"] is True
+    assert data["summary"]["graded_tasks"] == 1
+    assert data["summary"]["total_runs"] == 1
+    assert data["summary"]["success_rate"] == 1.0
+    assert data["summary"]["all_pass_tasks"] == 1
+
+
+def test_summarize_reports_run_level_pass_rate() -> None:
+    """summary 按 run 统计通过率与全通过任务数。"""
+    from dataclasses import replace
+
+    graded = replace(_make_result(True, 100), passes=[True, False, True], pass_count=2, success_rate=0.6667)
+    graded.pass_all = False
+    ungraded = _make_result(None, 50)
+
+    s = summarize([graded, ungraded])
+    assert s["graded_tasks"] == 1
+    assert s["total_runs"] == 3
+    assert s["passes"] == 2
+    assert s["success_rate"] == 0.6667
+    assert s["all_pass_tasks"] == 0
+
+
+def test_quality_task_file_is_consistent() -> None:
+    """仓库内的固定评估集应能加载，且每个档位任务都有自动判定与保护路径。"""
+    path = Path(__file__).resolve().parents[1] / "tasks" / "quality.yaml"
+    metadata, tasks = load_tasks(path)
+
+    assert len(tasks) == 15
+    assert set(metadata["suites"]) == {"core", "full"}
+
+    by_id = {t.id: t for t in tasks}
+    for suite, ids in metadata["suites"].items():
+        for task_id in ids:
+            task = by_id[task_id]
+            assert task.eval_command, f"{suite}/{task_id} missing eval_command"
+            assert task.protect, f"{suite}/{task_id} missing protect"
+
+    for task in tasks:
+        if task.eval_command and "pytest" in task.eval_command:
+            assert "{python}" in task.eval_command, f"{task.id} should pin interpreter"
+
+
 def test_merge_manual_grades_skips_auto_graded(
     tmp_path: Path,
 ) -> None:

@@ -46,8 +46,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tasks",
         type=Path,
-        default=Path("tasks/baseline.yaml"),
-        help="task set YAML (default: tasks/baseline.yaml)",
+        default=Path("tasks/quality.yaml"),
+        help="task set YAML (default: tasks/quality.yaml)",
+    )
+    parser.add_argument(
+        "--suite",
+        type=str,
+        default=None,
+        help="run only the named suite defined in the task file (e.g. core, full)",
     )
     parser.add_argument(
         "--output",
@@ -114,6 +120,7 @@ def main() -> int:
         repo_root=args.repo.resolve(),
         model=args.model,
         only_ids=only_ids,
+        suite=args.suite,
         trace_dir=args.trace_dir,
         fixtures_dir=args.fixtures_dir,
         dry_run=args.dry_run,

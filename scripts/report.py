@@ -71,7 +71,14 @@ def render_markdown(report: dict) -> str:
     lines.append("")
     lines.append("| Metric | Value |")
     lines.append("|---|---|")
-    lines.append(f"| Success rate | {_fmt_pct(success, total)} ({success}/{total}) |")
+    graded_tasks = summary.get("graded_tasks", 0)
+    total_runs = summary.get("total_runs", 0)
+    passes = summary.get("passes", 0)
+    all_pass = summary.get("all_pass_tasks", 0)
+    lines.append(f"| Success rate (by task) | {_fmt_pct(success, total)} ({success}/{total}) |")
+    if total_runs:
+        lines.append(f"| Pass rate (by run) | {_fmt_pct(passes, total_runs)} ({passes}/{total_runs} runs) |")
+        lines.append(f"| All-pass tasks | {all_pass}/{graded_tasks} |")
     lines.append(f"| Failed | {failed} |")
     lines.append(f"| Ungraded | {ungraded} |")
     lines.append(f"| Total tokens | {summary['total_tokens']:,} |")
@@ -84,11 +91,13 @@ def render_markdown(report: dict) -> str:
 
     lines.append("## Per-task results")
     lines.append("")
-    lines.append("| ID | Type | Status | Tokens | LLM | Tool | Duration (ms) | Question |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| ID | Type | Status | Pass | Tokens | LLM | Tool | Duration (ms) | Question |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for r in results:
+        passes = r.get("passes")
+        pass_cell = f"{r.get('pass_count', 0)}/{len(passes)}" if passes else "-"
         lines.append(
-            f"| {r['id']} | {r['type']} | {_status(r.get('success'))} "
+            f"| {r['id']} | {r['type']} | {_status(r.get('success'))} | {pass_cell} "
             f"| {r['total_tokens']:,} | {r['llm_calls']} | {r['tool_calls']} "
             f"| {r['duration_ms']:,.1f} | {_truncate(r['question'], 60)} |"
         )

@@ -6,7 +6,7 @@ Breeze 是个人项目，但仍按"分支开发 → PR 合并 → 打 tag"的流
 ## 开发环境
 
 - Python >= 3.11（`pyproject.toml` 声明；`pathlib` 部分新 API 仅评估脚本用到时注意版本）
-- Node.js 18+（仅运行 `tasks/external.yaml` 评估时需要）
+- Node.js 18+（仅运行 `tasks/quality.yaml` 中的 ext 任务时需要）
 - 安装与运行测试：
 
 ```bash
@@ -78,40 +78,40 @@ python -m ruff format src tests
 
 ## 添加评估任务
 
-任务集在 `tasks/*.yaml`，字段说明见 `breeze_eval/harness.py` 的 `TaskSpec`。
+固定评估集是 `tasks/quality.yaml`，完整方案见 `docs/EVAL.md`；
+字段说明见 `breeze_eval/harness.py` 的 `TaskSpec`。
 
-- 长任务通过 `setup: [{patch: xxx.patch}]` 注入初始状态，patch 风格与
+- 任务通过 `setup: [{patch: xxx.patch}]` 注入初始状态，patch 风格与
   `fixtures/` 现有文件一致：以 `--- /dev/null`（新文件）或 `--- a/...`
   开头，不带 `diff --git` 头。
-- `eval_command` 一律加完整性守卫，防止模型篡改验收条件：
+- `eval_command` 里的 Python 一律写 `{python}`，由 harness 替换为评估
+  解释器；断言不要依赖 `rg` 等可选外部工具，`git` 与 `pytest` 可视为
+  必然存在，Node 仅 external 集依赖。
+- 验收条件用 `protect` 锁住，而不是在每个命令里手写 `git diff`：
 
   ```yaml
-  eval_command: "git diff --quiet -- tests/test_xxx.py && pytest -q tests/test_xxx.py"
+  protect:
+    - tests/
+  eval_command: "{python} -m pytest -q"
   ```
 
-- 新任务必须做红/绿验证（不消耗 API）：
+  `protect` 用 `git status` 检查，修改、删除、新增都算违规。
+- fix 类任务以仓库已有测试为准：问题描述点名失败用例，不另立期望值。
+- 新任务先跑预检（不消耗 API），必须"修复前失败、protect 干净"：
 
   ```bash
-  git worktree add --detach .tmp-verify main   # 或目标分支
-  cd .tmp-verify
-  git apply --whitespace=nowarn fixtures/xxx.patch && git add -A && git commit -qm setup
-  <eval_command>                               # 必须失败（红）
-  <放参考实现>
-  <eval_command>                               # 必须通过（绿）
+  python scripts/check_tasks.py --task 新任务id
   ```
 
-  注意模拟 shell 的 PATH 需能找到 `pytest`（评估 worktree 里由框架保证，
-  手工模拟时建议用 `python -m pytest` 或把环境 Scripts 目录加入 PATH）。
-
-- 评分只认 `eval_command` 退出码；断言不要依赖 `rg` 等可选外部工具，
-  `git` 与 `pytest` 可视为必然存在，Node 仅 external 集依赖。
+  预检会自动建 worktree、应用 setup、跑两遍 `eval_command`（setup 后与
+  干净树上），无需手工模拟。
 
 ## 版本发布回归
 
-- 回归范围为 5 个长任务集：`long.yaml`（repeat=3 取中位数）、
-  `feature.yaml`、`refactor.yaml`、`multiturn.yaml`、`external.yaml`。
-- `baseline.yaml` 短任务自 v1.0.0 起不计入发布回归，仅保留为冒烟检查
-  （改完 agent 循环后快速验证链路是否工作）。
+- 回归用 `tasks/quality.yaml`：日常 `--suite core --repeat 3`，
+  发版前 `--suite full --repeat 3`。
+- 旧的 `long/feature/refactor/multiturn/external.yaml` 与
+  `baseline.yaml` 只用于对照历史数据，新评估不改它们。
 - 发布报告的 JSON 与 Markdown 均入库：用 `scripts/report.py` 生成 md，
   新 JSON 需在 `.gitignore` 中加白名单例外（`!reports/vX_*.json`）。
 
