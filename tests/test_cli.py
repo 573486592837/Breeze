@@ -384,6 +384,52 @@ def test_chat_list_sessions_empty(tmp_path: Path) -> None:
     assert "没有保存的会话" in result.stdout
 
 
+def test_chat_list_search_filters_by_keyword(repo: Path, tmp_path: Path) -> None:
+    """--list --search 只显示命中提问或回答的会话。"""
+    from breeze.session import SessionStore
+    from breeze.state import SessionState, TurnLedger
+
+    session_dir = tmp_path / "sessions"
+    hit = SessionStore(session_dir, "20260101T000000_aaa", repo_root=repo, model="m")
+    ledger = TurnLedger()
+    ledger.record("修复 safe_path 越界", "改好了", [])
+    hit.record_turn(ledger.records[0], SessionState(), {"trace_path": "t", "llm_calls": 1, "total_tokens": 1})
+
+    miss = SessionStore(session_dir, "20260201T000000_bbb", repo_root=repo, model="m")
+    ledger = TurnLedger()
+    ledger.record("解释 registry", "工具注册表", [])
+    miss.record_turn(ledger.records[0], SessionState(), {"trace_path": "t", "llm_calls": 1, "total_tokens": 1})
+
+    result = runner.invoke(
+        app,
+        ["chat", "--list", "--session-dir", str(session_dir), "--search", "SAFE_PATH"],
+    )
+
+    assert result.exit_code == 0
+    assert "20260101T000000_aaa" in result.stdout
+    assert "safe_path" in result.stdout
+    assert "registry" not in result.stdout
+
+
+def test_chat_list_search_without_match(tmp_path: Path) -> None:
+    """关键词无命中时给出提示而非列表。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--list", "--session-dir", str(tmp_path / "sessions"), "--search", "foo"],
+    )
+
+    assert result.exit_code == 0
+    assert "没有匹配 foo 的会话" in result.stdout
+
+
+def test_chat_search_requires_list(repo: Path, tmp_path: Path) -> None:
+    """--search 单独使用应报错并提示 --list。"""
+    result = runner.invoke(app, ["chat", "--search", "foo", "--repo", str(repo)])
+
+    assert result.exit_code == 1
+    assert "--list" in result.stdout + (result.stderr or "")
+
+
 def test_chat_resume_continues_same_session(repo: Path, tmp_path: Path) -> None:
     """--resume latest 沿用同一会话文件并接上历史归档。"""
     session_dir = tmp_path / "sessions"

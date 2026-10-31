@@ -245,6 +245,34 @@ def test_list_sessions_missing_dir(tmp_path: Path) -> None:
     assert SessionStore.list_sessions(tmp_path / "nope") == []
 
 
+def test_list_sessions_filters_by_keyword(tmp_path: Path) -> None:
+    """keyword 不区分大小写，同时匹配提问与回答。"""
+    first = SessionStore(tmp_path / "sessions", "20260101T000000_aaa")
+    first.record_turn(_record(1, "修复 Safe_Path 越界", "已修改 safety.py"), _state(), _summary())
+    second = SessionStore(tmp_path / "sessions", "20260201T000000_bbb")
+    second.record_turn(_record(1, "解释 registry", "工具注册表在 tools/registry.py"), _state(), _summary())
+
+    by_question = SessionStore.list_sessions(tmp_path / "sessions", keyword="safe_path")
+    assert [i.session_id for i in by_question] == ["20260101T000000_aaa"]
+
+    by_answer = SessionStore.list_sessions(tmp_path / "sessions", keyword="工具注册表")
+    assert [i.session_id for i in by_answer] == ["20260201T000000_bbb"]
+
+    assert SessionStore.list_sessions(tmp_path / "sessions", keyword="不存在的词") == []
+    assert len(SessionStore.list_sessions(tmp_path / "sessions")) == 2
+
+
+def test_list_sessions_keyword_ignores_turns_before_reset(tmp_path: Path) -> None:
+    """reset 之前的问答不参与关键词匹配。"""
+    store = SessionStore(tmp_path / "sessions", "20260101T000000_aaa")
+    store.record_turn(_record(1, "旧话题 alpha"), _state(), _summary())
+    store.record_reset()
+    store.record_turn(_record(2, "新话题 beta"), _state(), _summary("r2"))
+
+    assert SessionStore.list_sessions(tmp_path / "sessions", keyword="alpha") == []
+    assert len(SessionStore.list_sessions(tmp_path / "sessions", keyword="beta")) == 1
+
+
 def test_info_of_current_session(tmp_path: Path) -> None:
     """info() 读取本会话文件用于 repo/model 提示。"""
     store = _store(tmp_path)
