@@ -187,11 +187,19 @@ def chat(
         "--list",
         help="list saved sessions and exit",
     ),
+    search: str = typer.Option(
+        None,
+        "--search",
+        help="with --list, only show sessions whose questions or answers contain the keyword",
+    ),
 ) -> None:
     """进入交互式多回合会话，输入 /exit 退出。"""
     if list_sessions:
-        _print_sessions(session_dir)
+        _print_sessions(session_dir, search)
         return
+    if search:
+        error_console.print("[red]--search 只能与 --list 一起使用[/red]")
+        raise typer.Exit(code=1)
 
     repo_root = (repo or Path.cwd()).resolve()
     if not repo_root.is_dir():
@@ -251,11 +259,14 @@ def chat(
         raise typer.Exit(code=exit_code)
 
 
-def _print_sessions(session_dir: Path | None) -> None:
-    """列出已保存的会话。"""
-    infos = SessionStore.list_sessions(session_dir)
+def _print_sessions(session_dir: Path | None, search: str | None = None) -> None:
+    """列出已保存的会话，可按键词过滤。"""
+    infos = SessionStore.list_sessions(session_dir, keyword=search)
     if not infos:
-        console.print("[dim]没有保存的会话[/dim]")
+        if search:
+            console.print(f"[dim]没有匹配 {search} 的会话[/dim]")
+        else:
+            console.print("[dim]没有保存的会话[/dim]")
         return
 
     table = Table(title="Saved sessions", border_style="cyan")

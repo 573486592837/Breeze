@@ -190,14 +190,19 @@ class SessionStore:
 
     def info(self) -> SessionInfo:
         """返回本会话的列表摘要。"""
-        return _info_from(self.session_id, self.path)
+        return _info_from(self.session_id, self.path)[0]
 
     @staticmethod
-    def list_sessions(session_dir: str | Path | None = None) -> list[SessionInfo]:
+    def list_sessions(
+        session_dir: str | Path | None = None,
+        keyword: str | None = None,
+    ) -> list[SessionInfo]:
         """列出目录下的会话，按 ID（时间戳前缀）从新到旧。
 
         Args:
             session_dir: 会话目录，None 时使用默认。
+            keyword: 可选的关键词，不区分大小写地匹配 reset 之后的
+                提问与回答文本；None 时不过滤。
 
         Returns:
             SessionInfo 列表，目录不存在时为空。
@@ -206,7 +211,14 @@ class SessionStore:
         if not root.is_dir():
             return []
 
-        return [_info_from(path.stem, path) for path in sorted(root.glob("*.jsonl"), reverse=True)]
+        needle = keyword.lower() if keyword else None
+        infos: list[SessionInfo] = []
+        for path in sorted(root.glob("*.jsonl"), reverse=True):
+            info, search_text = _info_from(path.stem, path)
+            if needle is not None and needle not in search_text.lower():
+                continue
+            infos.append(info)
+        return infos
 
     def _append(self, event: dict[str, Any]) -> None:
         """追加一行事件。"""
@@ -274,14 +286,19 @@ def _resolve_path(session_dir: str | Path | None, session_id: str | None) -> Pat
     return path
 
 
-def _info_from(session_id: str, path: Path) -> SessionInfo:
-    """从会话文件抽取列表摘要；坏文件按空摘要返回。"""
+def _info_from(session_id: str, path: Path) -> tuple[SessionInfo, str]:
+    """从会话文件抽取列表摘要与可检索文本；坏文件按空摘要返回。
+
+    Returns:
+        (SessionInfo, 最后一个 reset 之后的提问与回答拼接文本)。
+    """
     created_at = ""
     repo_root = ""
     model = ""
     first_question = ""
     turns = 0
     total_tokens = 0
+    search_parts: list[str] = []
 
     if path.exists():
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -303,20 +320,26 @@ def _info_from(session_id: str, path: Path) -> SessionInfo:
                 elif event.get("event") == "turn":
                     turns += 1
                     total_tokens += int(event.get("total_tokens") or 0)
+                    question = str(event.get("question") or "")
                     if not first_question:
-                        first_question = str(event.get("question") or "")
+                        first_question = question
+                    search_parts.extend((question, str(event.get("answer") or "")))
                 elif event.get("event") == "reset":
                     turns = 0
                     total_tokens = 0
                     first_question = ""
+                    search_parts.clear()
 
-    return SessionInfo(
-        session_id=session_id,
-        path=path,
-        created_at=created_at,
-        repo_root=repo_root,
-        model=model,
-        turns=turns,
-        first_question=first_question,
-        total_tokens=total_tokens,
+    return (
+        SessionInfo(
+            session_id=session_id,
+            path=path,
+            created_at=created_at,
+            repo_root=repo_root,
+            model=model,
+            turns=turns,
+            first_question=first_question,
+            total_tokens=total_tokens,
+        ),
+        "\n".join(search_parts),
     )

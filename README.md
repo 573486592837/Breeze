@@ -202,6 +202,7 @@ breeze chat
 
 # 列出并接续已保存的会话（会话文件默认在 ~/.breeze/sessions）
 breeze chat --list
+breeze chat --list --search safe_path  # 按关键词过滤（匹配 reset 后的提问与回答）
 breeze chat --resume latest
 breeze chat --resume 20261028T143041_a9a3ac  # 也可用 breeze chat --list 里的任意 session id
 
