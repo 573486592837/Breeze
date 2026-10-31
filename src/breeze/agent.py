@@ -4,6 +4,7 @@ ReAct 风格的代码仓库 Agent，使用 LLM 的 function calling 能力多步
 """
 
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,37 @@ from breeze.trace import RunTrace
 # Kept for backward compatibility with code that imports this constant.
 DEFAULT_MAX_STEPS = 10
 DEFAULT_MAX_EDIT_ATTEMPTS = 5
+
+_EXTERNAL_TOOLS = ("git", "rg", "node")
+
+
+def _environment_note() -> str:
+    """生成运行环境说明：仓库根与外部命令可用性。
+
+    模型常在缺少外部命令时反复试错（例如机器没装 ripgrep 却用 run_shell 调
+    rg，再改用被白名单拒绝的 find）。提前告诉它哪些命令可用，可以省掉这些步数。
+
+    Returns:
+        多行说明文本，且不含可变的时间戳等内容。
+    """
+    available = [name for name in _EXTERNAL_TOOLS if shutil.which(name)]
+    missing = [name for name in _EXTERNAL_TOOLS if name not in available]
+    lines = [f"仓库根目录：{settings.repo_root}"]
+    if missing:
+        lines.append(
+            f"外部命令可用：{'、'.join(available) if available else '无'}；"
+            f"缺失：{'、'.join(missing)}。缺失的命令不要用 run_shell 尝试："
+            "代码搜索用 grep 工具（纯 Python 回退），浏览文件用 list_files。"
+        )
+    else:
+        lines.append(f"外部命令可用：{'、'.join(available)}。")
+    return "运行环境：\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def default_system_prompt() -> str:
+    """默认系统提示，附带当前运行环境说明。"""
+    return f"{DEFAULT_SYSTEM_PROMPT}\n\n{_environment_note()}"
+
 
 DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 你可以使用工具查看文件、搜索代码、运行命令、修改代码。
@@ -81,7 +113,7 @@ class Agent:
         trace: RunTrace,
         max_steps: int | None = None,
         max_edit_attempts: int | None = None,
-        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
         context: ContextManager | None = None,
     ) -> None:
         """初始化 Agent。
@@ -91,7 +123,7 @@ class Agent:
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
             max_edit_attempts: 单次运行允许的 apply_patch 调用上限。
-            system_prompt: 系统提示。
+            system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
             context: 上下文管理器。
         """
         self.llm = llm
@@ -100,7 +132,7 @@ class Agent:
         self.max_edit_attempts = (
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
         )
-        self.system_prompt = system_prompt
+        self.system_prompt = system_prompt if system_prompt is not None else default_system_prompt()
         self.context = context or ContextManager()
         self.state = SessionState()
         self.ledger = TurnLedger()
