@@ -634,7 +634,6 @@ def _effective_config(llm: Any) -> dict[str, Any]:
         "chat.max_chars": settings.chat_max_chars,
         "agent.max_steps": settings.agent_max_steps,
         "agent.max_edit_attempts": settings.agent_max_edit_attempts,
-        "tools.repo_map": settings.tools_repo_map,
     }
 
 

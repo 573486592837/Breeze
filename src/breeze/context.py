@@ -3,7 +3,7 @@
 压缩单位从"轮"改为"用户回合"：在一轮提问到最终答案之间，
 工具结果按类型分级处理——
 
-- 定位类工具（grep、list_files、repo_map）的信息已被 SessionState
+- 定位类工具（grep、list_files）的信息已被 SessionState
   提取为符号/范围索引，其结果本体恒降级为一行指针。
 - 内容类工具（read_file 等）默认原样保留，避免模型在编辑前丢失原文。
 - 仅当回合实际 Token 超过 intra_turn_budget 时，按从旧到新依次把
@@ -34,7 +34,7 @@ DEFAULT_TOOL_RESULT_MAX_BYTES = 16_000
 DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
 DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
 
-POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files", "repo_map"})
+POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
 

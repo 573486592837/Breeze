@@ -261,7 +261,7 @@ def _check_allowed(tokens: list[str]) -> None:
         elif exe in {"rm", "del", "mv", "cp", "ln"}:
             extra = " (file modifications should use apply_patch)"
         elif exe in {"find", "ls", "dir", "tree"}:
-            extra = " (use list_files to browse the repository; grep or repo_map to locate code)"
+            extra = " (use list_files to browse the repository; the grep tool locates code)"
         elif exe == "grep":
             extra = " (use the grep tool; it falls back to pure Python when ripgrep is unavailable)"
         raise ValueError(f"Executable not allowed: {exe}{extra}. Allowed commands: {allowed}.")

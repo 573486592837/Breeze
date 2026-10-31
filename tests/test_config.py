@@ -37,22 +37,8 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_defaults_has_expected_sections() -> None:
-    """DEFAULTS 应包含七个 section。"""
-    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat", "tools"}
-
-
-def test_defaults_tools_fields() -> None:
-    """repo_map 默认开启。"""
-    assert DEFAULTS["tools"]["repo_map"] is True
-
-
-def test_env_tools_repo_map_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BREEZE_TOOLS_REPO_MAP=0 可关闭 repo_map，便于 A/B。"""
-    monkeypatch.setenv("BREEZE_TOOLS_REPO_MAP", "0")
-
-    cfg = load_config(tmp_path)
-
-    assert cfg["tools"]["repo_map"] is False
+    """DEFAULTS 应包含六个 section。"""
+    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat"}
 
 
 def test_defaults_llm_fields() -> None:
@@ -507,4 +493,4 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     assert isinstance(s.trace_dir, str)
     assert isinstance(s.chat_answer_preview, int)
     assert isinstance(s.sessions_dir, Path)
-    assert isinstance(s.tools_repo_map, bool)
+    assert not hasattr(s, "tools_repo_map")
