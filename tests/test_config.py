@@ -316,12 +316,36 @@ def test_settings_repo_root_resolved(tmp_path: Path) -> None:
     assert s.repo_root == tmp_path.resolve()
 
 
-def test_settings_missing_api_key_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """缺少 SILICONFLOW_API_KEY 时抛错。"""
+def test_settings_missing_api_key_does_not_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """缺 key 时配置仍可用：校验属于 LLMClient，import 期不能抛。"""
     monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
 
-    with pytest.raises(ValueError, match="SILICONFLOW_API_KEY"):
-        Settings(repo_root=tmp_path)
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key == ""
+    assert s.model == DEFAULTS["llm"]["model"]
+
+
+def test_config_import_without_api_key(tmp_path: Path) -> None:
+    """干净环境里 `from breeze.config import settings` 不报错。
+
+    fresh 安装（无 .env、无环境变量）时 CLI 的 --version、chat --list
+    都因为模块级 settings = Settings() 抛错而不可用，这里锁住该行为。
+    """
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "SILICONFLOW_API_KEY"}
+    proc = subprocess.run(
+        [sys.executable, "-c", "from breeze.config import settings; print(repr(settings.api_key))"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "''"
 
 
 def test_settings_reads_chat_and_sessions_config(tmp_path: Path) -> None:

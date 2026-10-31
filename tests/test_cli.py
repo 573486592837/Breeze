@@ -568,3 +568,18 @@ def test_version_flag() -> None:
 
     assert result.exit_code == 0
     assert __version__ in result.stdout
+
+
+def test_version_flag_without_api_key(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--version 不该依赖密钥：LLMClient 构造会抛错时也要能输出版本。"""
+    from breeze import __version__
+
+    class ExplodingLLM:
+        def __init__(self, *args, **kwargs):
+            raise ValueError("SILICONFLOW_API_KEY 未设置，请检查 .env 文件或环境变量")
+
+    monkeypatch.setattr(cli_module, "LLMClient", ExplodingLLM)
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert __version__ in result.stdout

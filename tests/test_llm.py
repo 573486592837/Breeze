@@ -94,3 +94,24 @@ def test_response_shape_parsed(client: LLMClient, monkeypatch: pytest.MonkeyPatc
     assert resp.content == "ok"
     assert resp.total_tokens == 2
     assert resp.tool_calls == []
+
+
+def test_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """密钥校验在构造时发生：缺 key 立即报错，而不是等到第一次调用。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "api_key", "")
+
+    with pytest.raises(ValueError, match="SILICONFLOW_API_KEY"):
+        LLMClient(model="test/model")
+
+
+def test_explicit_api_key_bypasses_missing_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式传 api_key 时不依赖配置里的值。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "api_key", "")
+
+    client = LLMClient(model="test/model", api_key="explicit-key")
+
+    assert client.api_key == "explicit-key"
