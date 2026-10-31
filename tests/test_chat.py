@@ -243,6 +243,64 @@ def test_trace_closed_when_turn_raises() -> None:
     assert trace.closed == 1
 
 
+# ─── 运行时命令接线 ───
+
+
+def test_command_fn_output_skips_turn() -> None:
+    """命令处理器返回文本时打印并跳过本回合，不建 trace。"""
+    outputs: list[str] = []
+    traces: list[StubTrace] = []
+
+    code = run_chat(
+        agent_factory=lambda t: StubAgent(t, ["answer"]),
+        trace_factory=lambda: traces.append(StubTrace(1)) or traces[-1],
+        input_fn=ScriptInput(["/config", "q", "/exit"]),
+        print_fn=outputs.append,
+        command_fn=lambda line, _agent: "cfg" if line == "/config" else None,
+    )
+
+    assert code == 0
+    assert outputs[0] == "cfg"
+    assert "answer" in outputs
+    assert outputs[-1] == "bye."
+    assert len(traces) == 1
+
+
+def test_agent_setup_runs_after_session_restore() -> None:
+    """Agent 创建并恢复会话状态后，再应用运行时配置。"""
+    restored = TurnLedger()
+    restored.record("历史问题", "历史答案", [])
+    session = StubSession(ledger=restored)
+    seen: list[tuple[Any, Any]] = []
+
+    run_chat(
+        agent_factory=lambda t: StubAgent(t, ["a"]),
+        trace_factory=lambda: StubTrace(1),
+        input_fn=ScriptInput(["q", "/exit"]),
+        print_fn=lambda _: None,
+        session=session,
+        agent_setup_fn=lambda agent: seen.append((agent.ledger, agent.state)),
+    )
+
+    assert seen == [(session.restore[0], session.restore[1])]
+
+
+def test_agent_setup_reruns_after_new() -> None:
+    """/new 会重建 Agent 的归档，因此重新应用运行时配置。"""
+    calls: list[Any] = []
+
+    code = run_chat(
+        agent_factory=lambda t: StubAgent(t, ["a1", "a2"]),
+        trace_factory=lambda: StubTrace(1),
+        input_fn=ScriptInput(["q1", "/new", "q2", "/exit"]),
+        print_fn=lambda _: None,
+        agent_setup_fn=calls.append,
+    )
+
+    assert code == 0
+    assert len(calls) == 2
+
+
 # ─── 会话持久化接线 ───
 
 

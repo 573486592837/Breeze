@@ -104,6 +104,7 @@ class SessionStore:
         self.path = self.session_dir / f"{self.session_id}.jsonl"
         self._repo_root = str(repo_root)
         self._model = model
+        self._pending_config: dict[str, Any] = {}
 
     @classmethod
     def resume(
@@ -148,6 +149,37 @@ class SessionStore:
                 **asdict(record),
             }
         )
+
+    def record_config(self, **changes: Any) -> None:
+        """记录运行时配置变更（模型、trace 前缀、参数等）。
+
+        会话文件尚未创建时先暂存，等首个回合写出 session_start 后补写；
+        这样只跑过 /model 就退出的会话不会留下空文件。
+
+        Args:
+            **changes: 配置键值，如 model="..."、trace_prefix="..."。
+        """
+        if not changes:
+            return
+        self._pending_config.update(changes)
+        if self.path.exists():
+            merged = dict(self._pending_config)
+            self._pending_config.clear()
+            self._append_config(merged)
+
+    def saved_config(self) -> dict[str, Any]:
+        """读回最后一个 config 事件合并后的运行配置。
+
+        Returns:
+            配置 dict；没有 config 事件时为空 dict。
+        """
+        config: dict[str, Any] = {}
+        if not self.path.exists():
+            return config
+        for event in self._events():
+            if event.get("event") == "config":
+                config.update({k: v for k, v in event.items() if k not in ("event", "ts")})
+        return config
 
     def record_reset(self) -> None:
         """记录 /new：resume 时该事件之前的回合与状态不参与恢复。
@@ -247,6 +279,14 @@ class SessionStore:
                 )
                 + "\n"
             )
+        if self._pending_config:
+            pending = dict(self._pending_config)
+            self._pending_config.clear()
+            self._append_config(pending)
+
+    def _append_config(self, changes: dict[str, Any]) -> None:
+        """追加一条 config 事件。"""
+        self._append({"event": "config", "ts": _now_iso(), **changes})
 
     def _events(self) -> list[dict[str, Any]]:
         """读取全部可解析的事件行，非法行与坏行跳过。"""
@@ -317,6 +357,8 @@ def _info_from(session_id: str, path: Path) -> tuple[SessionInfo, str]:
                     created_at = event.get("ts") or ""
                     repo_root = event.get("repo_root") or ""
                     model = event.get("model") or ""
+                elif event.get("event") == "config":
+                    model = event.get("model") or model
                 elif event.get("event") == "turn":
                     turns += 1
                     total_tokens += int(event.get("total_tokens") or 0)

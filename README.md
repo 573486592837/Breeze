@@ -217,6 +217,25 @@ breeze chat --resume 20261028T143041_a9a3ac  # 也可用 breeze chat --list 里�
 breeze --version
 ```
 
+### 会话内命令
+
+进入 `breeze chat` 后可随时用 `/` 开头的命令调整本次会话：
+
+| 命令 | 作用 |
+|---|---|
+| `/model [name]` | 查看或切换模型 |
+| `/trace [prefix]` | 查看或设置后续回合的 trace 文件名前缀 |
+| `/profile [name]` | 查看或切换压缩档位（short / medium / long / custom） |
+| `/set <key> <value>` | 调整 max_steps / max_edit_attempts / temperature |
+| `/config` | 查看模型、会话、trace 前缀与预算 |
+| `/new` | 重置对话（运行时配置保留） |
+| `/help` | 显示命令帮助 |
+| `/exit` | 退出（Ctrl+C / Ctrl+D 同样有效） |
+
+配置变更以 config 事件写入当前会话，`--resume` 时自动恢复。优先级为
+CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的配置 >
+配置文件与默认值。只执行命令、没有跑过回合的会话不会留下空文件。
+
 ---
 
 ## 配置
@@ -230,6 +249,9 @@ Breeze 从分层配置系统读取运行参数。
 3. 仓库配置：`<repo>/breeze.toml`
 4. 环境变量：`BREEZE_*`
 5. CLI 参数（如 `--max-steps`）
+
+`breeze chat` 的会话内命令会写入会话，`--resume` 时在环境变量之后、
+CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 ### 可配置项
 
@@ -306,6 +328,7 @@ breeze/
 ├── src/breeze/
 │   ├── agent.py          # ReAct 循环
 │   ├── chat.py           # 交互式多回合会话循环
+│   ├── chat_commands.py  # 会话内 /model /trace /profile /set
 │   ├── cli.py            # CLI 入口
 │   ├── config.py         # 分层配置
 │   ├── context.py        # 上下文管理

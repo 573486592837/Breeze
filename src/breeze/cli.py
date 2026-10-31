@@ -18,6 +18,7 @@ from rich.table import Table
 from breeze import __version__
 from breeze.agent import Agent
 from breeze.chat import run_chat
+from breeze.chat_commands import ChatController
 from breeze.config import settings
 from breeze.llm import LLMClient
 from breeze.session import SessionStore
@@ -231,22 +232,44 @@ def chat(
 
     try:
         try:
-            llm = LLMClient(model=model)
-        except ValueError as exc:
-            error_console.print(f"[red]LLM configuration error: {exc}[/red]")
-            raise typer.Exit(code=1) from exc
-
-        try:
             if resume:
                 session = SessionStore.resume(resume, session_dir)
+                saved = session.saved_config()
             else:
-                session = SessionStore(session_dir, repo_root=repo_root, model=llm.model)
+                session = None
+                saved = {}
         except FileNotFoundError as exc:
             error_console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1) from exc
 
+        try:
+            llm = LLMClient(model=model or saved.get("model"), temperature=saved.get("temperature"))
+        except ValueError as exc:
+            error_console.print(f"[red]LLM configuration error: {exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        if session is None:
+            session = SessionStore(session_dir, repo_root=repo_root, model=llm.model)
+
+        controller = ChatController(
+            llm=llm,
+            llm_factory=lambda name, temperature: LLMClient(model=name, temperature=temperature),
+            session=session,
+            repo_root=str(repo_root),
+            max_steps=max_steps if max_steps is not None else saved.get("max_steps"),
+            max_edit_attempts=saved.get("max_edit_attempts"),
+            temperature=saved.get("temperature"),
+            profile=saved.get("profile"),
+            trace_prefix=trace_name or saved.get("trace_prefix") or session.session_id,
+            intra_turn_budget=saved.get("intra_turn_budget"),
+            answer_preview=saved.get("answer_preview"),
+            max_records=saved.get("max_records"),
+            max_chars=saved.get("max_chars"),
+        )
+
         console.print(
-            f"[dim]model: {llm.model} | repo: {repo_root} | session: {session.session_id} | /help 查看命令[/dim]"
+            f"[dim]model: {controller.llm.model} | repo: {repo_root} | "
+            f"session: {session.session_id} | /help 查看命令[/dim]"
         )
         if resume:
             info = session.info()
@@ -256,15 +279,22 @@ def chat(
                     f"当前仓库是 {repo_root}，历史索引可能指向已不存在的文件。[/yellow]"
                 )
 
-        trace_prefix = trace_name or session.session_id
         exit_code = run_chat(
-            agent_factory=lambda trace: Agent(llm=llm, trace=trace, max_steps=max_steps),
-            trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=trace_prefix),
+            agent_factory=lambda trace: Agent(
+                llm=controller.llm,
+                trace=trace,
+                max_steps=controller.max_steps,
+                max_edit_attempts=controller.max_edit_attempts,
+                context=controller.build_context(),
+            ),
+            trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=controller.trace_prefix),
             input_fn=input,
             print_fn=lambda text: console.print(text, markup=False),
             session=session,
             answer_fn=lambda answer: console.print(_answer_panel(answer)),
             summary_fn=lambda summary, turn: _print_summary(summary, title=f"Trace Summary · turn {turn}"),
+            command_fn=controller.handle,
+            agent_setup_fn=controller.apply_to_agent,
         )
     except typer.Exit:
         raise

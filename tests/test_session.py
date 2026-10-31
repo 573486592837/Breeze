@@ -144,6 +144,55 @@ def test_load_without_file_returns_empty(tmp_path: Path) -> None:
     assert state.render() == ""
 
 
+# ─── 运行时配置事件 ───
+
+
+def test_config_waits_for_first_turn(tmp_path: Path) -> None:
+    """/model 后立即退出不落空文件；首个回合写出时补写 config。"""
+    store = _store(tmp_path)
+    store.record_config(model="new-model")
+
+    assert not store.path.exists()
+
+    store.record_turn(_record(1), _state(), _summary())
+
+    events = _events(store)
+    assert [e["event"] for e in events] == ["session_start", "config", "turn"]
+    assert events[1]["model"] == "new-model"
+
+
+def test_config_events_merge_on_resume(tmp_path: Path) -> None:
+    """多个 config 事件按时间顺序合并，后写的覆盖先写的。"""
+    store = _store(tmp_path)
+    store.record_turn(_record(1), _state(), _summary())
+    store.record_config(model="m2", trace_prefix="run-a")
+    store.record_config(profile="short", max_steps=4)
+
+    config = SessionStore(tmp_path / "sessions", "s1").saved_config()
+
+    assert config == {
+        "model": "m2",
+        "trace_prefix": "run-a",
+        "profile": "short",
+        "max_steps": 4,
+    }
+
+
+def test_saved_config_empty_without_file(tmp_path: Path) -> None:
+    assert _store(tmp_path).saved_config() == {}
+
+
+def test_config_model_updates_listed_model(tmp_path: Path) -> None:
+    """会话列表展示切换后的模型。"""
+    store = _store(tmp_path)
+    store.record_turn(_record(1), _state(), _summary())
+    store.record_config(model="switched-model")
+
+    infos = SessionStore.list_sessions(tmp_path / "sessions")
+
+    assert infos[0].model == "switched-model"
+
+
 # ─── resume 解析 ───
 
 

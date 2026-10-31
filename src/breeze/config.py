@@ -214,6 +214,38 @@ def _profile_preset(profile: str) -> dict[str, dict[str, Any]]:
     return preset
 
 
+def context_profile_values(profile: str) -> dict[str, int]:
+    """返回档位对应的有效压缩参数。
+
+    ``custom`` 不套用 preset，直接返回当前 settings 里的数值，便于在
+    会话中用 ``/profile custom`` 冻结当前预算。
+
+    Args:
+        profile: 档位名，大小写不敏感。
+
+    Returns:
+        含 intra_turn_budget、answer_preview、max_records、max_chars 的 dict。
+
+    Raises:
+        ValueError: profile 不是预设档位也不是 ``custom``。
+    """
+    preset = _profile_preset(profile)
+    if not preset:
+        return {
+            "intra_turn_budget": settings.context_intra_turn_budget,
+            "answer_preview": settings.chat_answer_preview,
+            "max_records": settings.chat_max_records,
+            "max_chars": settings.chat_max_chars,
+        }
+
+    return {
+        "intra_turn_budget": int(preset["context"]["intra_turn_budget"]),
+        "answer_preview": int(preset["chat"]["answer_preview"]),
+        "max_records": int(preset["chat"]["max_records"]),
+        "max_chars": int(preset["chat"]["max_chars"]),
+    }
+
+
 def load_config(repo_root: Path | None = None) -> dict[str, Any]:
     """按优先级加载并合并配置。
 
