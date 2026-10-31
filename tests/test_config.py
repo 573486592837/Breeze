@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from breeze.config import DEFAULTS, Settings, load_config
+from breeze import config as config_module
+from breeze.config import DEFAULTS, Settings, find_dotenv_path, load_config
 
 
 @pytest.fixture(autouse=True)
@@ -346,6 +347,64 @@ def test_config_import_without_api_key(tmp_path: Path) -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "''"
+
+
+def test_find_dotenv_path_prefers_nearest(tmp_path: Path) -> None:
+    """逐级向上时最近的一份 .env 生效。"""
+    (tmp_path / ".env").write_text("SILICONFLOW_API_KEY=far\n", encoding="utf-8")
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    near = nested / ".env"
+    near.write_text("SILICONFLOW_API_KEY=near\n", encoding="utf-8")
+
+    assert find_dotenv_path(nested) == near.resolve()
+
+
+def test_dotenv_is_loaded_from_cwd_when_installed(tmp_path: Path) -> None:
+    """模拟 site-packages 安装：.env 由运行目录决定，与包位置无关。
+
+    v1.3.0 的 wheel 安装里 `breeze ask` 报缺 key —— python-dotenv 的
+    `find_dotenv()` 以调用方文件（site-packages/breeze/config.py）为起点
+    向上找，项目目录不在这条链上。editable 安装时包目录恰好就在项目里，
+    所以本地开发跑不出来。这里把包复制到独立目录、用脚本文件（非 -c，
+    避免 python-dotenv 的交互模式回退到 cwd）从项目目录运行，复现该路径。
+    """
+    import shutil
+    import subprocess
+    import sys
+
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    shutil.copytree(
+        Path(config_module.__file__).resolve().parent,
+        site_dir / "breeze",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+
+    work_dir = tmp_path / "proj"
+    work_dir.mkdir()
+    (work_dir / ".env").write_text("SILICONFLOW_API_KEY=dotenv-from-cwd\n", encoding="utf-8")
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import breeze.config as c\nprint(c.settings.api_key)\nprint(c.__file__)\n",
+        encoding="utf-8",
+    )
+
+    env = {k: v for k, v in os.environ.items() if k != "SILICONFLOW_API_KEY" and not k.startswith("BREEZE_")}
+    env["PYTHONPATH"] = str(site_dir)
+    proc = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=work_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    api_key, module_file = proc.stdout.strip().splitlines()
+    # 确认子进程加载的是复制出去的"已安装"副本，而不是仓库里的 editable 包
+    assert Path(module_file).resolve().is_relative_to(site_dir.resolve()), module_file
+    assert api_key == "dotenv-from-cwd"
 
 
 def test_settings_reads_chat_and_sessions_config(tmp_path: Path) -> None:

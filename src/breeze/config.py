@@ -10,6 +10,9 @@
 安全参数（``ALLOWED_EXECUTABLES``、``FORBIDDEN_*_OPTIONS``、
 ``PROTECTED_PREFIXES``、补丁与输出大小限制等）以及工具 schema 中
 声明的默认值不开放配置。它们属于防线，不应通过配置文件调整。
+
+``.env`` 从当前工作目录逐级向上查找，最近的一份生效；已存在的同名
+环境变量优先级更高（``load_dotenv`` 默认不覆盖）。
 """
 
 from __future__ import annotations
@@ -24,7 +27,27 @@ from dotenv import load_dotenv
 # 避免 LiteLLM 启动时尝试从 GitHub 拉取模型成本映射
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-load_dotenv()
+
+def find_dotenv_path(start: Path | None = None) -> Path | None:
+    """从 start 目录逐级向上查找 ``.env``。
+
+    Args:
+        start: 查找起点。None 时使用当前工作目录。
+
+    Returns:
+        最近的 ``.env`` 路径，整条链上都没有时返回 None。
+    """
+    current = (start or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+_dotenv_path = find_dotenv_path()
+if _dotenv_path is not None:
+    load_dotenv(_dotenv_path)
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
