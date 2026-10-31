@@ -11,7 +11,10 @@ dependencies = [
     "typer>=0.12",
     "rich>=13.0",
     "pydantic>=2.0",
-    "litellm>=1.40",
+    # 1.106.0 起 completion(tools=...) 会无条件 import mcp（litellm 只在
+    # proxy/mcp extra 里声明它），而 Breeze 每次带 10 个工具 schema 调用，
+    # 于是报 "No module named 'mcp'"。上游修好之前先封住上界；1.105.7 实测可用。
+    "litellm>=1.40,<1.106",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "tiktoken>=0.7",
