@@ -46,8 +46,44 @@ def test_defaults_llm_fields() -> None:
     llm = DEFAULTS["llm"]
     assert "model" in llm
     assert "api_base" in llm
+    assert "api_key_env" in llm
     assert "temperature" in llm
     assert isinstance(llm["temperature"], float)
+
+
+def test_defaults_api_key_env_is_siliconflow() -> None:
+    """默认密钥变量名保持 SILICONFLOW_API_KEY，老配置无需改动。"""
+    assert DEFAULTS["llm"]["api_key_env"] == "SILICONFLOW_API_KEY"
+
+
+def test_settings_reads_key_from_named_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[llm] api_key_env 指定变量名，Settings 从该变量取值。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[llm]\napi_key_env = "CUSTOM_API_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CUSTOM_API_KEY", "custom-secret")
+    monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key_env == "CUSTOM_API_KEY"
+    assert s.api_key == "custom-secret"
+
+
+def test_env_api_key_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_API_KEY_ENV 优先于配置文件里的变量名。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[llm]\napi_key_env = "CUSTOM_API_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BREEZE_API_KEY_ENV", "OTHER_KEY")
+    monkeypatch.setenv("OTHER_KEY", "other-secret")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key_env == "OTHER_KEY"
+    assert s.api_key == "other-secret"
 
 
 def test_defaults_agent_fields() -> None:
