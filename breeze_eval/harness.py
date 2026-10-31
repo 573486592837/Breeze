@@ -627,6 +627,7 @@ def _effective_config(llm: Any) -> dict[str, Any]:
     return {
         "model": llm.model,
         "context.enable": settings.context_enable,
+        "context.profile": settings.context_profile,
         "context.intra_turn_budget": settings.context_intra_turn_budget,
         "context.state_max_entries": settings.context_state_max_entries,
         "chat.answer_preview": settings.chat_answer_preview,

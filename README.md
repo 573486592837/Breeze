@@ -227,11 +227,28 @@ Breeze 从分层配置系统读取运行参数。
 
 - `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
 - `[agent]`：max_steps、max_edit_attempts
-- `[context]`：enable、intra_turn_budget（回合实测 Token 预算）、state_max_entries、
-  tool_result_max/head/tail_bytes
+- `[context]`：enable、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
+  state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
 - `[trace]`：dir
+
+### 上下文档位
+
+`[context] profile` 一次设定压缩强度，同时覆盖回合预算与会话归档预算：
+
+| profile | intra_turn_budget | answer_preview | max_records | max_chars |
+|---|---:|---:|---:|---:|
+| `short` | 12000 | 800 | 4 | 3000 |
+| `medium`（默认） | 24000 | 1500 | 8 | 6000 |
+| `long` | 48000 | 3000 | 16 | 12000 |
+| `custom` | 按下方显式配置 | | | |
+
+档位只是默认值之上的一层：`intra_turn_budget` 与 `[chat]` 下的显式值
+（配置文件或环境变量）仍会覆盖它。设为 `custom` 可完全忽略档位预设，
+只用手写的数值。也可以用 `BREEZE_CONTEXT_PROFILE` 临时切换
+（如 `BREEZE_CONTEXT_PROFILE=short`）。long.yaml 实测 short/medium/long
+三档成功率与 Token 差距都在噪声范围内，短档更适合日常。
 
 ### 不可配置项
 
