@@ -18,7 +18,7 @@ CONTENT_PREVIEW_LIMIT = 500
 _NAME_MAX_LEN = 64
 
 
-def _safe_stem(name: str) -> str:
+def normalize_trace_name(name: str) -> str:
     """把用户提供的 trace 名称转成安全的文件名片段。
 
     只保留字母、数字（含中文）、点、下划线与连字符；去掉结尾的
@@ -85,7 +85,7 @@ class RunTrace:
                 会被替换为下划线，完整文件名仍附带时间戳与 run_id。
         """
         self.run_id = run_id or uuid.uuid4().hex[:8]
-        self.name = _safe_stem(name) if name else None
+        self.name = normalize_trace_name(name) if name else None
         self.trace_dir = Path(trace_dir)
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 

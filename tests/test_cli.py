@@ -733,6 +733,205 @@ def test_chat_without_session_dir_uses_configured_dir(
     assert len(list(configured.glob("*.jsonl"))) == 1
 
 
+# ─── chat 运行时命令 ───
+
+
+def test_chat_model_command_switches_model(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/model 切换后，后续回合使用新模型。"""
+
+    class RecordingLLM(FakeLLMClient):
+        seen: list[str] = []
+
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            RecordingLLM.seen.append(self.model)
+
+    monkeypatch.setattr(cli_module, "LLMClient", RecordingLLM)
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/model alt-model\nhello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "模型已切换" in result.stdout
+    assert RecordingLLM.seen == ["fake-model", "alt-model"]
+    assert "fake answer" in result.stdout
+
+
+def test_chat_trace_command_changes_prefix(repo: Path, tmp_path: Path) -> None:
+    """/trace 设置后的回合使用新前缀。"""
+    trace_dir = tmp_path / "traces"
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir)],
+        input="/trace my-run\nhello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    traces = list(trace_dir.glob("*.jsonl"))
+    assert len(traces) == 1
+    assert traces[0].name.startswith("my-run_")
+
+
+def test_chat_profile_command(repo: Path, tmp_path: Path) -> None:
+    """/profile 切换压缩档位并回报预算。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/profile short\nhello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "压缩档位已切换：short" in result.stdout
+    assert "intra_turn_budget=12000" in result.stdout
+
+
+def test_chat_config_command(repo: Path, tmp_path: Path) -> None:
+    """/config 展示当前运行配置，不进入回合。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/config\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "运行配置：" in result.stdout
+    assert "model: fake-model" in result.stdout
+    assert "trace 前缀:" in result.stdout
+    assert "fake answer" not in result.stdout
+
+
+def test_chat_unknown_command(repo: Path, tmp_path: Path) -> None:
+    """未知命令提示 /help，且不触发回合。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/nope\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "未知命令" in result.stdout
+    assert "fake answer" not in result.stdout
+
+
+def test_chat_set_command(repo: Path, tmp_path: Path) -> None:
+    """/set 调整参数并回报。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="/set max_steps 3\nhello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "max_steps 已设为：3" in result.stdout
+
+
+def test_chat_only_commands_leaves_no_session_file(repo: Path, tmp_path: Path) -> None:
+    """只调整命令、没有回合时同样不落空会话文件。"""
+    session_dir = tmp_path / "sessions"
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "traces"),
+            "--session-dir",
+            str(session_dir),
+        ],
+        input="/model other-model\n/config\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert not session_dir.exists() or list(session_dir.glob("*.jsonl")) == []
+
+
+def test_chat_resume_restores_saved_config(repo: Path, tmp_path: Path) -> None:
+    """--resume 恢复会话里记录的模型、trace 前缀与运行时参数。"""
+    session_dir = tmp_path / "sessions"
+    first_traces = tmp_path / "t1"
+    second_traces = tmp_path / "t2"
+    runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(first_traces),
+            "--session-dir",
+            str(session_dir),
+        ],
+        input="/model resumed-model\n/trace resumed-trace\n/set temperature 0.5\n/set max_steps 3\nhello\n/exit\n",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(second_traces),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+        ],
+        input="/config\nagain\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "model: resumed-model" in result.stdout
+    assert "trace 前缀: resumed-trace" in result.stdout
+    assert "max_steps: 3" in result.stdout
+    assert "temperature: 0.5" in result.stdout
+    traces = list(second_traces.glob("*.jsonl"))
+    assert len(traces) == 1
+    assert traces[0].name.startswith("resumed-trace_")
+
+
+def test_chat_cli_model_overrides_saved(repo: Path, tmp_path: Path) -> None:
+    """--model 优先于会话里保存的模型。"""
+    session_dir = tmp_path / "sessions"
+    runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "t1"),
+            "--session-dir",
+            str(session_dir),
+        ],
+        input="/model saved-model\nhello\n/exit\n",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "t2"),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+            "--model",
+            "cli-model",
+        ],
+        input="/config\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "model: cli-model" in result.stdout
+
+
 # ─── 版本 ───
 
 

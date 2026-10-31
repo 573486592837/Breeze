@@ -13,7 +13,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-HELP_TEXT = "commands: /new 重置会话 | /help 显示帮助 | /exit 退出（Ctrl+C / Ctrl+D 同样有效）"
+HELP_TEXT = (
+    "commands:\n"
+    "  /model [name]       查看或切换模型\n"
+    "  /trace [prefix]     查看或设置 trace 文件名前缀\n"
+    "  /profile [name]     查看或切换压缩档位（short / medium / long / custom）\n"
+    "  /set <key> <value>  调整 max_steps / max_edit_attempts / temperature\n"
+    "  /config             查看当前运行配置\n"
+    "  /new                重置对话（运行时配置保留）\n"
+    "  /help               显示帮助\n"
+    "  /exit               退出（Ctrl+C / Ctrl+D 同样有效）"
+)
 
 
 def run_chat(
@@ -24,6 +34,8 @@ def run_chat(
     session: Any | None = None,
     answer_fn: Callable[[str], None] | None = None,
     summary_fn: Callable[[dict[str, Any], int], None] | None = None,
+    command_fn: Callable[[str, Any | None], str | None] | None = None,
+    agent_setup_fn: Callable[[Any], None] | None = None,
 ) -> int:
     """运行交互式会话直到退出。
 
@@ -35,6 +47,9 @@ def run_chat(
         session: SessionStore；提供时会先恢复归档与状态，每回合结束落盘。
         answer_fn: 渲染最终答案，默认直接交给 print_fn。
         summary_fn: 渲染每回合的 trace 摘要，默认按单行文本输出。
+        command_fn: 处理 /new、/help、/exit 以外的命令；返回 None 表示
+            不是命令，按提问执行。
+        agent_setup_fn: Agent 创建并恢复会话状态后调用，用于同步运行时配置。
 
     Returns:
         进程退出码，0 表示正常退出。
@@ -72,11 +87,18 @@ def run_chat(
         if question == "/new":
             if agent is not None:
                 agent.reset()
+                if agent_setup_fn is not None:
+                    agent_setup_fn(agent)
             if session is not None:
                 session.record_reset()
             turns = 0
             print_fn("(new conversation)")
             continue
+        if command_fn is not None:
+            response = command_fn(question, agent)
+            if response is not None:
+                print_fn(response)
+                continue
 
         trace = trace_factory()
         with trace:
@@ -84,6 +106,8 @@ def run_chat(
                 agent = agent_factory(trace)
                 if session is not None:
                     agent.ledger, agent.state = session.load()
+                if agent_setup_fn is not None:
+                    agent_setup_fn(agent)
             else:
                 agent.trace = trace
             try:
