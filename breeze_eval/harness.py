@@ -622,10 +622,26 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
     }
 
 
+def _effective_config(llm: Any) -> dict[str, Any]:
+    """收集影响评估结果的运行参数，写进报告便于跨档比较。"""
+    return {
+        "model": llm.model,
+        "context.enable": settings.context_enable,
+        "context.intra_turn_budget": settings.context_intra_turn_budget,
+        "context.state_max_entries": settings.context_state_max_entries,
+        "chat.answer_preview": settings.chat_answer_preview,
+        "chat.max_records": settings.chat_max_records,
+        "chat.max_chars": settings.chat_max_chars,
+        "agent.max_steps": settings.agent_max_steps,
+        "agent.max_edit_attempts": settings.agent_max_edit_attempts,
+    }
+
+
 def build_report(
     metadata: dict[str, Any],
     results: list[TaskResult],
     model: str,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """组装报告字典。
 
@@ -633,6 +649,7 @@ def build_report(
         metadata: 任务集顶层元数据。
         results: 所有任务结果。
         model: 实际使用的模型名。
+        config: 实际生效的配置摘要；None 时为空字典。
 
     Returns:
         可直接序列化为 JSON 的报告字典。
@@ -641,6 +658,7 @@ def build_report(
         "version": metadata.get("version", 1),
         "repo": metadata.get("repo", "breeze"),
         "model": model,
+        "effective_config": config or {},
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "summary": summarize(results),
         "results": [asdict(r) for r in results],
@@ -751,12 +769,10 @@ def run_eval(
         factory = llm_factory or (lambda: LLMClient(model=model))
         llm = factory()
 
+        config = _effective_config(llm)
         log("[config] effective settings:")
-        log(f"  model={llm.model}")
-        log(f"  context.enable={settings.context_enable}")
-        log(f"  context.intra_turn_budget={settings.context_intra_turn_budget}")
-        log(f"  agent.max_steps(default)={settings.agent_max_steps}")
-        log(f"  agent.max_edit_attempts={settings.agent_max_edit_attempts}")
+        for key, value in config.items():
+            log(f"  {key}={value}")
 
         results: list[TaskResult] = []
         for i, task in enumerate(tasks, start=1):
@@ -787,7 +803,7 @@ def run_eval(
             if result.tokens_samples is not None:
                 log(f"  samples={result.tokens_samples} std={result.tokens_std}")
 
-        report = build_report(metadata, results, llm.model)
+        report = build_report(metadata, results, llm.model, config=config)
         _merge_manual_grades(report, output_path)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
