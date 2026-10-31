@@ -406,6 +406,7 @@ def test_chat_list_search_filters_by_keyword(repo: Path, tmp_path: Path) -> None
     )
 
     assert result.exit_code == 0
+    assert "20260101T000000_aaa" in result.stdout
     assert "safe_path" in result.stdout
     assert "registry" not in result.stdout
 

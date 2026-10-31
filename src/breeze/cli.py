@@ -270,7 +270,8 @@ def _print_sessions(session_dir: Path | None, search: str | None = None) -> None
         return
 
     table = Table(title="Saved sessions", border_style="cyan")
-    table.add_column("session", style="dim")
+    # session id 要能整体复制去 --resume，窄终端下不能被挤成半截
+    table.add_column("session", style="dim", min_width=22, no_wrap=True)
     table.add_column("created")
     table.add_column("turns", justify="right")
     table.add_column("tokens", justify="right")
