@@ -245,6 +245,14 @@ def test_build_report_structure() -> None:
     assert "generated_at" in report
     assert "summary" in report
     assert "results" in report
+    assert report["effective_config"] == {}
+
+
+def test_build_report_carries_effective_config() -> None:
+    """配置摘要写入报告，跨档评估时可以核对实际生效的参数。"""
+    report = build_report({}, [], "m", config={"chat.max_chars": 3000})
+
+    assert report["effective_config"] == {"chat.max_chars": 3000}
 
 
 # ─── run_eval ───
@@ -333,6 +341,27 @@ def test_run_eval_logs_effective_config(
     assert "model=" in joined
     assert "context.enable=" in joined
     assert "context.intra_turn_budget=" in joined
+    assert "chat.max_chars=" in joined
+
+
+def test_run_eval_report_records_effective_config(
+    task_yaml: Path,
+    fake_repo: Path,
+    tmp_path: Path,
+) -> None:
+    """写出的 JSON 应携带实际生效的配置摘要。"""
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=task_yaml,
+        output_path=output,
+        repo_root=fake_repo,
+        trace_dir=tmp_path / "traces",
+        llm_factory=FakeLLM,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["effective_config"]["model"] == "fake-model"
+    assert data["effective_config"]["chat.max_chars"] == settings.chat_max_chars
 
 
 def test_run_eval_merges_manual_grades(

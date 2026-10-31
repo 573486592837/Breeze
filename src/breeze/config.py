@@ -90,6 +90,9 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
+    "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
+    "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
+    "BREEZE_CHAT_MAX_CHARS": ("chat", "max_chars"),
     "BREEZE_TRACE_DIR": ("trace", "dir"),
 }
 

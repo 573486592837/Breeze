@@ -196,6 +196,19 @@ def test_env_model_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert cfg["llm"]["model"] == "openai/custom-model"
 
 
+def test_env_chat_overrides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat 压缩参数可用环境变量覆盖，便于分档评估。"""
+    monkeypatch.setenv("BREEZE_CHAT_MAX_RECORDS", "4")
+    monkeypatch.setenv("BREEZE_CHAT_MAX_CHARS", "3000")
+    monkeypatch.setenv("BREEZE_CHAT_ANSWER_PREVIEW", "800")
+
+    cfg = load_config(tmp_path)
+
+    assert cfg["chat"]["max_records"] == 4
+    assert cfg["chat"]["max_chars"] == 3000
+    assert cfg["chat"]["answer_preview"] == 800
+
+
 def test_env_int_conversion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """BREEZE_MAX_STEPS 从 str 转为 int。"""
     monkeypatch.setenv("BREEZE_MAX_STEPS", "42")
