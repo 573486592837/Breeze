@@ -171,6 +171,10 @@ class Settings:
     单例在模块 import 时按当前工作目录初始化。CLI 的 --repo 参数
     只修改 repo_root，不重新加载配置。若需对不同仓库使用不同配置，
     请先 cd 到目标仓库再启动 breeze。
+
+    import 时不因缺少 API Key 抛错：密钥校验放在 LLMClient 构造里，
+    这样 `breeze --version`、`breeze chat --list` 这类不需要调用模型
+    的命令在没有 .env 的环境里也能用。
     """
 
     def __init__(self, repo_root: Path | None = None) -> None:
@@ -199,9 +203,6 @@ class Settings:
         self.chat_max_chars: int = int(cfg["chat"]["max_chars"])
 
         self.sessions_dir: Path = Path(cfg["sessions"]["dir"]).expanduser()
-
-        if not self.api_key:
-            raise ValueError("SILICONFLOW_API_KEY 未设置，请检查 .env 文件或环境变量")
 
     def reload(self, repo_root: Path | None = None) -> None:
         """按新的 repo_root 重新加载配置。

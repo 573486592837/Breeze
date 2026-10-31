@@ -36,12 +36,18 @@ class LLMClient:
             api_base: API 基础地址。None 时从配置读取。
             temperature: 温度。None 时从配置读取。
             parallel_tool_calls: 请求模型在同一轮返回多个工具调用。
+
+        Raises:
+            ValueError: 未配置 SILICONFLOW_API_KEY。
         """
         self.model = model or settings.model
         self.api_key = api_key or settings.api_key
         self.api_base = api_base or settings.api_base
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.parallel_tool_calls = parallel_tool_calls
+
+        if not self.api_key:
+            raise ValueError("SILICONFLOW_API_KEY 未设置，请检查 .env 文件或环境变量")
 
     def chat(
         self,
