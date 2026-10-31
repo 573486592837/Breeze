@@ -152,6 +152,54 @@ def test_load_tasks_rejects_non_dict(tmp_path: Path) -> None:
         load_tasks(bad)
 
 
+def test_load_tasks_parses_chat_turns(tmp_path: Path) -> None:
+    """turns 应按顺序保留，供多回合会话使用。"""
+    path = tmp_path / "chat.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "chat01",
+                        "type": "chat",
+                        "question": "two turns",
+                        "success_criteria": "c",
+                        "turns": ["  first  ", "second"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _, tasks = load_tasks(path)
+
+    assert tasks[0].turns == ["first", "second"]
+
+
+def test_load_tasks_rejects_invalid_turns(tmp_path: Path) -> None:
+    """turns 含空字符串应抛 ValueError。"""
+    bad = tmp_path / "bad-turns.yaml"
+    bad.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "chat01",
+                        "type": "chat",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "turns": ["ok", "  "],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="turns"):
+        load_tasks(bad)
+
+
 # ─── run_task ───
 
 
@@ -181,6 +229,38 @@ def test_run_task_with_fake_llm(
     assert result.success is None
     assert result.notes == ""
     assert Path(result.trace_path).exists()
+
+
+def test_run_task_chat_turns_keep_agent_alive(
+    fake_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """turns 非空时走 run_chat：每回合一条 trace，上一回合结论进入归档。"""
+    monkeypatch.setattr(settings, "repo_root", fake_repo)
+
+    task = TaskSpec(
+        id="chat01",
+        type="chat",
+        question="two turns",
+        success_criteria="both answered",
+        max_steps=3,
+        turns=["first question", "second question"],
+    )
+    llm = FakeLLM()
+    result = run_task(task, llm, tmp_path / "traces")
+
+    assert result.answer == "fake answer"
+    assert result.turn_answers == ["fake answer", "fake answer"]
+    assert result.llm_calls == 2
+    assert result.total_tokens == 30
+    assert len(result.trace_paths) == 2
+    assert all(Path(path).exists() for path in result.trace_paths)
+
+    second_messages = llm.calls[1]["messages"]
+    archive = "\n".join(str(m.get("content")) for m in second_messages)
+    assert "Completed turns" in archive
+    assert "first question" in archive
 
 
 # ─── summarize ───
@@ -745,6 +825,55 @@ def test_run_eval_with_worktree_end_to_end(
 
     assert r["auto_graded"] is True
     assert r["success"] is True
+    assert r["run_details"][0]["trace_paths"]
+
+
+def test_run_eval_failure_notes_include_output_tail(
+    git_repo: Path,
+    fixtures_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """eval 失败时 notes 记录输出尾部，供报告自证失败原因。"""
+    import sys
+
+    eval_cmd = f'"{sys.executable}" -c "import sys; print(\'BOOM_MARKER\'); sys.exit(1)"'
+    tasks_path = tmp_path / "tasks.yaml"
+    tasks_path.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [
+                    {
+                        "id": "fix01",
+                        "type": "fix",
+                        "question": "q",
+                        "success_criteria": "c",
+                        "eval_command": eval_cmd,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "out.json"
+    run_eval(
+        tasks_path=tasks_path,
+        output_path=output,
+        repo_root=git_repo,
+        trace_dir=tmp_path / "traces",
+        fixtures_dir=fixtures_dir,
+        llm_factory=FakeLLM,
+        repeat=2,
+    )
+
+    data = json.loads(output.read_text(encoding="utf-8"))
+    r = data["results"][0]
+
+    assert r["success"] is False
+    assert "eval failed:" in r["notes"]
+    assert "BOOM_MARKER" in r["notes"]
+    assert len(r["run_details"]) == 2
+    assert all(detail["success"] is False for detail in r["run_details"])
 
 
 def test_run_eval_setup_failure_records_failed_result(
@@ -1120,8 +1249,8 @@ def test_quality_task_file_is_consistent() -> None:
     path = Path(__file__).resolve().parents[1] / "tasks" / "quality.yaml"
     metadata, tasks = load_tasks(path)
 
-    assert len(tasks) == 15
-    assert set(metadata["suites"]) == {"core", "full"}
+    assert len(tasks) == 17
+    assert set(metadata["suites"]) == {"core", "chat", "full"}
 
     by_id = {t.id: t for t in tasks}
     for suite, ids in metadata["suites"].items():
@@ -1133,6 +1262,10 @@ def test_quality_task_file_is_consistent() -> None:
     for task in tasks:
         if task.eval_command and "pytest" in task.eval_command:
             assert "{python}" in task.eval_command, f"{task.id} should pin interpreter"
+
+    assert len(by_id["chat01"].turns) == 2
+    assert len(by_id["chat02"].turns) == 2
+    assert set(metadata["suites"]["chat"]) == {"chat01", "chat02"}
 
 
 def test_merge_manual_grades_skips_auto_graded(

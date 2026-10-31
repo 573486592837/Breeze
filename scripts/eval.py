@@ -112,7 +112,12 @@ def main() -> int:
     only_ids = set(args.tasks_filter) if args.tasks_filter else None
 
     def progress(msg: str) -> None:
-        print(msg, flush=True)
+        # eval 失败的 notes 会带 pytest 输出，Windows 控制台编码可能不支持。
+        try:
+            print(msg, flush=True)
+        except UnicodeEncodeError:
+            encoding = sys.stdout.encoding or "utf-8"
+            print(msg.encode(encoding, errors="backslashreplace").decode(encoding), flush=True)
 
     run_eval(
         tasks_path=args.tasks,

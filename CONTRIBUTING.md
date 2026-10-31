@@ -97,6 +97,9 @@ python -m ruff format src tests
 
   `protect` 用 `git status` 检查，修改、删除、新增都算违规。
 - fix 类任务以仓库已有测试为准：问题描述点名失败用例，不另立期望值。
+- 多回合任务用 `turns` 定义（`type: chat`），harness 会调用 `run_chat`，
+  Agent 跨回合存活；`question` 只用于报告描述。评估仍只看最终仓库状态。
+  注意 `turns` 是真实会话输入，不要把一次指令拆成多段写在单回合任务里。
 - 新任务先跑预检（不消耗 API），必须"修复前失败、protect 干净"：
 
   ```bash

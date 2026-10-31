@@ -14,8 +14,11 @@
 #   - feature/refactor 类任务由 setup 注入验收测试，同样 protect tests/
 #   - 任务必须"修复前必然失败"：scripts/check_tasks.py 会做预检
 #
-# suites 是运行档位：core 用于日常回归（约 40 分钟），full 用于发版前全量。
-# 用法：python scripts/eval.py --suite core
+# suites 是运行档位：core 用于日常回归（约 40 分钟），chat 只跑多回合会话，
+# full 用于发版前全量。用法：python scripts/eval.py --suite core
+#
+# chat 任务用 turns 定义回合序列，由 harness 调用 run_chat 执行，
+# 与 breeze ask 的单回合路径区分开。
 
 version: 2
 repo: breeze
@@ -31,6 +34,9 @@ suites:
     - feat01
     - feat02
     - refactor01
+  chat:
+    - chat01
+    - chat02
   full:
     - fix01
     - fix02
@@ -47,6 +53,8 @@ suites:
     - ext03
     - mt01
     - mt02
+    - chat01
+    - chat02
 
 tasks:
   # ─── fix：既有测试判定的缺陷修复 ───
@@ -228,3 +236,36 @@ tasks:
       - tests/test_shell.py
     eval_command: "{python} -m pytest -q"
     max_steps: 20
+
+  # ─── chat：真实多回合会话（breeze chat 路径） ───
+  #
+  # turns 非空时 harness 调用 run_chat：Agent 跨回合存活，每回合独立 trace，
+  # 上一回合的结论经 TurnLedger 注入下一回合。question 只用于报告描述。
+
+  - id: chat01
+    type: chat
+    question: "两回合会话：先定位 tests/test_fs.py 的失败用例，再修复 src/ 并跑全量。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    turns:
+      - "运行 `python -m pytest tests/test_fs.py`，告诉我哪些用例失败、失败原因是什么。先不要修改任何文件。"
+      - "修复刚才失败的用例，只改 src/。修改后运行 `python -m pytest -q`，全量必须通过。"
+    setup:
+      - patch: fix04.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  - id: chat02
+    type: chat
+    question: "两回合会话：先读懂 exclude_pattern 验收测试，再按结论实现功能。"
+    success_criteria: "验收测试与 tests/test_fs.py 全部通过，tests/ 未被改动"
+    turns:
+      - "阅读 tests/test_feat02_exclude.py，用要点总结 exclude_pattern 的完整预期行为（参数、默认值、匹配语义、目录处理），不要修改任何代码。"
+      - "按你总结的行为，为 src/breeze/tools/fs.py 的 list_files 实现 exclude_pattern，并更新工具 description 与 parameters schema。完成后运行 `python -m pytest tests/test_feat02_exclude.py tests/test_fs.py` 验证。"
+    setup:
+      - patch: test_feat02_exclude.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_feat02_exclude.py tests/test_fs.py"
+    max_steps: 15

@@ -410,6 +410,10 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "不得以方案、计划或建议结尾" in prompt
     assert "先 grep 搜索符号名" in prompt
     assert "禁止凭记忆编写 old" in prompt
+    assert "必须退出码为 0" in prompt
+    assert '不得以"与本次任务无关"为由跳过' in prompt
+    assert "不要用 run_shell 调 grep" in prompt
+    assert "cwd 参数" in prompt
 
 
 def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:

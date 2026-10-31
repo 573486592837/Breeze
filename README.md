@@ -301,18 +301,23 @@ API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 
 ## 评估
 
-固定评估集是 `tasks/quality.yaml`（15 个自动判定任务，`core` / `full` 两档）。
+固定评估集是 `tasks/quality.yaml`（17 个自动判定任务，`core` / `chat` / `full` 三档）。
 评分不看模型自述，只看 `eval_command` 退出码；`protect` 里的路径
 （通常是 `tests/`）被改动或新增时直接判失败，因此改测试骗分不再有效。
+`chat` 档用 `turns` 定义多回合会话，由 `run_chat` 执行，覆盖 `breeze chat`
+的真实使用路径；其余任务为单回合（等价于 `breeze ask`）。
 
 ```bash
 # 加任务后先预检：每个任务必须"修复前失败、protect 干净"
 python scripts/check_tasks.py --suite core
 
-# 日常回归（core，8 个任务）
+# 日常回归（core，8 个单回合任务）
 python scripts/eval.py --suite core
 
-# 发版前全量（full，15 个任务），repeat 3 取中位数与按 run 通过率
+# 多回合会话（chat，2 个任务）
+python scripts/eval.py --suite chat --repeat 3
+
+# 发版前全量（full，17 个任务），repeat 3 取中位数与按 run 通过率
 python scripts/eval.py --suite full --repeat 3
 
 # 单个任务

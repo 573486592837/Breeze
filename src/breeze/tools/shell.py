@@ -4,6 +4,7 @@ run_shell 通过可执行文件白名单、子命令白名单、shell=False 和 
 在可控范围内为 Agent 提供命令执行能力。
 """
 
+import locale
 import os
 import re
 import shlex
@@ -216,9 +217,6 @@ def run_command(
             tokens,
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             shell=False,
         )
@@ -228,7 +226,32 @@ def run_command(
         return -1, "", f"Command not found: {tokens[0]}"
     except OSError as exc:
         return -1, "", f"Failed to execute command: {exc}"
-    return proc.returncode, proc.stdout, proc.stderr
+    return proc.returncode, decode_process_output(proc.stdout), decode_process_output(proc.stderr)
+
+
+def decode_process_output(data: bytes | str) -> str:
+    """解码子进程输出。
+
+    优先按 UTF-8 解码，失败时回退到系统首选编码（Windows 上通常是
+    cp936）。pytest 等工具在 Windows 会按控制台编码输出，直接按 UTF-8
+    解码会把中文文档串变成替换字符。
+
+    Args:
+        data: 子进程的 stdout 或 stderr。
+
+    Returns:
+        解码后的文本。
+    """
+    if isinstance(data, str):
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = locale.getpreferredencoding(False) or "utf-8"
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            return data.decode("utf-8", errors="replace")
 
 
 def _check_allowed(tokens: list[str]) -> None:
