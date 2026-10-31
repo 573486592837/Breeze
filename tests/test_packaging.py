@@ -71,3 +71,25 @@ def test_sdist_excludes_run_artifacts(sdist_tops: set[str]) -> None:
     """trace 与报告是本机运行产物，不进发行包。"""
     for entry in ("traces", "reports", "dist", "build"):
         assert entry not in sdist_tops, entry
+
+
+def test_litellm_bound_avoids_the_mcp_requiring_range() -> None:
+    """litellm 上界要挡住 1.106：它带 tools 的调用会 import 未声明的 mcp。
+
+    litellm 1.106.0 起 ``completion(tools=...)`` 无条件
+    ``from litellm.responses.mcp.chat_completions_handler import ...``，
+    而 mcp 只声明在 proxy/mcp extra 里；Breeze 每轮都带工具 schema，
+    于是新鲜安装直接 ``ModuleNotFoundError: No module named 'mcp'``。
+    """
+    import tomllib
+
+    from packaging.requirements import Requirement
+
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    litellm_req = next(
+        (Requirement(dep) for dep in pyproject["project"]["dependencies"] if dep.startswith("litellm")), None
+    )
+    assert litellm_req is not None, "pyproject 里应声明 litellm 依赖"
+
+    assert not litellm_req.specifier.contains("1.106.6"), litellm_req
+    assert litellm_req.specifier.contains("1.105.7"), litellm_req

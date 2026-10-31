@@ -163,6 +163,10 @@ conda activate breeze
 pip install -e ".[dev]"
 ```
 
+`pip install` 会解析到 `litellm<1.106`：1.106.0 起带 `tools` 的调用会 import 未声明的
+`mcp` 包（Breeze 每轮都带工具 schema），已装 1.106.x 的环境用
+`pip install "litellm==1.103.0"` 回退。
+
 ### 配置
 
 复制 `.env.example` 为 `.env`，填入 API Key：
