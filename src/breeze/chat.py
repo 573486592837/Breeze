@@ -22,6 +22,8 @@ def run_chat(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[[str], None] = print,
     session: Any | None = None,
+    answer_fn: Callable[[str], None] | None = None,
+    summary_fn: Callable[[dict[str, Any], int], None] | None = None,
 ) -> int:
     """运行交互式会话直到退出。
 
@@ -29,12 +31,26 @@ def run_chat(
         agent_factory: 接收首个 trace，构造 Agent。
         trace_factory: 每回合调用一次，返回新的 RunTrace（用作上下文管理器）。
         input_fn: 读取一行用户输入。
-        print_fn: 输出文本。
+        print_fn: 输出系统消息（帮助、退出提示等）。
         session: SessionStore；提供时会先恢复归档与状态，每回合结束落盘。
+        answer_fn: 渲染最终答案，默认直接交给 print_fn。
+        summary_fn: 渲染每回合的 trace 摘要，默认按单行文本输出。
 
     Returns:
         进程退出码，0 表示正常退出。
     """
+    if answer_fn is None:
+        answer_fn = print_fn
+    if summary_fn is None:
+
+        def _default_summary(summary: dict[str, Any], turn: int) -> None:
+            print_fn(
+                f"[turn {turn}] llm_calls={summary['llm_calls']} tool_calls={summary['tool_calls']} "
+                f"total_tokens={summary['total_tokens']} trace={summary['trace_path']}"
+            )
+
+        summary_fn = _default_summary
+
     agent = None
     turns = 0
 
@@ -81,9 +97,5 @@ def run_chat(
         if session is not None and agent.ledger.records:
             session.record_turn(agent.ledger.records[-1], agent.state, trace.summary())
 
-        print_fn(answer)
-        s = trace.summary()
-        print_fn(
-            f"[turn {turns}] llm_calls={s['llm_calls']} tool_calls={s['tool_calls']} "
-            f"total_tokens={s['total_tokens']} trace={s['trace_path']}"
-        )
+        answer_fn(answer)
+        summary_fn(trace.summary(), turns)

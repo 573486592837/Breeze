@@ -201,3 +201,37 @@ def test_trace_events_are_valid_jsonl(trace_dir: Path) -> None:
         assert "event" in obj
         assert "ts" in obj
         assert obj["run_id"] == "run11"
+
+
+# ─── 自定义文件名 ───
+
+
+def test_trace_name_prefix(trace_dir: Path) -> None:
+    """name 作为文件名前缀，时间戳与 run_id 仍保证唯一。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run12", name="fix-bug") as trace:
+        assert trace.name == "fix-bug"
+        assert trace.path.name.startswith("fix-bug_")
+        assert "run12" in trace.path.name
+
+
+def test_trace_name_strips_extension_and_unsafe_chars(trace_dir: Path) -> None:
+    """名称不能带路径分隔符，也不能把 .jsonl 写进前缀。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run13", name="../bad name.jsonl") as trace:
+        assert trace.name == "bad_name"
+        assert trace.path.parent == trace_dir
+        assert trace.path.name.startswith("bad_name_")
+
+
+def test_trace_name_allows_chinese(trace_dir: Path) -> None:
+    """中文名称可直接作为前缀。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run15", name="修复登录") as trace:
+        assert trace.name == "修复登录"
+        assert trace.path.name.startswith("修复登录_")
+
+
+def test_trace_without_name_keeps_default_format(trace_dir: Path) -> None:
+    """不传 name 时文件名格式保持时间戳_run_id.jsonl。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run14") as trace:
+        assert trace.name is None
+        assert trace.path.name.endswith("_run14.jsonl")
+        assert trace.path.name.count("_") == 1

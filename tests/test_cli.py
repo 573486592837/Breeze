@@ -96,6 +96,67 @@ def test_ask_writes_trace_file(repo: Path, tmp_path: Path) -> None:
     assert len(files) == 1
 
 
+def test_ask_trace_name_prefix(repo: Path, tmp_path: Path) -> None:
+    """--trace-name 让 trace 文件带上可辨认的前缀。"""
+    trace_dir = tmp_path / "traces"
+    runner.invoke(
+        app,
+        [
+            "ask",
+            "hello",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(trace_dir),
+            "--trace-name",
+            "explain-registry",
+        ],
+    )
+    files = list(trace_dir.glob("*.jsonl"))
+
+    assert len(files) == 1
+    assert files[0].name.startswith("explain-registry_")
+
+
+def test_ask_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Markdown 答案应渲染，而不是把 ** 等标记原样打到控制台。"""
+
+    class MarkdownLLM(FakeLLMClient):
+        def chat(self, messages, tools=None, temperature=0.0):
+            return LLMResponse(
+                content="**important** answer\n\n```python\nx = 1\n```",
+                tool_calls=[],
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+
+    monkeypatch.setattr(cli_module, "LLMClient", MarkdownLLM)
+    result = runner.invoke(
+        app,
+        ["ask", "hello", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+    )
+
+    assert result.exit_code == 0
+    assert "important" in result.stdout
+    assert "**important**" not in result.stdout
+    assert "```" not in result.stdout
+
+
+def test_help_lists_current_options() -> None:
+    """帮助文案应覆盖持久化与 trace 命名等新参数。"""
+    top = runner.invoke(app, ["--help"])
+    ask_help = runner.invoke(app, ["ask", "--help"])
+    chat_help = runner.invoke(app, ["chat", "--help"])
+
+    assert top.exit_code == 0
+    assert "breeze ask --help" in top.stdout
+    assert "--trace-name" in ask_help.stdout
+    assert "--trace-name" in chat_help.stdout
+    assert "--resume" in chat_help.stdout
+    assert "--list" in chat_help.stdout
+
+
 def test_ask_custom_max_steps(repo: Path, tmp_path: Path) -> None:
     """--max-steps 应传递给 Agent。"""
     captured = {}
@@ -269,6 +330,74 @@ def test_chat_writes_one_trace_per_turn(repo: Path, tmp_path: Path) -> None:
         input="hello\nagain\n/exit\n",
     )
     assert len(list(trace_dir.glob("*.jsonl"))) == 2
+
+
+def test_chat_traces_use_session_id_prefix(repo: Path, tmp_path: Path) -> None:
+    """默认用 session id 做 trace 前缀，便于把 trace 与会话对上。"""
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir), "--session-dir", str(session_dir)],
+        input="hello\nagain\n/exit\n",
+    )
+    session_file = next(session_dir.glob("*.jsonl"))
+    traces = list(trace_dir.glob("*.jsonl"))
+
+    assert len(traces) == 2
+    assert all(t.name.startswith(f"{session_file.stem}_") for t in traces)
+
+
+def test_chat_trace_name_override(repo: Path, tmp_path: Path) -> None:
+    """--trace-name 覆盖默认的 session id 前缀。"""
+    trace_dir = tmp_path / "traces"
+    runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir), "--trace-name", "refactor-run"],
+        input="hello\n/exit\n",
+    )
+    traces = list(trace_dir.glob("*.jsonl"))
+
+    assert len(traces) == 1
+    assert traces[0].name.startswith("refactor-run_")
+
+
+def test_chat_shows_summary_after_each_turn(repo: Path, tmp_path: Path) -> None:
+    """每回合答案后显示独立的 Trace Summary，而不是单行摘要。"""
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="hello\nagain\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.count("Trace Summary") == 2
+    assert "turn 2" in result.stdout
+
+
+def test_chat_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat 答案同样应渲染 Markdown。"""
+
+    class MarkdownLLM(FakeLLMClient):
+        def chat(self, messages, tools=None, temperature=0.0):
+            return LLMResponse(
+                content="**bold** answer",
+                tool_calls=[],
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+
+    monkeypatch.setattr(cli_module, "LLMClient", MarkdownLLM)
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+        input="hello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "bold" in result.stdout
+    assert "**bold**" not in result.stdout
 
 
 def test_chat_help_command(repo: Path, tmp_path: Path) -> None:
@@ -459,7 +588,8 @@ def test_chat_resume_continues_same_session(repo: Path, tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert first_file.stem in result.stdout
-    assert "[turn 1]" in result.stdout
+    assert "Trace Summary" in result.stdout
+    assert "turn 1" in result.stdout
     assert text.count('"event": "session_start"') == 1
     assert text.count('"event": "turn"') == 2
     assert "first question" in text

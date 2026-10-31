@@ -5,6 +5,7 @@ RunTrace 将一次 Agent 运行的所有 LLM 调用和工具调用写入 JSONL �
 """
 
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,6 +15,19 @@ from typing import Any
 DEFAULT_TRACE_DIR = Path("traces")
 RESULT_PREVIEW_LIMIT = 500
 CONTENT_PREVIEW_LIMIT = 500
+_NAME_MAX_LEN = 64
+
+
+def _safe_stem(name: str) -> str:
+    """把用户提供的 trace 名称转成安全的文件名片段。
+
+    只保留字母、数字（含中文）、点、下划线与连字符；去掉结尾的
+    .jsonl，防止用户误以为可以指定完整文件名。
+    """
+    if name.lower().endswith(".jsonl"):
+        name = name[: -len(".jsonl")]
+    stem = re.sub(r"[^\w.-]+", "_", name.strip()).strip("._-")
+    return stem[:_NAME_MAX_LEN] or "trace"
 
 
 @dataclass
@@ -60,19 +74,26 @@ class RunTrace:
         self,
         trace_dir: str | Path = DEFAULT_TRACE_DIR,
         run_id: str | None = None,
+        name: str | None = None,
     ) -> None:
         """初始化追踪器并创建 JSONL 文件。
 
         Args:
             trace_dir: 追踪文件目录，不存在时自动创建。
             run_id: 可选的自定义 run_id，默认生成 8 位十六进制。
+            name: 可选的文件名前缀，便于在 traces/ 里辨认；非法字符
+                会被替换为下划线，完整文件名仍附带时间戳与 run_id。
         """
         self.run_id = run_id or uuid.uuid4().hex[:8]
+        self.name = _safe_stem(name) if name else None
         self.trace_dir = Path(trace_dir)
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-        self.path = self.trace_dir / f"{timestamp}_{self.run_id}.jsonl"
+        stem = f"{timestamp}_{self.run_id}"
+        if self.name:
+            stem = f"{self.name}_{stem}"
+        self.path = self.trace_dir / f"{stem}.jsonl"
 
         self._file = self.path.open("w", encoding="utf-8")
         self._counters = _Counters()
