@@ -185,6 +185,8 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 `breeze chat --list`）没有 API Key 也能用。
 
 最终答案按 Markdown 渲染后放进绿色面板；`ask` 结束后显示 Trace Summary。
+运行期间终端会显示一行状态（第几步、等待模型、正在调用哪个工具、工具耗时），
+它只读取 Agent 的进度事件，不进入 prompt 与 trace，重定向输出时自动关闭。
 `breeze chat` 每回合只报本轮 Token 消耗，退出时再显示整场对话的
 Trace Summary（回合数、调用次数、Token 与耗时合计）。`--quiet` 仍输出
 纯文本答案，便于脚本消费。

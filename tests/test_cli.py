@@ -164,9 +164,9 @@ def test_ask_custom_max_steps(repo: Path, tmp_path: Path) -> None:
     original_agent = cli_module.Agent
 
     class CapturingAgent:
-        def __init__(self, llm, trace, max_steps):
+        def __init__(self, llm, trace, max_steps, on_event=None):
             captured["max_steps"] = max_steps
-            self._inner = original_agent(llm=llm, trace=trace, max_steps=max_steps)
+            self._inner = original_agent(llm=llm, trace=trace, max_steps=max_steps, on_event=on_event)
 
         def run(self, question):
             return self._inner.run(question)
