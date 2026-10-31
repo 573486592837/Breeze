@@ -184,6 +184,10 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 变量优先级更高；不需要调用模型的命令（`breeze --version`、
 `breeze chat --list`）没有 API Key 也能用。
 
+最终答案按 Markdown 渲染后放进绿色面板；`ask` 与 `chat` 在每回合结束后
+都会显示 Trace Summary（调用次数、Token、trace 路径）。`--quiet` 仍输出
+纯文本答案，便于脚本消费。
+
 ### 使用
 
 ```bash
@@ -198,6 +202,10 @@ breeze ask "找出 read_file 的实现位置" --max-steps 4
 
 # 交互式多回合会话（/new 重置，/help 命令，/exit 退出）
 breeze chat
+
+# 给 trace 文件加可辨认的前缀（文件名仍带时间戳与短 ID，不会覆盖）
+breeze ask "解释配置加载顺序" --trace-name explain-config
+breeze chat --trace-name refactor-run  # chat 默认用 session id 作前缀
 
 # 列出并接续已保存的会话（会话文件默认在 ~/.breeze/sessions）
 breeze chat --list

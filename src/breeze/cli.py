@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
@@ -25,6 +26,15 @@ from breeze.trace import RunTrace
 app = typer.Typer(
     name="breeze",
     help="Token-efficient coding agent.",
+    epilog=(
+        "Examples:\n"
+        '  breeze ask "解释 src/breeze/agent.py 的作用" --max-steps 4\n'
+        '  breeze ask "修复 bug" --trace-name fix-bug\n'
+        "  breeze chat --resume latest\n"
+        "  breeze chat --list --search safe_path\n"
+        "\n"
+        "Run 'breeze ask --help' or 'breeze chat --help' for all options."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
@@ -86,6 +96,11 @@ def ask(
         file_okay=False,
         dir_okay=True,
     ),
+    trace_name: str = typer.Option(
+        None,
+        "--trace-name",
+        help="trace filename prefix, useful when comparing runs in traces/",
+    ),
     quiet: bool = typer.Option(
         False,
         "--quiet",
@@ -93,7 +108,7 @@ def ask(
         help="only outputs answers and does not display Token summaries",
     ),
 ) -> None:
-    """向 Breeze 提问，输出答案。"""
+    """Ask one question and print the answer (single turn)."""
     repo_root = (repo or Path.cwd()).resolve()
     if not repo_root.is_dir():
         error_console.print(f"[red]invalid repository directory: {repo_root}[/red]")
@@ -109,7 +124,7 @@ def ask(
             error_console.print(f"[red]LLM configuration error: {exc}[/red]")
             raise typer.Exit(code=1) from exc
 
-        with RunTrace(trace_dir=trace_dir) as trace:
+        with RunTrace(trace_dir=trace_dir, name=trace_name) as trace:
             agent = Agent(llm=llm, trace=trace, max_steps=max_steps)
 
             if not quiet:
@@ -122,7 +137,7 @@ def ask(
             if quiet:
                 console.print(answer)
             else:
-                console.print(Panel(answer, title="Answer", border_style="green"))
+                console.print(_answer_panel(answer))
 
             if not quiet:
                 _print_summary(trace.summary())
@@ -170,6 +185,11 @@ def chat(
         file_okay=False,
         dir_okay=True,
     ),
+    trace_name: str = typer.Option(
+        None,
+        "--trace-name",
+        help="trace filename prefix; session id is used by default",
+    ),
     resume: str = typer.Option(
         None,
         "--resume",
@@ -193,7 +213,7 @@ def chat(
         help="with --list, only show sessions whose questions or answers contain the keyword",
     ),
 ) -> None:
-    """进入交互式多回合会话，输入 /exit 退出。"""
+    """Start an interactive multi-turn session; /help lists in-session commands."""
     if list_sessions:
         _print_sessions(session_dir, search)
         return
@@ -236,13 +256,15 @@ def chat(
                     f"当前仓库是 {repo_root}，历史索引可能指向已不存在的文件。[/yellow]"
                 )
 
+        trace_prefix = trace_name or session.session_id
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(llm=llm, trace=trace, max_steps=max_steps),
-            trace_factory=lambda: RunTrace(trace_dir=trace_dir),
+            trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=trace_prefix),
             input_fn=input,
-            # markup=False：答案里的 Markdown（[文本](链接)、[Note]）不能被 rich 当样式吃掉
             print_fn=lambda text: console.print(text, markup=False),
             session=session,
+            answer_fn=lambda answer: console.print(_answer_panel(answer)),
+            summary_fn=lambda summary, turn: _print_summary(summary, title=f"Trace Summary · turn {turn}"),
         )
     except typer.Exit:
         raise
@@ -293,9 +315,14 @@ def _print_sessions(session_dir: Path | None, search: str | None = None) -> None
     console.print("[dim]接续：breeze chat --resume <session>[/dim]")
 
 
-def _print_summary(summary: dict) -> None:
+def _answer_panel(answer: str) -> Panel:
+    """把最终答案渲染为 Markdown 面板，去掉源码里的 ** 与 ``` 标记。"""
+    return Panel(Markdown(answer), title="Answer", border_style="green")
+
+
+def _print_summary(summary: dict, title: str = "Trace Summary") -> None:
     """打印 trace 摘要。"""
-    table = Table(title="Trace Summary", show_header=False, border_style="cyan")
+    table = Table(title=title, show_header=False, border_style="cyan")
     table.add_column("key", style="dim")
     table.add_column("value", justify="right")
 

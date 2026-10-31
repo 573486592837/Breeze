@@ -185,9 +185,31 @@ def test_each_turn_gets_its_own_trace() -> None:
 
 
 def test_turn_summary_line_printed() -> None:
-    """回合结束后打印 Token 摘要行。"""
+    """默认实现仍打印单行 Token 摘要，便于脚本与测试复用。"""
     _, outputs, _, _ = _run(["q1", "/exit"])
     assert "[turn 1] llm_calls=1 tool_calls=0 total_tokens=100 trace=traces/1.jsonl" in outputs
+
+
+def test_custom_renderers_receive_answer_and_summary() -> None:
+    """CLI 可注入富文本渲染器，答案与摘要不再走默认输出。"""
+    outputs: list[str] = []
+    answers: list[str] = []
+    summaries: list[tuple[dict[str, Any], int]] = []
+    trace = StubTrace(1)
+
+    code = run_chat(
+        agent_factory=lambda t: StubAgent(t, ["rendered"]),
+        trace_factory=lambda: trace,
+        input_fn=ScriptInput(["q1", "/exit"]),
+        print_fn=outputs.append,
+        answer_fn=answers.append,
+        summary_fn=lambda summary, turn: summaries.append((summary, turn)),
+    )
+
+    assert code == 0
+    assert answers == ["rendered"]
+    assert summaries[0][1] == 1
+    assert outputs == ["bye."]
 
 
 def test_keyboard_interrupt_keeps_session_alive() -> None:
