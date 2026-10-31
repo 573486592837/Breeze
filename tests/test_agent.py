@@ -804,3 +804,63 @@ def test_agent_executes_parallel_tool_calls_in_one_step(trace: RunTrace, fake_to
     tool_msgs = [m for m in messages if m["role"] == "tool"]
     assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
     assert "echo: a" in tool_msgs[0]["content"] and "echo: b" in tool_msgs[1]["content"]
+
+
+# ─── 进度事件 ───
+
+
+def test_agent_emits_progress_events(trace: RunTrace, fake_tool: None) -> None:
+    """事件顺序覆盖每次 LLM 调用与工具调用，且带 Token 与耗时。"""
+    from breeze.agent import AgentEvent
+
+    llm = FakeLLMClient([_tool_call("fake_echo", {"text": "abc"}, tokens=7), _text("done", tokens=3)])
+    events: list[AgentEvent] = []
+    agent = Agent(llm=llm, trace=trace, on_event=events.append)
+
+    assert agent.run("say abc") == "done"
+
+    assert [e.kind for e in events] == [
+        "llm_start",
+        "llm_end",
+        "tool_start",
+        "tool_end",
+        "llm_start",
+        "llm_end",
+    ]
+    assert events[0].step == 0
+    assert events[1].tokens == 14
+    assert events[1].tool_calls == 1
+    assert events[2].tool == "fake_echo"
+    assert events[3].tool == "fake_echo"
+    assert events[3].ok is True
+    assert events[3].duration_ms >= 0.0
+    assert events[5].step == 1
+    assert events[5].tool_calls == 0
+
+
+def test_agent_event_errors_do_not_affect_run(trace: RunTrace) -> None:
+    """展示层回调抛异常时任务照常完成。"""
+    llm = FakeLLMClient([_text("fine")])
+
+    def boom(event) -> None:
+        raise RuntimeError("ui broke")
+
+    agent = Agent(llm=llm, trace=trace, on_event=boom)
+
+    assert agent.run("hi") == "fine"
+
+
+def test_agent_events_do_not_touch_messages(trace: RunTrace, fake_tool: None) -> None:
+    """事件只做观察：消息序列与不传回调时一致。"""
+
+    def build(on_event):
+        llm = FakeLLMClient([_tool_call("fake_echo", {"text": "x"}), _text("ok")])
+        agent = Agent(llm=llm, trace=trace, on_event=on_event)
+        agent.run("go")
+        return agent.messages, llm.calls
+
+    with_events, calls_with = build(lambda _event: None)
+    plain, calls_plain = build(None)
+
+    assert with_events == plain
+    assert calls_with[0]["messages"] == calls_plain[0]["messages"]

@@ -354,3 +354,51 @@ def test_without_session_no_persistence_calls() -> None:
     assert code == 0
     assert len(traces) == 1
     assert len(agents[0].ledger.records) == 1
+
+
+# ─── 进度展示 ───
+
+
+def test_progress_receives_turn_end_stop() -> None:
+    """每回合结束调用 progress.stop()，便于终端收起状态行。"""
+
+    class Progress:
+        def __init__(self) -> None:
+            self.events: list[Any] = []
+            self.stops = 0
+
+        def on_event(self, event: Any) -> None:
+            self.events.append(event)
+
+        def stop(self) -> None:
+            self.stops += 1
+
+    progress = Progress()
+    outputs: list[str] = []
+    traces: list[StubTrace] = []
+
+    def agent_factory(trace: Any) -> StubAgent:
+        return StubAgent(trace, ["answer"])
+
+    def trace_factory() -> StubTrace:
+        trace = StubTrace(len(traces) + 1)
+        traces.append(trace)
+        return trace
+
+    code = run_chat(
+        agent_factory=agent_factory,
+        trace_factory=trace_factory,
+        input_fn=ScriptInput(["hello", "/exit"]),
+        print_fn=outputs.append,
+        progress=progress,
+    )
+
+    assert code == 0
+    assert progress.stops == 1
+
+
+def test_progress_not_required() -> None:
+    """不传 progress 时行为不变。"""
+    code, outputs, _, _ = _run(["hello"], answers=["plain"])
+    assert code == 0
+    assert "plain" in outputs

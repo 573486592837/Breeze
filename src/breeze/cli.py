@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from breeze import __version__
-from breeze.agent import Agent
+from breeze.agent import Agent, AgentEvent
 from breeze.chat import run_chat
 from breeze.chat_commands import ChatController
 from breeze.config import settings
@@ -126,14 +126,18 @@ def ask(
             raise typer.Exit(code=1) from exc
 
         with RunTrace(trace_dir=trace_dir, name=trace_name) as trace:
-            agent = Agent(llm=llm, trace=trace, max_steps=max_steps)
+            progress = _TurnProgress(console)
+            agent = Agent(llm=llm, trace=trace, max_steps=max_steps, on_event=progress.on_event)
 
             if not quiet:
                 console.print(f"[dim]model: {llm.model}[/dim]")
                 console.print(f"[dim]repo: {repo_root}[/dim]")
                 console.print()
 
-            answer = agent.run(question)
+            try:
+                answer = agent.run(question)
+            finally:
+                progress.stop()
 
             if quiet:
                 console.print(answer)
@@ -290,6 +294,7 @@ def chat(
                 markup=False,
             )
 
+        progress = _TurnProgress(console)
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(
                 llm=controller.llm,
@@ -297,6 +302,7 @@ def chat(
                 max_steps=controller.max_steps,
                 max_edit_attempts=controller.max_edit_attempts,
                 context=controller.build_context(),
+                on_event=progress.on_event,
             ),
             trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=controller.trace_prefix),
             input_fn=input,
@@ -306,6 +312,7 @@ def chat(
             summary_fn=_on_turn_summary,
             command_fn=controller.handle,
             agent_setup_fn=controller.apply_to_agent,
+            progress=progress,
         )
         if summaries:
             _print_chat_summary(summaries)
@@ -356,6 +363,51 @@ def _print_sessions(session_dir: Path | None, search: str | None = None) -> None
 
     console.print(table)
     console.print("[dim]接续：breeze chat --resume <session>[/dim]")
+
+
+class _TurnProgress:
+    """把 Agent 事件渲染成单行状态提示。
+
+    只在交互式终端启用：重定向或测试环境下 is_terminal 为 False，
+    不产生任何输出，因此不会改变 ask/chat 的既有输出格式。
+    """
+
+    def __init__(self, target: Console) -> None:
+        self.console = target
+        self.enabled = target.is_terminal
+        self._status = None
+
+    def on_event(self, event: AgentEvent) -> None:
+        if not self.enabled:
+            return
+        step = event.step + 1
+        if event.kind == "llm_start":
+            text = f"[dim]step {step}: waiting for model[/dim]"
+        elif event.kind == "llm_end":
+            if not event.ok:
+                text = f"[dim]step {step}: model error[/dim]"
+            elif event.tool_calls:
+                text = f"[dim]step {step}: {event.tokens} tokens, {event.tool_calls} tool call(s)[/dim]"
+            else:
+                text = f"[dim]step {step}: {event.tokens} tokens[/dim]"
+        elif event.kind == "tool_start":
+            text = f"[dim]step {step}: {event.tool} ...[/dim]"
+        elif event.kind == "tool_end":
+            result = "ok" if event.ok else "failed"
+            text = f"[dim]step {step}: {event.tool} {result} ({event.duration_ms:.0f}ms)[/dim]"
+        else:
+            return
+
+        if self._status is None:
+            self._status = self.console.status(text, spinner="dots")
+            self._status.start()
+        else:
+            self._status.update(text)
+
+    def stop(self) -> None:
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
 
 
 def _answer_panel(answer: str) -> Panel:

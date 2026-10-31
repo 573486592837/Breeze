@@ -185,6 +185,8 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 `breeze chat --list`）没有 API Key 也能用。
 
 最终答案按 Markdown 渲染后放进绿色面板；`ask` 结束后显示 Trace Summary。
+运行期间终端会显示一行状态（第几步、等待模型、正在调用哪个工具、工具耗时），
+它只读取 Agent 的进度事件，不进入 prompt 与 trace，重定向输出时自动关闭。
 `breeze chat` 每回合只报本轮 Token 消耗，退出时再显示整场对话的
 Trace Summary（回合数、调用次数、Token 与耗时合计）。`--quiet` 仍输出
 纯文本答案，便于脚本消费。
@@ -299,26 +301,32 @@ API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 
 ## 评估
 
-```bash
-# 冒烟检查（短任务，仅快速验证链路；自 v1.0.0 起不计入发布回归）
-python scripts/eval.py --tasks tasks/baseline.yaml
+固定评估集是 `tasks/quality.yaml`（15 个自动判定任务，`core` / `full` 两档）。
+评分不看模型自述，只看 `eval_command` 退出码；`protect` 里的路径
+（通常是 `tests/`）被改动或新增时直接判失败，因此改测试骗分不再有效。
 
-# 发布回归（5 个长任务集）
-python scripts/eval.py --tasks tasks/long.yaml --repeat 3
-python scripts/eval.py --tasks tasks/feature.yaml
-python scripts/eval.py --tasks tasks/refactor.yaml
-python scripts/eval.py --tasks tasks/multiturn.yaml
-python scripts/eval.py --tasks tasks/external.yaml
+```bash
+# 加任务后先预检：每个任务必须"修复前失败、protect 干净"
+python scripts/check_tasks.py --suite core
+
+# 日常回归（core，8 个任务）
+python scripts/eval.py --suite core
+
+# 发版前全量（full，15 个任务），repeat 3 取中位数与按 run 通过率
+python scripts/eval.py --suite full --repeat 3
 
 # 单个任务
-python scripts/eval.py --tasks tasks/long.yaml --task fix01
+python scripts/eval.py --task fix01
 
-# 用假 LLM 验证脚本
+# 用假 LLM 验证脚本本身
 python scripts/eval.py --no-llm
 
-# 生成报告
-python scripts/report.py --input reports/long_baseline.json --output reports/long_baseline.md
+# 生成 Markdown 报告
+python scripts/report.py --input reports/quality_core.json --output reports/quality_core.md
 ```
+
+历史任务集（`baseline.yaml` 人工评分、`long/feature/refactor/multiturn/external.yaml`）
+保留用于对照旧数据，新评估请用 `quality.yaml`。
 
 ---
 
@@ -348,9 +356,11 @@ breeze/
 │   └── harness.py        # 评估框架（包外的开发面，不进 wheel）
 ├── scripts/
 │   ├── eval.py
+│   ├── check_tasks.py    # 任务预检（修复前必须失败）
 │   └── report.py
 ├── tasks/
-│   ├── baseline.yaml     # 20 个短任务
+│   ├── quality.yaml      # 固定评估集（15 个自动判定任务，core/full）
+│   ├── baseline.yaml     # 20 个人工评分短任务（旧）
 │   ├── long.yaml         # 5 个 bug 修复任务
 │   ├── feature.yaml      # 3 个功能添加任务
 │   ├── refactor.yaml     # 2 个重构任务
@@ -360,7 +370,8 @@ breeze/
 ├── samples/node-app/     # 非 Python 评估样例与检查脚本
 ├── tests/
 ├── docs/
-│   └── CHANGELOG.md      # 逐版本评估数据与失败案例分析
+│   ├── CHANGELOG.md      # 逐版本评估数据与失败案例分析
+│   └── EVAL.md           # 评估方案：任务集、防作弊边界、预检与看数方法
 ├── reports/              # 评估报告（发布版本入库，其余 gitignore）
 ├── traces/
 ├── MANIFEST.in           # sdist 边界（开发面进 sdist、不进 wheel）

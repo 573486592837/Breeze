@@ -10,9 +10,11 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -27,6 +29,10 @@ from breeze.agent import Agent
 from breeze.config import settings
 from breeze.llm import LLMClient
 from breeze.trace import RunTrace
+
+# eval/setup 命令里的 {python} 替换为当前解释器，避免 PATH 上的 python
+# 与运行评估的 conda 环境不一致。
+_PYTHON_CMD = subprocess.list2cmdline([sys.executable]) if os.name == "nt" else shlex.quote(sys.executable)
 
 
 @dataclass
@@ -48,6 +54,8 @@ class TaskSpec:
 
     短任务只需 id/type/question/success_criteria。
     长任务额外使用 setup 和 eval_command 启用 worktree 隔离与自动判定。
+    protect 列出 Agent 不允许改动的路径（通常为 tests/ 或校验脚本），
+    自动判定前由 harness 用 git status 检查。
     """
 
     id: str
@@ -58,6 +66,7 @@ class TaskSpec:
     notes: str = ""
     setup: list[SetupOp] = field(default_factory=list)
     eval_command: str | None = None
+    protect: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -95,6 +104,12 @@ class TaskResult:
     tokens_min: int | None = None
     tokens_max: int | None = None
     auto_graded: bool = False
+    # 自动判定任务的按 run 统计（repeat=1 时同样填充）
+    runs: int = 1
+    passes: list[bool] | None = None
+    pass_count: int | None = None
+    success_rate: float | None = None
+    pass_all: bool | None = None
 
 
 def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
@@ -133,6 +148,7 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
         seen_ids.add(item["id"])
 
         setup = _parse_setup(item.get("setup", []))
+        protect = _parse_protect(item.get("protect", []), item["id"])
         eval_command = item.get("eval_command")
         if eval_command is not None and not isinstance(eval_command, str):
             raise ValueError(f"task {item['id']} eval_command must be a string")
@@ -147,10 +163,22 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
                 notes=item.get("notes", ""),
                 setup=setup,
                 eval_command=eval_command,
+                protect=protect,
             )
         )
 
     metadata = {k: v for k, v in raw.items() if k != "tasks"}
+    suites = metadata.get("suites")
+    if suites is not None:
+        if not isinstance(suites, dict) or not all(
+            isinstance(name, str) and isinstance(ids, list) for name, ids in suites.items()
+        ):
+            raise ValueError("suites must be a mapping of name -> task id list")
+        known = {t.id for t in tasks}
+        for name, ids in suites.items():
+            unknown = [str(i) for i in ids if i not in known]
+            if unknown:
+                raise ValueError(f"suite {name!r} references unknown task ids: {unknown}")
     return metadata, tasks
 
 
@@ -311,7 +339,7 @@ def _run_setup(
             if not op.value.strip():
                 return False, "empty setup command"
             proc = subprocess.run(
-                op.value,
+                _expand_command(op.value),
                 cwd=str(worktree),
                 capture_output=True,
                 text=True,
@@ -333,7 +361,7 @@ def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> bool:
         return False
     try:
         proc = subprocess.run(
-            command,
+            _expand_command(command),
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -347,6 +375,26 @@ def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> bool:
     except OSError:
         return False
     return proc.returncode == 0
+
+
+def _dirty_protected(worktree: Path, patterns: list[str]) -> list[str]:
+    """返回受保护路径下被修改或新增的文件列表。
+
+    用 git status 而不是 git diff：后者看不到 Agent 新建的测试文件。
+    """
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "--", *patterns],
+        cwd=str(worktree),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+        shell=False,
+    )
+    if proc.returncode != 0:
+        return [f"git status failed: {proc.stderr.strip()[:200]}"]
+    return [line for line in proc.stdout.splitlines() if line.strip()]
 
 
 def _make_failed_result(task: TaskSpec, error: str) -> TaskResult:
@@ -370,7 +418,7 @@ def _make_failed_result(task: TaskSpec, error: str) -> TaskResult:
         duration_ms=0.0,
         success=False,
         notes=error,
-        auto_graded=bool(task.eval_command),
+        auto_graded=bool(task.eval_command or task.protect),
     )
 
 
@@ -440,6 +488,16 @@ def _run_task_with_worktree(
             finally:
                 settings.repo_root = original_root
 
+            if task.protect:
+                dirty = _dirty_protected(worktree, task.protect)
+                if dirty:
+                    r.success = False
+                    r.auto_graded = True
+                    r.notes = "protected paths modified: " + "; ".join(line.strip() for line in dirty)
+                    log(f"  run {j + 1}/{repeat}: protected paths modified, eval skipped")
+                    results.append(r)
+                    continue
+
             if task.eval_command:
                 passed = _run_eval_command(worktree, task.eval_command)
                 r.success = passed
@@ -479,6 +537,24 @@ def _parse_setup(raw: Any) -> list[SetupOp]:
         else:
             raise ValueError(f"unknown setup op keys: {list(item.keys())}")
     return ops
+
+
+def _parse_protect(raw: Any, task_id: str) -> list[str]:
+    """解析 protect 路径列表，只接受仓库内相对路径。"""
+    if not isinstance(raw, list) or not all(isinstance(p, str) and p.strip() for p in raw):
+        raise ValueError(f"task {task_id} protect must be a list of relative paths")
+    patterns: list[str] = []
+    for pattern in raw:
+        path = Path(pattern)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"task {task_id} protect path must be relative: {pattern}")
+        patterns.append(pattern)
+    return patterns
+
+
+def _expand_command(command: str) -> str:
+    """把 {python} 替换为当前解释器。"""
+    return command.replace("{python}", _PYTHON_CMD)
 
 
 def run_task(
@@ -531,6 +607,32 @@ def run_task(
     )
 
 
+def _apply_pass_metrics(result: TaskResult, runs: list[TaskResult]) -> TaskResult:
+    """填充按 run 的通过统计。
+
+    只看自动判定的 run：setup 失败和 protected 路径被改都记为失败。
+    未自动判定的任务保持 None，由人工评分。
+
+    Args:
+        result: 聚合后的结果，原地修改。
+        runs: 该任务的 N 次运行结果。
+
+    Returns:
+        result。
+    """
+    result.runs = len(runs)
+    graded = [r for r in runs if r.auto_graded and r.success is not None]
+    if not graded:
+        return result
+
+    passes = [bool(r.success) for r in graded]
+    result.passes = passes
+    result.pass_count = sum(passes)
+    result.success_rate = round(sum(passes) / len(passes), 4)
+    result.pass_all = all(passes)
+    return result
+
+
 def _aggregate_runs(runs: list[TaskResult]) -> TaskResult:
     """把同一任务的多次运行聚合成一条结果。
 
@@ -547,7 +649,7 @@ def _aggregate_runs(runs: list[TaskResult]) -> TaskResult:
     if not runs:
         raise ValueError("runs must not be empty")
     if len(runs) == 1:
-        return runs[0]
+        return _apply_pass_metrics(runs[0], runs)
 
     base = asdict(runs[0])
     tokens = [r.total_tokens for r in runs]
@@ -568,12 +670,12 @@ def _aggregate_runs(runs: list[TaskResult]) -> TaskResult:
     base["tokens_min"] = min(tokens)
     base["tokens_max"] = max(tokens)
 
-    passes = [r.success for r in runs if r.success is not None]
-    if passes:
-        base["success"] = sum(passes) > len(passes) / 2
+    graded = [r.success for r in runs if r.success is not None]
+    if graded:
+        base["success"] = sum(graded) > len(graded) / 2
         base["auto_graded"] = any(r.auto_graded for r in runs)
 
-    return TaskResult(**base)
+    return _apply_pass_metrics(TaskResult(**base), runs)
 
 
 def summarize(results: list[TaskResult]) -> dict[str, Any]:
@@ -584,6 +686,8 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
 
     Returns:
         汇总字典。std_tokens 为跨任务 total_tokens 的标准差。
+        graded_tasks/total_runs/passes/success_rate/all_pass_tasks 只统计自动判定任务，
+        success_rate 按 run 计（每 run 一次通过与否），比按任务计更抗噪声。
     """
     n = len(results)
     if n == 0:
@@ -592,6 +696,11 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
             "success": 0,
             "failed": 0,
             "ungraded": 0,
+            "graded_tasks": 0,
+            "total_runs": 0,
+            "passes": 0,
+            "success_rate": 0.0,
+            "all_pass_tasks": 0,
             "total_tokens": 0,
             "avg_tokens": 0.0,
             "std_tokens": 0.0,
@@ -604,12 +713,20 @@ def summarize(results: list[TaskResult]) -> dict[str, Any]:
         }
 
     tokens = [r.total_tokens for r in results]
+    graded = [r for r in results if r.passes is not None]
+    total_runs = sum(len(r.passes or []) for r in graded)
+    passed_runs = sum(r.pass_count or 0 for r in graded)
 
     return {
         "total_tasks": n,
         "success": sum(1 for r in results if r.success is True),
         "failed": sum(1 for r in results if r.success is False),
         "ungraded": sum(1 for r in results if r.success is None),
+        "graded_tasks": len(graded),
+        "total_runs": total_runs,
+        "passes": passed_runs,
+        "success_rate": round(passed_runs / total_runs, 4) if total_runs else 0.0,
+        "all_pass_tasks": sum(1 for r in graded if r.pass_all),
         "total_tokens": sum(tokens),
         "avg_tokens": round(sum(tokens) / n, 2),
         "std_tokens": (round(statistics.stdev(tokens), 2) if n > 1 else 0.0),
@@ -708,6 +825,7 @@ def run_eval(
     *,
     model: str | None = None,
     only_ids: set[str] | None = None,
+    suite: str | None = None,
     trace_dir: Path = Path("traces"),
     fixtures_dir: Path = Path("fixtures"),
     dry_run: bool = False,
@@ -723,6 +841,7 @@ def run_eval(
         repo_root: 仓库根目录。
         model: 覆盖模型名，None 表示用 settings.model。
         only_ids: 只运行指定 id；None 表示全部。
+        suite: 只运行 YAML 中 suites 定义的某一档；None 表示全部。
         trace_dir: trace 目录。
         fixtures_dir: patch 文件基准目录。
         dry_run: 只打印任务，不运行。
@@ -741,19 +860,30 @@ def run_eval(
 
     metadata, tasks = load_tasks(tasks_path)
 
+    if suite is not None:
+        suites = metadata.get("suites") or {}
+        if suite not in suites:
+            available = ", ".join(sorted(suites)) or "none"
+            raise ValueError(f"unknown suite: {suite} (available: {available})")
+        suite_ids = set(suites[suite])
+        tasks = [t for t in tasks if t.id in suite_ids]
+
     if only_ids is not None:
         tasks = [t for t in tasks if t.id in only_ids]
 
     log = progress or (lambda _msg: None)
 
     if dry_run:
-        log(f"dry-run: {len(tasks)} task(s), repeat={repeat}")
+        suite_note = f", suite={suite}" if suite else ""
+        log(f"dry-run: {len(tasks)} task(s), repeat={repeat}{suite_note}")
         for t in tasks:
             extras = []
             if t.setup:
                 extras.append(f"setup={len(t.setup)}")
             if t.eval_command:
                 extras.append("eval_command=yes")
+            if t.protect:
+                extras.append("protect=" + ",".join(t.protect))
             extra = f" [{', '.join(extras)}]" if extras else ""
             log(f"  [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}{extra}")
         return {}
@@ -761,7 +891,7 @@ def run_eval(
     if repeat < 1:
         raise ValueError(f"repeat must be >= 1, got {repeat}")
 
-    needs_worktree = any(t.setup or t.eval_command for t in tasks)
+    needs_worktree = any(t.setup or t.eval_command or t.protect for t in tasks)
     if needs_worktree and not _is_git_repo(repo_root):
         raise ValueError("long-task evaluation requires a git repository at repo_root")
 
@@ -779,7 +909,7 @@ def run_eval(
         for i, task in enumerate(tasks, start=1):
             log(f"[{i}/{len(tasks)}] {task.id} ({task.type}) repeat={repeat} max_steps={task.max_steps}")
 
-            if task.setup or task.eval_command:
+            if task.setup or task.eval_command or task.protect:
                 task_runs = _run_task_with_worktree(task, llm, trace_dir, repo_root, fixtures_dir, repeat, log)
             else:
                 settings.repo_root = repo_root
@@ -803,6 +933,10 @@ def run_eval(
             )
             if result.tokens_samples is not None:
                 log(f"  samples={result.tokens_samples} std={result.tokens_std}")
+            if result.passes is not None:
+                log(f"  pass={result.pass_count}/{len(result.passes)} success_rate={result.success_rate}")
+            if result.notes:
+                log(f"  notes: {result.notes}")
 
         report = build_report(metadata, results, llm.model, config=config)
         _merge_manual_grades(report, output_path)

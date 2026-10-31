@@ -1,0 +1,230 @@
+# Breeze 固定评估集 v2（quality baseline）
+#
+# 目标：用可复现的自动判定任务集衡量"任务解决率"，取代人工评分。
+# 所有任务在独立 git worktree 中运行：
+#   setup       注入缺陷或验收测试
+#   protect     Agent 不得改动的路径，harness 用 git status 检查（含新增文件），
+#               命中即判失败且跳过 eval_command
+#   eval_command 退出码 0 视为通过；{python} 会替换为运行评估的解释器，
+#               避免 PATH 上的 python 与评估环境不一致
+#
+# 任务设计要求（新增任务必须满足）：
+#   - 修 bug 类任务以仓库中"已有测试"为准，问题描述直接点名失败用例，
+#     不允许另立标准；tests/ 一律进 protect
+#   - feature/refactor 类任务由 setup 注入验收测试，同样 protect tests/
+#   - 任务必须"修复前必然失败"：scripts/check_tasks.py 会做预检
+#
+# suites 是运行档位：core 用于日常回归（约 40 分钟），full 用于发版前全量。
+# 用法：python scripts/eval.py --suite core
+
+version: 2
+repo: breeze
+model: null
+
+suites:
+  core:
+    - fix01
+    - fix02
+    - fix03
+    - fix04
+    - fix05
+    - feat01
+    - feat02
+    - refactor01
+  full:
+    - fix01
+    - fix02
+    - fix03
+    - fix04
+    - fix05
+    - feat01
+    - feat02
+    - feat03
+    - refactor01
+    - refactor02
+    - ext01
+    - ext02
+    - ext03
+    - mt01
+    - mt02
+
+tasks:
+  # ─── fix：既有测试判定的缺陷修复 ───
+
+  - id: fix01
+    type: fix
+    question: "运行 `python -m pytest tests/test_fs.py` 有两个用例失败：test_read_file_rejects_escape 与 test_safe_path_rejects_escape，它们期望越界路径抛出 ValueError。定位并修复 src/ 中的实现，使这两个既有用例恢复通过，异常类型以测试断言为准。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    setup:
+      - patch: fix01.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  - id: fix02
+    type: fix
+    question: "运行 `python -m pytest tests/test_registry.py` 有用例失败（test_duplicate_registration_raises，期望同名工具重复注册时抛 ValueError）。定位并修复 src/ 中的实现，使该既有用例恢复通过。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    setup:
+      - patch: fix02.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  - id: fix03
+    type: fix
+    question: "运行 `python -m pytest tests/test_shell.py` 有用例失败（test_run_shell_rejects_parent_traversal，期望含 .. 的路径被拒且消息匹配 'Path traversal'）。定位并修复 src/ 中的实现，使该既有用例恢复通过，错误消息按测试断言保持。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    setup:
+      - patch: fix03.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  - id: fix04
+    type: fix
+    question: "运行 `python -m pytest tests/test_fs.py` 有用例失败（test_read_file_range，end_line 指定的末行没有被返回）。定位并修复 src/ 中的读文件范围计算，使该既有用例恢复通过。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    setup:
+      - patch: fix04.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  - id: fix05
+    type: fix
+    question: "运行 `python -m pytest tests/test_shell.py` 有用例失败（test_run_shell_rejects_rg_follow，rg 的 -L 与 --follow 应被拒绝）。定位并修复 src/ 中的选项黑名单，使该既有用例恢复通过。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，tests/ 未被改动"
+    setup:
+      - patch: fix05.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20
+
+  # ─── feature：按注入的验收测试实现新功能 ───
+
+  - id: feat01
+    type: feature
+    question: "创建 src/breeze/tools/metrics.py，实现 Counter 类：构造时计数为 0；inc(step=1) 按 step 增加并返回增加后的新值；value 属性返回当前计数；reset() 将计数清零。验收测试已放在 tests/test_feat01_metrics.py，运行 `python -m pytest tests/test_feat01_metrics.py` 使其通过。不要修改或新增 tests/ 下的任何文件。"
+    success_criteria: "tests/test_feat01_metrics.py 全部通过，tests/ 未被改动"
+    setup:
+      - patch: test_feat01_metrics.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_feat01_metrics.py"
+    max_steps: 15
+
+  - id: feat02
+    type: feature
+    question: "为 src/breeze/tools/fs.py 的 list_files 工具添加 exclude_pattern 参数：字符串，默认 None；传入 glob（如 '*.log'）时，文件名匹配该 glob 的文件不再列出（fnmatch 语义，目录不受影响）；同时更新工具 description 与 parameters schema。验收测试已放在 tests/test_feat02_exclude.py，运行 `python -m pytest tests/test_feat02_exclude.py tests/test_fs.py` 应全部通过。不要修改或新增 tests/ 下的任何文件。"
+    success_criteria: "验收测试与 tests/test_fs.py 全部通过，tests/ 未被改动"
+    setup:
+      - patch: test_feat02_exclude.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_feat02_exclude.py tests/test_fs.py"
+    max_steps: 15
+
+  - id: feat03
+    type: feature
+    question: "在 src/breeze/config.py 中新增 [eval] 配置段：DEFAULTS 增加 eval.default_repeat = 1，Settings 暴露 eval_default_repeat 整型属性，从 breeze.toml 的 [eval] default_repeat 读取。tests/test_feat03_eval_config.py 与 tests/test_config.py 已按新配置预更新，只允许修改 src/breeze/config.py，不要修改或新增 tests/ 下的任何文件。完成后 `python -m pytest tests/test_feat03_eval_config.py tests/test_config.py` 应全部通过。"
+    success_criteria: "两个测试文件全部通过，tests/ 未被改动"
+    setup:
+      - patch: test_feat03_eval_config.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_feat03_eval_config.py tests/test_config.py"
+    max_steps: 15
+
+  # ─── refactor：行为不变的结构改造 ───
+
+  - id: refactor01
+    type: refactor
+    question: "把 src/breeze/tools/shell.py 中 _check_options 的 git 与 rg 选项黑名单检查拆成两个函数：_check_git_options(tokens) 与 _check_rg_options(tokens)，由 _check_allowed 按可执行文件分派，删除原 _check_options。行为必须完全不变，结构要求以 tests/test_refactor01_structure.py 为准。不要修改或新增 tests/ 下的任何文件，完成后 tests/test_refactor01_structure.py 与 tests/test_shell.py 应全部通过。"
+    success_criteria: "结构测试与 tests/test_shell.py 全部通过，tests/ 未被改动"
+    setup:
+      - patch: test_refactor01_structure.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_refactor01_structure.py tests/test_shell.py"
+    max_steps: 20
+
+  - id: refactor02
+    type: refactor
+    question: "src/breeze/tools/edit.py 中 apply_patch 与 create_file 各自内联了相同的原子写逻辑（写 .breeze_tmp 临时文件后 replace，失败时清理）。提取为模块级函数 _atomic_write(target: pathlib.Path, text: str) -> None，失败时删除临时文件并抛出 OSError，两处改为调用它。行为必须完全不变，签名以 tests/test_refactor02_atomic.py 为准。不要修改或新增 tests/ 下的任何文件，完成后 tests/test_refactor02_atomic.py 与 tests/test_edit.py 应全部通过。"
+    success_criteria: "结构测试与 tests/test_edit.py 全部通过，tests/ 未被改动"
+    setup:
+      - patch: test_refactor02_atomic.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_refactor02_atomic.py tests/test_edit.py"
+    max_steps: 15
+
+  # ─── external：无运行时反馈的跨语言任务 ───
+
+  - id: ext01
+    type: external
+    question: "阅读 samples/node-app/src/ 下的 index.js、stats.js、text.js，在 samples/node-app/exports.md 中列出每个文件导出的全部函数名，每行一个，格式为 '文件名: 函数名'（如 'index.js: add'），必须覆盖全部 6 个导出；文件最后一行写运行检查脚本的命令：node run_checks.js。不要修改 samples/node-app 下任何已有文件（包括 src/ 与检查脚本）。"
+    success_criteria: "exports.md 覆盖 6 个导出且末行为检查命令，样例已有文件未被修改"
+    protect:
+      - samples/node-app/src/
+      - samples/node-app/check_ext01.js
+      - samples/node-app/run_checks.js
+    eval_command: "node samples/node-app/check_ext01.js"
+    max_steps: 12
+
+  - id: ext02
+    type: external
+    question: "samples/node-app/src/index.js 中的 multiply 函数有 bug：它对两个数求和而不是求积。只修改该文件，使 multiply(a, b) 返回乘积；samples/node-app/src/stats.js、text.js 与所有检查脚本都不得改动，验证由外部检查脚本完成。"
+    success_criteria: "check_ext02.js 与 run_checks.js 均通过，受保护文件未被改动"
+    setup:
+      - patch: ext02_bug.patch
+    protect:
+      - samples/node-app/src/stats.js
+      - samples/node-app/src/text.js
+      - samples/node-app/check_ext02.js
+      - samples/node-app/run_checks.js
+    eval_command: "node samples/node-app/check_ext02.js && node samples/node-app/run_checks.js"
+    max_steps: 12
+
+  - id: ext03
+    type: external
+    question: "创建 samples/node-app/src/math2.js（CommonJS 风格，module.exports 导出），实现 square(n) 返回 n 的平方、cube(n) 返回 n 的立方。检查脚本会 require('./src/math2') 并断言 square(5)=25、square(-3)=9、cube(3)=27、cube(-2)=-8。只新建该文件，不要修改 samples/node-app 下任何已有文件。"
+    success_criteria: "check_ext03.js 通过，已有文件未被改动"
+    protect:
+      - samples/node-app/src/index.js
+      - samples/node-app/src/stats.js
+      - samples/node-app/src/text.js
+      - samples/node-app/check_ext03.js
+    eval_command: "node samples/node-app/check_ext03.js"
+    max_steps: 12
+
+  # ─── multiturn：先观察再行动的复合指令 ───
+
+  - id: mt01
+    type: multiturn
+    question: "先查看 src/breeze/tools/safety.py 中 safe_path 的实现，简要说明它拦截的是什么情况。然后为它增加审计记录：每当 safe_path 拒绝一个路径（原本要抛出 Path out of bounds 时），在仓库根目录的 security.log 末尾追加一行 'rejected: <原始输入路径>'，文件不存在则创建；访问被允许时不写入。不要改变现有异常类型和消息，不要修改或新增 tests/ 下的任何文件。验收测试已放在 tests/test_mt01_logging.py，完成后 `python -m pytest tests/test_mt01_logging.py tests/test_fs.py tests/test_search.py` 应全部通过。"
+    success_criteria: "拒绝越界路径时写入 security.log 且允许访问时不写；fs/search 既有测试不回归；tests/ 未被改动"
+    setup:
+      - patch: test_mt01_logging.patch
+    protect:
+      - tests/
+    eval_command: "{python} -m pytest -q tests/test_mt01_logging.py tests/test_fs.py tests/test_search.py"
+    max_steps: 20
+
+  - id: mt02
+    type: multiturn
+    question: "先运行 `python -m pytest tests/test_fs.py` 确认是否有失败，然后只执行命中的分支：如果有失败，定位并修复 src/ 中的问题，不要修改或新增 tests/ 下任何文件；如果全部通过，不做任何修改，直接报告结果。完成后运行 `python -m pytest -q`，全量必须通过。"
+    success_criteria: "pytest 全量通过，且 tests/test_fs.py、tests/test_shell.py 未被修改"
+    setup:
+      - patch: fix01.patch
+    protect:
+      - tests/test_fs.py
+      - tests/test_shell.py
+    eval_command: "{python} -m pytest -q"
+    max_steps: 20

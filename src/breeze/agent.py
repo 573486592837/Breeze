@@ -3,9 +3,11 @@
 ReAct 风格的代码仓库 Agent，使用 LLM 的 function calling 能力多步调用工具。
 """
 
+import contextlib
 import json
 import shutil
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,6 +103,34 @@ class _ToolCall:
     arguments_json: str
 
 
+@dataclass
+class AgentEvent:
+    """运行过程中的进度事件。
+
+    仅用于 CLI 展示，不进入 prompt，也不写入 trace：事件回调抛出的异常
+    会被吞掉，因此展示层的问题不会改变任务结果。
+
+    Attributes:
+        kind: "llm_start" / "llm_end" / "tool_start" / "tool_end"。
+        step: 从 0 开始的循环步数。
+        tool: 工具名，tool_* 事件才有值。
+        tokens: 本次 LLM 调用的 total_tokens。
+        tool_calls: 本次 LLM 返回的工具调用数量。
+        duration_ms: 工具执行耗时。
+        ok: 工具是否执行成功。
+        detail: 错误摘要等补充信息。
+    """
+
+    kind: str
+    step: int
+    tool: str = ""
+    tokens: int = 0
+    tool_calls: int = 0
+    duration_ms: float = 0.0
+    ok: bool = True
+    detail: str = ""
+
+
 class Agent:
     """ReAct 风格的代码仓库 Agent。
 
@@ -115,6 +145,7 @@ class Agent:
         max_edit_attempts: int | None = None,
         system_prompt: str | None = None,
         context: ContextManager | None = None,
+        on_event: Callable[[AgentEvent], None] | None = None,
     ) -> None:
         """初始化 Agent。
 
@@ -125,9 +156,11 @@ class Agent:
             max_edit_attempts: 单次运行允许的 apply_patch 调用上限。
             system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
             context: 上下文管理器。
+            on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
         """
         self.llm = llm
         self.trace = trace
+        self.on_event = on_event
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
         self.max_edit_attempts = (
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
@@ -194,10 +227,13 @@ class Agent:
             view = [self.messages[0], *self.messages[turn_start:]]
             llm_messages = self.context.build(view, state=self.state, archive=self.ledger.render())
 
+            self._emit(AgentEvent("llm_start", step))
+
             try:
                 resp, latency_ms = self._call_llm(llm_messages, tools)
             except Exception as exc:
                 self.trace.log_error(step, f"LLM call failed: {exc}")
+                self._emit(AgentEvent("llm_end", step, ok=False, detail=str(exc)))
                 return self._finish_turn(question, f"LLM call failed: {exc}", turn_start)
 
             tool_calls = _convert_tool_calls(resp.tool_calls)
@@ -211,6 +247,14 @@ class Agent:
                 latency_ms=latency_ms,
                 content=resp.content,
                 tool_calls=[{"name": tc.name, "arguments": tc.arguments_json} for tc in tool_calls],
+            )
+            self._emit(
+                AgentEvent(
+                    "llm_end",
+                    step,
+                    tokens=resp.total_tokens,
+                    tool_calls=len(tool_calls),
+                )
             )
 
             if not tool_calls:
@@ -300,6 +344,13 @@ class Agent:
         self.ledger.record(question, answer, touched)
         return answer
 
+    def _emit(self, event: AgentEvent) -> None:
+        """触发进度回调。回调异常不得影响任务执行。"""
+        if self.on_event is None:
+            return
+        with contextlib.suppress(Exception):
+            self.on_event(event)
+
     def _call_llm(
         self,
         messages: list[dict[str, Any]],
@@ -330,6 +381,8 @@ class Agent:
             tc: 工具调用。
             step: Agent 循环步数。
         """
+        self._emit(AgentEvent("tool_start", step, tool=tc.name))
+
         try:
             arguments = json.loads(tc.arguments_json) if tc.arguments_json else {}
         except json.JSONDecodeError as exc:
@@ -342,6 +395,7 @@ class Agent:
                 latency_ms=0.0,
                 error=str(exc),
             )
+            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail=str(exc)))
             self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             return
 
@@ -355,6 +409,7 @@ class Agent:
                 latency_ms=0.0,
                 error="invalid arguments type",
             )
+            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail="invalid arguments type"))
             self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             return
 
@@ -374,6 +429,16 @@ class Agent:
             result=result,
             latency_ms=latency_ms,
             error=error,
+        )
+        self._emit(
+            AgentEvent(
+                "tool_end",
+                step,
+                tool=tc.name,
+                duration_ms=latency_ms,
+                ok=error is None,
+                detail=error or "",
+            )
         )
 
         self.state.update(tc.name, arguments, result, step)

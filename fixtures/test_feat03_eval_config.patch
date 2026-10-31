@@ -24,14 +24,12 @@
 +    assert s.eval_default_repeat == 3
 --- a/tests/test_config.py
 +++ b/tests/test_config.py
-@@ -36,8 +36,8 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
- 
- 
+@@ -39,6 +39,6 @@ def test_defaults_has_expected_sections() -> None:
  def test_defaults_has_expected_sections() -> None:
--    """DEFAULTS 应包含四个 section。"""
--    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace"}
-+    """DEFAULTS 应包含五个 section。"""
-+    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "eval"}
+-    """DEFAULTS 应包含六个 section。"""
+-    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat"}
++    """DEFAULTS 应包含七个 section。"""
++    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat", "eval"}
  
  
  def test_defaults_llm_fields() -> None:

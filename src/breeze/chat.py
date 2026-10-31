@@ -36,6 +36,7 @@ def run_chat(
     summary_fn: Callable[[dict[str, Any], int], None] | None = None,
     command_fn: Callable[[str, Any | None], str | None] | None = None,
     agent_setup_fn: Callable[[Any], None] | None = None,
+    progress: Any | None = None,
 ) -> int:
     """运行交互式会话直到退出。
 
@@ -50,6 +51,8 @@ def run_chat(
         command_fn: 处理 /new、/help、/exit 以外的命令；返回 None 表示
             不是命令，按提问执行。
         agent_setup_fn: Agent 创建并恢复会话状态后调用，用于同步运行时配置。
+        progress: 进度展示对象，需提供 on_event(event) 与 stop()。
+            仅在终端下由 CLI 传入；它只观察 Agent 事件，不影响 prompt 与 trace。
 
     Returns:
         进程退出码，0 表示正常退出。
@@ -110,12 +113,17 @@ def run_chat(
                     agent_setup_fn(agent)
             else:
                 agent.trace = trace
+            if progress is not None:
+                agent.on_event = progress.on_event
             try:
                 answer = agent.run(question)
             except KeyboardInterrupt:
                 # 回合中断：本回合未归档，消息日志保留现状继续会话。
                 print_fn("(turn interrupted)")
                 continue
+            finally:
+                if progress is not None:
+                    progress.stop()
 
         turns += 1
         if session is not None and agent.ledger.records:
