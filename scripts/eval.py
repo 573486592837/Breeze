@@ -13,13 +13,14 @@ import argparse
 import sys
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parent.parent / "src"
-if _SRC.is_dir():
-    sys.path.insert(0, str(_SRC))
+_ROOT = Path(__file__).resolve().parent.parent
+for _path in (_ROOT / "src", _ROOT):
+    if _path.is_dir():
+        sys.path.insert(0, str(_path))
 
 
-from breeze.eval import run_eval  # noqa: E402
 from breeze.llm import LLMResponse  # noqa: E402
+from breeze_eval.harness import run_eval  # noqa: E402
 
 
 class _FakeLLM:

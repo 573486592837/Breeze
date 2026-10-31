@@ -1,6 +1,8 @@
-"""批量评估。
+"""批量评估框架（开发用，不随 release 分发）。
 
 从 YAML 任务集读取任务，逐个运行 Agent，收集指标并输出 JSON 报告。
+入口脚本是 scripts/eval.py；本模块位于包外，因此 pip 安装 breeze 的用户
+拿不到它，评估只在源码仓库里进行。
 """
 
 from __future__ import annotations

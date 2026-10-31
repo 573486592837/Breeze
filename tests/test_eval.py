@@ -1,4 +1,4 @@
-"""eval 模块的单元测试。"""
+"""breeze_eval.harness（评估框架，包外开发模块）的单元测试。"""
 
 import json
 import subprocess
@@ -9,7 +9,8 @@ import pytest
 import yaml
 
 from breeze.config import settings
-from breeze.eval import (
+from breeze.llm import LLMResponse
+from breeze_eval.harness import (
     TaskResult,
     TaskSpec,
     build_report,
@@ -18,7 +19,6 @@ from breeze.eval import (
     run_task,
     summarize,
 )
-from breeze.llm import LLMResponse
 
 
 class FakeLLM:
@@ -831,7 +831,7 @@ def test_merge_manual_grades_skips_auto_graded(
     tmp_path: Path,
 ) -> None:
     """auto_graded 的任务跳过人工评分合并。"""
-    from breeze.eval import _merge_manual_grades
+    from breeze_eval.harness import _merge_manual_grades
 
     old_path = tmp_path / "old.json"
     old_path.write_text(

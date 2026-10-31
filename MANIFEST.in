@@ -1,0 +1,19 @@
+# sdist 边界：源码 + 测试 + 任务集与夹具保留（可从发行包复现评估），
+# 运行产物（trace、报告）不进发行包。
+include README.md
+include CONTRIBUTING.md
+include breeze.toml.example
+
+graft tasks
+graft fixtures
+graft samples
+graft scripts
+graft breeze_eval
+
+prune traces
+prune reports
+prune dist
+prune build
+
+global-exclude *.pyc
+global-exclude __pycache__/*
