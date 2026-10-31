@@ -232,6 +232,7 @@ Breeze 从分层配置系统读取运行参数。
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
 - `[trace]`：dir
+- `[tools]`：repo_map（是否注册一次性仓库地图工具，默认开启）
 
 ### 不可配置项
 
