@@ -291,6 +291,43 @@ def test_agent_passes_system_prompt(trace: RunTrace, fake_tool: None) -> None:
     assert first[0]["content"] == "CUSTOM PROMPT"
 
 
+def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """缺失的外部命令应在默认提示里点名，并给出替代工具。"""
+    from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
+
+    monkeypatch.setattr(
+        "breeze.agent.shutil.which",
+        lambda name: None if name in {"rg", "node"} else f"/fake/{name}",
+    )
+
+    prompt = default_system_prompt()
+    assert prompt.startswith(DEFAULT_SYSTEM_PROMPT)
+    assert "缺失：rg、node" in prompt
+    assert "grep 工具" in prompt
+
+
+def test_default_system_prompt_without_missing_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """外部命令全部可用时不应出现缺失提示。"""
+    from breeze.agent import default_system_prompt
+
+    monkeypatch.setattr("breeze.agent.shutil.which", lambda name: f"/fake/{name}")
+
+    prompt = default_system_prompt()
+    assert "外部命令可用：git、rg、node。" in prompt
+    assert "缺失" not in prompt
+
+
+def test_agent_default_system_prompt_reaches_llm(trace: RunTrace, fake_tool: None) -> None:
+    """不传 system_prompt 时，环境说明应出现在发给 LLM 的 system 消息里。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("hi")
+
+    system = llm.calls[0]["messages"][0]
+    assert system["role"] == "system"
+    assert "运行环境：" in system["content"]
+
+
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:
     """每次调用都应传递工具 schema。"""
     llm = FakeLLMClient([_text("ok")])

@@ -430,6 +430,34 @@ def test_run_shell_cat_hint(repo: Path) -> None:
         registry.execute("run_shell", {"command": "cat file.txt"})
 
 
+def test_run_shell_ls_hint(repo: Path) -> None:
+    """浏览类命令被拒时应提示改用 list_files。"""
+    for cmd in ["ls", "find . -name '*.py'", "tree"]:
+        with pytest.raises(ValueError, match="list_files"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_grep_hint(repo: Path) -> None:
+    """grep 被拒时应提示改用 grep 工具。"""
+    with pytest.raises(ValueError, match="grep tool"):
+        registry.execute("run_shell", {"command": "grep -rn foo ."})
+
+
+def test_run_shell_missing_rg_hint(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """rg 未安装时应提示改用 grep 工具。"""
+    monkeypatch.setattr("breeze.tools.shell.shutil.which", lambda _name: None)
+    with pytest.raises(ValueError, match="use the grep tool"):
+        registry.execute("run_shell", {"command": "rg pattern ."})
+
+
+def test_run_shell_missing_other_executable_has_no_grep_hint(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """其他可执行文件缺失时不应误加 grep 提示。"""
+    monkeypatch.setattr("breeze.tools.shell.shutil.which", lambda _name: None)
+    with pytest.raises(ValueError, match="Executable not found") as exc:
+        registry.execute("run_shell", {"command": "git status"})
+    assert "grep tool" not in str(exc.value)
+
+
 def test_run_shell_default_cap_is_half_budget() -> None:
     """run_shell 双流各自截断，合计不超过工具结果预算。"""
     from breeze.tools.shell import DEFAULT_MAX_BYTES

@@ -260,10 +260,17 @@ def _check_allowed(tokens: list[str]) -> None:
             )
         elif exe in {"rm", "del", "mv", "cp", "ln"}:
             extra = " (file modifications should use apply_patch)"
+        elif exe in {"find", "ls", "dir", "tree"}:
+            extra = " (use list_files to browse the repository; grep or repo_map to locate code)"
+        elif exe == "grep":
+            extra = " (use the grep tool; it falls back to pure Python when ripgrep is unavailable)"
         raise ValueError(f"Executable not allowed: {exe}{extra}. Allowed commands: {allowed}.")
 
     if shutil.which(exe) is None:
-        raise ValueError(f"Executable not found on PATH: {exe}")
+        missing_hint = ""
+        if exe == "rg":
+            missing_hint = " (ripgrep is not installed here; use the grep tool instead, it needs no external binary)"
+        raise ValueError(f"Executable not found on PATH: {exe}{missing_hint}")
 
     if exe == "git":
         if len(tokens) < 2:
