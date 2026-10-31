@@ -310,8 +310,9 @@ def read_file(
             alt = settings.repo_root / "src" / path
             if alt.is_file():
                 hint = f" Did you mean: src/{path}?"
+        explore_tools = "list_files or repo_map" if settings.tools_repo_map else "list_files"
         raise ValueError(
-            f"Path is not a file: {path}.{hint}\nHint: use list_files or repo_map to explore the project structure."
+            f"Path is not a file: {path}.{hint}\nHint: use {explore_tools} to explore the project structure."
         )
 
     max_bytes = max(1, int(max_bytes))
