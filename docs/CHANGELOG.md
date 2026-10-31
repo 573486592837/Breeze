@@ -395,3 +395,39 @@ sdist 顶层含 `src/tests/breeze_eval/tasks/fixtures/samples/scripts`，不含 
 防回归：`tests/test_config.py` 把包复制到独立目录（模拟 site-packages），
 用脚本文件子进程从另一个目录运行，断言读到的 key 来自**运行目录**的 `.env`。
 这个测试在旧实现下是红的。
+
+---
+
+## 装好之后跑不起来：litellm 1.106 的未声明依赖 (v1.3.2)
+
+`.env` 修好之后，wheel 安装第一次真正调用模型报：
+
+```
+LLM call failed: No module named 'mcp'
+```
+
+traceback 落在 litellm 内部：1.106.0 起 `main.py` 的 `completion()` 有
+
+```python
+if not skip_mcp_handler and tools:
+    from litellm.responses.mcp.chat_completions_handler import acompletion_with_mcp
+```
+
+这条链最终 `from mcp.types import CacheableResult`。也就是说**只要传 tools 就要装
+第三方 `mcp` 包**，而 litellm 的 METADATA 只把 `mcp` 声明在 `proxy` / `mcp` 两个
+extra 下，普通安装不会带上。Breeze 每轮都带 10 个工具 schema，所以必踩。
+
+| 现象 | 结论 |
+|---|---|
+| 开发环境（litellm 1.103.0）跑通所有评估 | 不是 Breeze 代码问题 |
+| 1.106.6 + tools → `ModuleNotFoundError: mcp`；1.105.7 + tools → 走到 HTTP 层 | 引入点在 1.106.0 |
+| `pip install --dry-run "litellm>=1.40,<1.106"` | 解析到 1.105.7，可用 |
+
+修复：`pyproject.toml` 把依赖写成 `litellm>=1.40,<1.106`，注释说明理由。
+不选 `litellm[mcp]`（为一个用不上的网关子系统拖进 mcp + httpx2 + pydantic>=2.12），
+也不选精确锁死版本（评估只需可复现的**上界**，具体版本由环境决定）。
+
+防回归：`tests/test_packaging.py` 解析 pyproject，断言 litellm 的 specifier
+不含 1.106.6、含 1.105.7。上游修好后放宽上界时，这条测试会红，提醒重新实测。
+
+已装过 1.106 的环境需要手动回退：`pip install "litellm==1.103.0"`（与评估环境一致）。
