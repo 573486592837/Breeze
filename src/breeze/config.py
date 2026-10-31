@@ -62,6 +62,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "context": {
         "enable": True,
+        "profile": "medium",
         "intra_turn_budget": 24000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
@@ -92,6 +93,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
     "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
+    "BREEZE_CONTEXT_PROFILE": ("context", "profile"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
     "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
@@ -99,6 +101,24 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_TOOLS_REPO_MAP": ("tools", "repo_map"),
     "BREEZE_TRACE_DIR": ("trace", "dir"),
 }
+
+# 压缩档位：一次设定同时覆盖回合预算与会话归档预算。
+# medium 与 DEFAULTS 完全一致，保证不配 profile 时行为不变。
+CONTEXT_PROFILES: dict[str, dict[str, dict[str, Any]]] = {
+    "short": {
+        "context": {"intra_turn_budget": 12000},
+        "chat": {"answer_preview": 800, "max_records": 4, "max_chars": 3000},
+    },
+    "medium": {
+        "context": {"intra_turn_budget": 24000},
+        "chat": {"answer_preview": 1500, "max_records": 8, "max_chars": 6000},
+    },
+    "long": {
+        "context": {"intra_turn_budget": 48000},
+        "chat": {"answer_preview": 3000, "max_records": 16, "max_chars": 12000},
+    },
+}
+CUSTOM_PROFILE = "custom"
 
 USER_CONFIG_PATH = Path.home() / ".breeze" / "config.toml"
 REPO_CONFIG_NAME = "breeze.toml"
@@ -176,8 +196,33 @@ def _apply_env_overrides(cfg: dict[str, Any]) -> None:
             raise ValueError(f"invalid value for {env_key}={raw!r}: {exc}") from exc
 
 
+def _profile_preset(profile: str) -> dict[str, dict[str, Any]]:
+    """返回档位对应的压缩参数。
+
+    Args:
+        profile: 档位名，大小写不敏感。
+
+    Returns:
+        覆盖 DEFAULTS 的参数表；``custom`` 返回空 dict。
+
+    Raises:
+        ValueError: profile 不是预设档位也不是 ``custom``。
+    """
+    profile = profile.lower()
+    if profile == CUSTOM_PROFILE:
+        return {}
+    preset = CONTEXT_PROFILES.get(profile)
+    if preset is None:
+        allowed = ", ".join([*CONTEXT_PROFILES, CUSTOM_PROFILE])
+        raise ValueError(f"unknown context profile: {profile!r} (choose from {allowed})")
+    return preset
+
+
 def load_config(repo_root: Path | None = None) -> dict[str, Any]:
     """按优先级加载并合并配置。
+
+    档位 preset 作为默认值之上的一层：配置文件与环境变量里的显式键
+    仍会覆盖它。``custom`` 表示不套用任何 preset。
 
     Args:
         repo_root: 仓库根目录。None 时使用当前工作目录。
@@ -185,14 +230,22 @@ def load_config(repo_root: Path | None = None) -> dict[str, Any]:
     Returns:
         合并后的配置 dict，结构与 DEFAULTS 一致。
     """
-    merged = _deep_copy(DEFAULTS)
-
-    _deep_update(merged, _read_toml(USER_CONFIG_PATH))
-
     root = (repo_root or Path.cwd()).resolve()
-    _deep_update(merged, _read_toml(root / REPO_CONFIG_NAME))
+    layers = [_read_toml(USER_CONFIG_PATH), _read_toml(root / REPO_CONFIG_NAME)]
 
+    # 先合并一次以确定最终生效的 profile（它本身也可能来自环境变量）。
+    probe = _deep_copy(DEFAULTS)
+    for layer in layers:
+        _deep_update(probe, layer)
+    _apply_env_overrides(probe)
+    profile = str(probe["context"]["profile"]).lower()
+
+    merged = _deep_copy(DEFAULTS)
+    _deep_update(merged, _profile_preset(profile))
+    for layer in layers:
+        _deep_update(merged, layer)
     _apply_env_overrides(merged)
+    merged["context"]["profile"] = profile
 
     return merged
 
@@ -223,6 +276,7 @@ class Settings:
         self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])
 
         self.context_enable: bool = bool(cfg["context"]["enable"])
+        self.context_profile: str = str(cfg["context"]["profile"])
         self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
         self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])

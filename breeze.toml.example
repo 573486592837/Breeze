@@ -29,6 +29,11 @@ max_edit_attempts = 5
 [context]
 # Set to false to disable context management entirely.
 enable = true
+# Compression preset: short | medium | long | custom.
+# A preset supplies intra_turn_budget and the [chat] archive knobs
+# (answer_preview/max_records/max_chars); explicit values below still win.
+# Use "custom" to ignore the preset entirely.
+profile = "medium"
 # Real-token budget for one user-turn episode (tiktoken). Only when the
 # turn exceeds it are the oldest read_file results demoted to pointers.
 intra_turn_budget = 24000

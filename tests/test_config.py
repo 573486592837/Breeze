@@ -113,6 +113,7 @@ def test_defaults_context_fields() -> None:
     ctx = DEFAULTS["context"]
     for key in (
         "enable",
+        "profile",
         "intra_turn_budget",
         "state_max_entries",
         "tool_result_max_bytes",
@@ -128,6 +129,104 @@ def test_defaults_context_v2_values() -> None:
     ctx = DEFAULTS["context"]
     assert ctx["intra_turn_budget"] == 24000
     assert ctx["state_max_entries"] == 8
+
+
+def test_default_context_profile_is_medium(tmp_path: Path) -> None:
+    """默认档位与 DEFAULTS 数值一致，不配 profile 时行为不变。"""
+    assert DEFAULTS["context"]["profile"] == "medium"
+    cfg = load_config(tmp_path)
+    assert cfg["context"]["intra_turn_budget"] == DEFAULTS["context"]["intra_turn_budget"]
+    assert cfg["chat"] == DEFAULTS["chat"]
+
+
+@pytest.mark.parametrize(
+    "profile, budget, preview, records, chars",
+    [
+        ("short", 12000, 800, 4, 3000),
+        ("medium", 24000, 1500, 8, 6000),
+        ("long", 48000, 3000, 16, 12000),
+    ],
+)
+def test_context_profile_applies_preset(
+    tmp_path: Path,
+    profile: str,
+    budget: int,
+    preview: int,
+    records: int,
+    chars: int,
+) -> None:
+    """档位同时设定回合预算与会话归档预算。"""
+    (tmp_path / "breeze.toml").write_text(f'[context]\nprofile = "{profile}"\n', encoding="utf-8")
+
+    cfg = load_config(tmp_path)
+
+    assert cfg["context"]["profile"] == profile
+    assert cfg["context"]["intra_turn_budget"] == budget
+    assert cfg["chat"]["answer_preview"] == preview
+    assert cfg["chat"]["max_records"] == records
+    assert cfg["chat"]["max_chars"] == chars
+
+
+def test_explicit_values_override_profile(tmp_path: Path) -> None:
+    """档位只是默认层，显式键仍可微调。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[context]\nprofile = "short"\nintra_turn_budget = 20000\n[chat]\nmax_records = 2\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert cfg["context"]["intra_turn_budget"] == 20000
+    assert cfg["chat"]["max_records"] == 2
+    # 未显式覆盖的键仍来自 short 档
+    assert cfg["chat"]["answer_preview"] == 800
+
+
+def test_custom_profile_ignores_preset(tmp_path: Path) -> None:
+    """custom 不套用 preset，未写的键保持代码默认值。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[context]\nprofile = "custom"\nintra_turn_budget = 20000\n[chat]\nmax_chars = 1234\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(tmp_path)
+
+    assert cfg["context"]["profile"] == "custom"
+    assert cfg["context"]["intra_turn_budget"] == 20000
+    assert cfg["chat"]["max_chars"] == 1234
+    assert cfg["chat"]["max_records"] == 8
+    assert cfg["chat"]["answer_preview"] == 1500
+
+
+def test_unknown_profile_raises(tmp_path: Path) -> None:
+    """拼错的档位直接报错，避免静默退回默认值。"""
+    (tmp_path / "breeze.toml").write_text('[context]\nprofile = "tiny"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown context profile"):
+        load_config(tmp_path)
+
+
+def test_env_profile_overrides_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_CONTEXT_PROFILE 优先于配置文件里的档位。"""
+    (tmp_path / "breeze.toml").write_text('[context]\nprofile = "long"\n', encoding="utf-8")
+    monkeypatch.setenv("BREEZE_CONTEXT_PROFILE", "short")
+
+    cfg = load_config(tmp_path)
+
+    assert cfg["context"]["profile"] == "short"
+    assert cfg["context"]["intra_turn_budget"] == 12000
+    assert cfg["chat"]["max_records"] == 4
+
+
+def test_settings_reads_profile(tmp_path: Path) -> None:
+    """Settings 暴露档位，并采用其 preset 数值。"""
+    (tmp_path / "breeze.toml").write_text('[context]\nprofile = "SHORT"\n', encoding="utf-8")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.context_profile == "short"
+    assert s.context_intra_turn_budget == 12000
+    assert s.chat_max_records == 4
 
 
 def test_defaults_chat_and_sessions_fields() -> None:
