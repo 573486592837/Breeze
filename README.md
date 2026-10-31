@@ -225,7 +225,7 @@ Breeze 从分层配置系统读取运行参数。
 
 ### 可配置项
 
-- `[llm]`：model、api_base、temperature
+- `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
 - `[agent]`：max_steps、max_edit_attempts
 - `[context]`：enable、intra_turn_budget（回合实测 Token 预算）、state_max_entries、
   tool_result_max/head/tail_bytes
@@ -242,7 +242,10 @@ Breeze 从分层配置系统读取运行参数。
 
 这些是防御边界。改动会削弱安全模型，或导致模型感知与实际行为不一致。
 
-`SILICONFLOW_API_KEY` 从环境变量读取，永不写入配置文件。
+API Key 只从环境变量读取，永不写入配置文件；变量名默认是
+`SILICONFLOW_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
+改成其他服务商的变量名（如 `OPENAI_API_KEY`），同时用 `model` 与
+`api_base` 指向对应服务。
 
 ---
 

@@ -53,6 +53,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
         "model": "openai/Pro/deepseek-ai/DeepSeek-V3.2",
         "api_base": "https://api.siliconflow.cn/v1",
+        "api_key_env": "SILICONFLOW_API_KEY",
         "temperature": 0.0,
     },
     "agent": {
@@ -83,6 +84,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_MODEL": ("llm", "model"),
     "BREEZE_API_BASE": ("llm", "api_base"),
+    "BREEZE_API_KEY_ENV": ("llm", "api_key_env"),
     "BREEZE_TEMPERATURE": ("llm", "temperature"),
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
     "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
@@ -206,8 +208,9 @@ class Settings:
 
         self.model: str = cfg["llm"]["model"]
         self.api_base: str = cfg["llm"]["api_base"]
+        self.api_key_env: str = cfg["llm"]["api_key_env"]
         self.llm_temperature: float = float(cfg["llm"]["temperature"])
-        self.api_key: str = os.getenv("SILICONFLOW_API_KEY", "")
+        self.api_key: str = os.getenv(self.api_key_env, "")
 
         self.agent_max_steps: int = int(cfg["agent"]["max_steps"])
         self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])

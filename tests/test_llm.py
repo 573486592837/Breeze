@@ -101,8 +101,20 @@ def test_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from breeze.config import settings
 
     monkeypatch.setattr(settings, "api_key", "")
+    monkeypatch.setattr(settings, "api_key_env", "SILICONFLOW_API_KEY")
 
     with pytest.raises(ValueError, match="SILICONFLOW_API_KEY"):
+        LLMClient(model="test/model")
+
+
+def test_client_error_names_configured_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """报错信息指向 [llm] api_key_env 配置的变量名。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "api_key", "")
+    monkeypatch.setattr(settings, "api_key_env", "OPENAI_API_KEY")
+
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         LLMClient(model="test/model")
 
 
