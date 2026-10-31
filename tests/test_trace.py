@@ -154,27 +154,33 @@ def test_trace_close_is_idempotent(trace_dir: Path) -> None:
     assert len(summary) == 1
 
 
-def test_trace_result_preview_truncated(trace_dir: Path) -> None:
-    """result 超过 500 字符时应截断，加省略号。"""
-    big_result = "x" * 1000
+def test_trace_result_preview_keeps_head_and_tail(trace_dir: Path) -> None:
+    """result 超过 500 字符时截断，但保留头部与尾部（尾部常有失败摘要）。"""
+    big_result = "HEAD" + "x" * 1000 + "TAIL"
     with RunTrace(trace_dir=trace_dir, run_id="run8") as trace:
         trace.log_tool(0, "read_file", {"path": "big"}, big_result, 1.0)
 
     events = _read_events(trace.path)
     e = [ev for ev in events if ev["event"] == "tool_call"][0]
-    assert e["result_preview"].endswith("...")
-    assert len(e["result_preview"]) == 503
+    preview = e["result_preview"]
+    assert len(preview) == 500
+    assert preview.startswith("HEAD")
+    assert preview.endswith("TAIL")
+    assert "\n...\n" in preview
 
 
 def test_trace_content_preview_truncated(trace_dir: Path) -> None:
-    """content 超过 500 字符时应截断。"""
+    """content 超过 500 字符时同样保留头尾。"""
     with RunTrace(trace_dir=trace_dir, run_id="run9") as trace:
         trace.log_llm(0, "m", 1, 1, 2, 1.0, content="y" * 1000)
 
     events = _read_events(trace.path)
     e = [ev for ev in events if ev["event"] == "llm_call"][0]
-    assert e["content_preview"].endswith("...")
-    assert len(e["content_preview"]) == 503
+    preview = e["content_preview"]
+    assert len(preview) == 500
+    assert preview.startswith("y")
+    assert preview.endswith("y")
+    assert "\n...\n" in preview
 
 
 def test_trace_creates_missing_dir(tmp_path: Path) -> None:

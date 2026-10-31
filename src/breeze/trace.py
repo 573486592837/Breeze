@@ -49,11 +49,20 @@ def _now_iso() -> str:
 
 
 def _preview(text: str | None, limit: int) -> str | None:
+    """截断文本时保留头部与尾部。
+
+    只留头部会丢掉 pytest 等命令的失败摘要（通常在输出末尾），
+    复盘时不得不重跑；头尾各留一半，单条记录长度仍受 limit 约束。
+    """
     if text is None:
         return None
     if len(text) <= limit:
         return text
-    return text[:limit] + "..."
+    marker = "\n...\n"
+    keep = max(0, limit - len(marker))
+    head = keep // 2
+    tail = keep - head
+    return text[:head] + marker + text[-tail:]
 
 
 class RunTrace:

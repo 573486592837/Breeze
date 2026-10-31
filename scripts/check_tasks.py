@@ -119,7 +119,8 @@ def _check_task(
         if not eval_command:
             return _FAIL, "missing eval_command"
 
-        if _run_eval_command(worktree, eval_command, timeout=eval_timeout):
+        passed, _ = _run_eval_command(worktree, eval_command, timeout=eval_timeout)
+        if passed:
             keep = True
             return _FAIL, "eval_command passed before the agent ran"
 
@@ -128,7 +129,8 @@ def _check_task(
 
         # 回到 setup 前的状态：若干净树也失败，说明 eval 可能本身有问题
         _reset_worktree(worktree, base_sha)
-        if not _run_eval_command(worktree, eval_command, timeout=eval_timeout):
+        passed, _ = _run_eval_command(worktree, eval_command, timeout=eval_timeout)
+        if not passed:
             return _OK, "fails after setup; note: clean tree also fails"
         return _OK, "fails after setup, passes on clean tree"
     finally:

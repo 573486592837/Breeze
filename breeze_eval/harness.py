@@ -26,8 +26,10 @@ from typing import Any
 import yaml
 
 from breeze.agent import Agent
+from breeze.chat import run_chat
 from breeze.config import settings
 from breeze.llm import LLMClient
+from breeze.tools.shell import decode_process_output
 from breeze.trace import RunTrace
 
 # eval/setup 命令里的 {python} 替换为当前解释器，避免 PATH 上的 python
@@ -56,6 +58,8 @@ class TaskSpec:
     长任务额外使用 setup 和 eval_command 启用 worktree 隔离与自动判定。
     protect 列出 Agent 不允许改动的路径（通常为 tests/ 或校验脚本），
     自动判定前由 harness 用 git status 检查。
+    turns 非空时按 breeze chat 的多回合会话运行（Agent 跨回合存活，
+    每回合独立 trace），question 只用于报告与 dry-run 描述。
     """
 
     id: str
@@ -67,6 +71,7 @@ class TaskSpec:
     setup: list[SetupOp] = field(default_factory=list)
     eval_command: str | None = None
     protect: list[str] = field(default_factory=list)
+    turns: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +115,11 @@ class TaskResult:
     pass_count: int | None = None
     success_rate: float | None = None
     pass_all: bool | None = None
+    # chat 任务：每回合的 trace 与答案
+    trace_paths: list[str] = field(default_factory=list)
+    turn_answers: list[str] | None = None
+    # repeat > 1 时逐次运行的可诊断明细
+    run_details: list[dict[str, Any]] | None = None
 
 
 def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
@@ -149,6 +159,7 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
 
         setup = _parse_setup(item.get("setup", []))
         protect = _parse_protect(item.get("protect", []), item["id"])
+        turns = _parse_turns(item.get("turns", []), item["id"])
         eval_command = item.get("eval_command")
         if eval_command is not None and not isinstance(eval_command, str):
             raise ValueError(f"task {item['id']} eval_command must be a string")
@@ -164,6 +175,7 @@ def load_tasks(path: Path) -> tuple[dict[str, Any], list[TaskSpec]]:
                 setup=setup,
                 eval_command=eval_command,
                 protect=protect,
+                turns=turns,
             )
         )
 
@@ -355,26 +367,40 @@ def _run_setup(
     return True, ""
 
 
-def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> bool:
-    """执行 eval_command，退出码 0 视为成功。"""
+def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> tuple[bool, str]:
+    """执行 eval_command，退出码 0 视为成功。
+
+    Returns:
+        (是否通过, 失败时的输出尾部)。尾部写进报告 notes，便于事后诊断
+        而不必重跑一次完整的 LLM 评估。
+    """
     if not command.strip():
-        return False
+        return False, "empty eval command"
     try:
         proc = subprocess.run(
             _expand_command(command),
             cwd=str(worktree),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
             shell=True,
         )
     except subprocess.TimeoutExpired:
-        return False
-    except OSError:
-        return False
-    return proc.returncode == 0
+        return False, f"eval timed out after {timeout}s"
+    except OSError as exc:
+        return False, f"eval failed to start: {exc}"
+    if proc.returncode == 0:
+        return True, ""
+    stdout = decode_process_output(proc.stdout)
+    stderr = decode_process_output(proc.stderr)
+    output = "\n".join(part for part in (stdout, stderr) if part and part.strip())
+    return False, _tail(output.strip(), 800) or f"exit code {proc.returncode}"
+
+
+def _tail(text: str, limit: int) -> str:
+    """保留文本尾部，优先保留失败摘要。"""
+    if len(text) <= limit:
+        return text
+    return "..." + text[-limit:]
 
 
 def _dirty_protected(worktree: Path, patterns: list[str]) -> list[str]:
@@ -499,10 +525,15 @@ def _run_task_with_worktree(
                     continue
 
             if task.eval_command:
-                passed = _run_eval_command(worktree, task.eval_command)
+                passed, detail = _run_eval_command(worktree, task.eval_command)
                 r.success = passed
                 r.auto_graded = True
-                log(f"  run {j + 1}/{repeat}: eval {'PASS' if passed else 'FAIL'}")
+                if passed:
+                    log(f"  run {j + 1}/{repeat}: eval PASS")
+                else:
+                    r.notes = "eval failed: " + detail
+                    last_line = detail.splitlines()[-1] if detail else "unknown error"
+                    log(f"  run {j + 1}/{repeat}: eval FAIL: {last_line[:160]}")
 
             results.append(r)
     finally:
@@ -539,6 +570,13 @@ def _parse_setup(raw: Any) -> list[SetupOp]:
     return ops
 
 
+def _parse_turns(raw: Any, task_id: str) -> list[str]:
+    """解析 chat 任务的回合列表，只接受非空字符串。"""
+    if not isinstance(raw, list) or not all(isinstance(t, str) and t.strip() for t in raw):
+        raise ValueError(f"task {task_id} turns must be a list of non-empty strings")
+    return [t.strip() for t in raw]
+
+
 def _parse_protect(raw: Any, task_id: str) -> list[str]:
     """解析 protect 路径列表，只接受仓库内相对路径。"""
     if not isinstance(raw, list) or not all(isinstance(p, str) and p.strip() for p in raw):
@@ -557,6 +595,96 @@ def _expand_command(command: str) -> str:
     return command.replace("{python}", _PYTHON_CMD)
 
 
+def _run_chat_task(
+    task: TaskSpec,
+    llm: LLMClient,
+    trace_dir: Path,
+    started: float,
+) -> TaskResult:
+    """按 breeze chat 的会话循环跑多回合任务。
+
+    复用 run_chat 而不是手动循环 Agent.run，保证评估路径与真实 chat
+    一致：Agent 跨回合存活、每回合独立 trace、上一回合结论经 TurnLedger
+    注入下一回合。回合输入由 turns 预先写死，耗尽后触发 EOF 退出。
+
+    Args:
+        task: 含 turns 的任务定义。
+        llm: LLM 客户端。
+        trace_dir: trace 文件输出目录。
+        started: 任务开始的 perf_counter 时间。
+
+    Returns:
+        TaskResult，指标为全部回合之和。
+    """
+    pending = list(task.turns)
+    traces: list[RunTrace] = []
+    summaries: list[dict[str, Any]] = []
+    answers: list[str] = []
+
+    def input_fn(_prompt: str) -> str:
+        if pending:
+            return pending.pop(0)
+        raise EOFError
+
+    def trace_factory() -> RunTrace:
+        trace = RunTrace(trace_dir=trace_dir)
+        traces.append(trace)
+        return trace
+
+    def agent_factory(trace: RunTrace) -> Agent:
+        return Agent(llm=llm, trace=trace, max_steps=task.max_steps)
+
+    error = ""
+    try:
+        run_chat(
+            agent_factory=agent_factory,
+            trace_factory=trace_factory,
+            input_fn=input_fn,
+            print_fn=lambda _msg: None,
+            answer_fn=answers.append,
+            summary_fn=lambda summary, _turn: summaries.append(summary),
+        )
+    except Exception as exc:
+        error = f"chat raised: {type(exc).__name__}: {exc}"
+
+    answer = answers[-1] if answers else f"[eval] {error or 'no answer produced'}"
+    if error:
+        answer = f"[eval] {error}"
+
+    totals = {
+        "llm_calls": sum(int(s.get("llm_calls", 0)) for s in summaries),
+        "tool_calls": sum(int(s.get("tool_calls", 0)) for s in summaries),
+        "prompt_tokens": sum(int(s.get("prompt_tokens", 0)) for s in summaries),
+        "completion_tokens": sum(int(s.get("completion_tokens", 0)) for s in summaries),
+        "total_tokens": sum(int(s.get("total_tokens", 0)) for s in summaries),
+        "llm_latency_ms": sum(float(s.get("llm_latency_ms", 0.0)) for s in summaries),
+        "tool_latency_ms": sum(float(s.get("tool_latency_ms", 0.0)) for s in summaries),
+        "errors": sum(int(s.get("errors", 0)) for s in summaries) + (1 if error else 0),
+    }
+
+    return TaskResult(
+        id=task.id,
+        type=task.type,
+        question=task.question,
+        success_criteria=task.success_criteria,
+        max_steps=task.max_steps,
+        answer=answer,
+        trace_path=str(traces[-1].path) if traces else "",
+        trace_paths=[str(t.path) for t in traces],
+        turn_answers=answers or None,
+        llm_calls=totals["llm_calls"],
+        tool_calls=totals["tool_calls"],
+        prompt_tokens=totals["prompt_tokens"],
+        completion_tokens=totals["completion_tokens"],
+        total_tokens=totals["total_tokens"],
+        llm_latency_ms=round(totals["llm_latency_ms"], 2),
+        tool_latency_ms=round(totals["tool_latency_ms"], 2),
+        errors=totals["errors"],
+        duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        notes=error,
+    )
+
+
 def run_task(
     task: TaskSpec,
     llm: LLMClient,
@@ -573,6 +701,9 @@ def run_task(
         TaskResult。
     """
     started = time.perf_counter()
+
+    if task.turns:
+        return _run_chat_task(task, llm, trace_dir, started)
 
     with RunTrace(trace_dir=trace_dir) as trace:
         try:
@@ -607,6 +738,24 @@ def run_task(
     )
 
 
+def _run_detail(run: TaskResult) -> dict[str, Any]:
+    """把一次运行压缩成可诊断明细，写进聚合结果。"""
+    trace_paths = run.trace_paths or ([run.trace_path] if run.trace_path else [])
+    detail: dict[str, Any] = {
+        "success": run.success,
+        "trace_paths": trace_paths,
+        "total_tokens": run.total_tokens,
+        "llm_calls": run.llm_calls,
+        "tool_calls": run.tool_calls,
+        "duration_ms": run.duration_ms,
+        "notes": run.notes,
+        "answer_preview": run.answer[:300],
+    }
+    if run.turn_answers:
+        detail["turn_answers"] = [answer[:200] for answer in run.turn_answers]
+    return detail
+
+
 def _apply_pass_metrics(result: TaskResult, runs: list[TaskResult]) -> TaskResult:
     """填充按 run 的通过统计。
 
@@ -621,6 +770,7 @@ def _apply_pass_metrics(result: TaskResult, runs: list[TaskResult]) -> TaskResul
         result。
     """
     result.runs = len(runs)
+    result.run_details = [_run_detail(r) for r in runs]
     graded = [r for r in runs if r.auto_graded and r.success is not None]
     if not graded:
         return result
@@ -884,6 +1034,8 @@ def run_eval(
                 extras.append("eval_command=yes")
             if t.protect:
                 extras.append("protect=" + ",".join(t.protect))
+            if t.turns:
+                extras.append(f"turns={len(t.turns)}")
             extra = f" [{', '.join(extras)}]" if extras else ""
             log(f"  [{t.id}] {t.type} | max_steps={t.max_steps} | {t.question}{extra}")
         return {}
