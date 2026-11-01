@@ -5,6 +5,7 @@ ReAct 风格的代码仓库 Agent，使用 LLM 的 function calling 能力多步
 
 import contextlib
 import json
+import re
 import shutil
 import time
 from collections.abc import Callable
@@ -25,6 +26,36 @@ DEFAULT_MAX_STEPS = 10
 DEFAULT_MAX_EDIT_ATTEMPTS = 5
 
 _EXTERNAL_TOOLS = ("git", "rg", "node")
+
+_EDIT_TOOLS = frozenset({"apply_patch", "create_file", "git_restore"})
+
+# 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
+# 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
+_EDIT_CLAIM_RE = re.compile(
+    r"我[^。\n]{0,30}?(?:已经?|完成了?|做好了?)[^。\n]{0,20}?"
+    r"(?:修改|修复|实现|添加|创建|新增|删除|更新|调整|对齐|替换|写入)"
+    r"|我[^。\n]{0,10}?(?:修改|修复|实现|添加|创建|新增|删除|更新|调整|对齐|替换)了"
+    r"|\bI\s+(?:have\s+)?(?:fixed|implemented|added|created|updated|modified|changed|refactored)\b",
+    re.IGNORECASE,
+)
+
+_EDIT_CLAIM_NUDGE = (
+    "你的回答声称已经完成代码修改，但本轮没有任何成功的 apply_patch / "
+    "create_file / git_restore 调用。请现在实际执行编辑；如果确认不需要修改，"
+    "明确说明“本轮未修改”及原因。不要把未写入文件的代码当作已完成。"
+)
+
+
+def _claims_completed_edit(text: str) -> bool:
+    """判断最终回答是否声称本轮完成了代码修改。
+
+    Args:
+        text: 模型给出的最终回答。
+
+    Returns:
+        若包含第一人称的完成声明则返回 True。
+    """
+    return bool(_EDIT_CLAIM_RE.search(text))
 
 
 def _environment_note() -> str:
@@ -67,6 +98,8 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 2. 定位代码遵循固定流程：先 grep 搜索符号名（如 "def <符号名>"、常量名、字符串），
    得到 文件:行号 后用 read_file 的 start_line/end_line 精确读取目标范围。
    任务已给出符号名时，禁止通读整个大文件，也禁止反复小范围试探。
+   read_file 结果会显示文件总行数；总行数不超过约 400 行时，改为省略行号
+   直接整文件读取，不要再用 grep + 分段读取反复试探。
 3. 互不依赖的工具调用应在同一轮一次性发起（例如同时 grep 定位多个符号、
    并行读取多个已定位的文件）；只有后一个调用需要前一个调用的结果时才分轮。
 4. 在调用工具前，先判断是否已有足够信息回答用户问题。
@@ -80,8 +113,9 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 2. 修改已存在的文件用 apply_patch 提交，old 必须唯一匹配文件中的原文。
    创建新文件用 create_file。
 3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。
-4. 如果需要运行测试，优先使用 run_tests（仅支持 Python 项目）。
-   需要传递特殊 pytest 参数时，改用 run_shell 的 'python -m pytest'。
+4. 如果需要运行测试：Python 项目优先使用 run_tests（需要特殊 pytest 参数时
+   改用 run_shell 的 'python -m pytest'）；JS 项目用 run_shell 的 'node --test'。
+   不要用 npm / npx / yarn 等包管理器。
 5. 如果修改有误，用 git_restore 回滚单个文件后重试。
 6. 不要修改 .git、traces、reports 目录下的内容。
 7. 不要修改测试文件来让测试通过，只修改被测代码。
@@ -96,13 +130,17 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 10. 任务包含互斥的条件分支时，先判断命中哪个分支，只执行该分支的工作。
 11. 要求修改代码的任务，必须在本次任务内用 apply_patch 或 create_file 实际完成
    全部编辑并运行验证，不得以方案、计划或建议结尾。确实无法完成时，
-   明确说明哪些编辑未执行以及原因。
+   明确说明哪些编辑未执行以及原因。最终答案里的“已修改 / 已修复 / 已创建”
+   只能对应本轮成功的编辑工具调用；只读文件不算完成，不得粘贴未写入文件的代码。
 12. apply_patch 的 old 必须逐字来自最近一次 read_file 的输出。若目标区域已不在
    上下文（历史被压缩为摘要）或对原文不确定，先重新读取该区域再编辑，
    禁止凭记忆编写 old。
-13. run_shell 的可执行文件仅限 git / python / python3 / rg / where。代码搜索
-   一律用 grep 工具，不要用 run_shell 调 grep / rg / find；不要用 cd 切换目录，
-   需要时传 cwd 参数；内联 Python 用 `python -m <module>`，不要用 `python -c`。
+13. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。
+    代码搜索一律用 grep 工具，不要用 run_shell 调 grep / rg / find；不要用
+    cd 切换目录，需要时传 cwd 参数；内联 Python 用 `python -m <module>`，
+    不要用 `python -c`。node 只用于 `node --test` 或 `node <脚本路径>`，
+    不要用 `node -e` / `--eval` / `-p` 或包管理器；测试用 `node --test`
+    （传目录在部分 Node 版本上会失败，可改为指定具体测试文件）。
 14. 多步任务开始时用 update_plan 写一份 3-7 步计划；每完成一步或方向发生
    变化后，用完整的新计划覆盖更新。计划保持简短，不要粘贴工具输出。
    计划会自动注入上下文，回答中不必重复。
@@ -206,6 +244,8 @@ class Agent:
         turn_start = len(self.messages) - 1
 
         edit_count = 0
+        edits_this_turn = 0
+        edit_claim_nudged = False
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -279,7 +319,21 @@ class Agent:
             )
 
             if not tool_calls:
-                return self._finish_turn(question, resp.content or "(empty response)", turn_start)
+                answer = resp.content or "(empty response)"
+                if (
+                    _claims_completed_edit(answer)
+                    and edits_this_turn == 0
+                    and not edit_claim_nudged
+                ):
+                    edit_claim_nudged = True
+                    self.messages.append({"role": "assistant", "content": answer})
+                    self.messages.append({"role": "user", "content": _EDIT_CLAIM_NUDGE})
+                    self.trace.log_guard(
+                        step,
+                        "final answer claimed edits but no edit tool succeeded; re-prompting",
+                    )
+                    continue
+                return self._finish_turn(question, answer, turn_start)
 
             self.messages.append(
                 {
@@ -325,7 +379,13 @@ class Agent:
                         )
                         continue
 
-                self._execute_and_append(tc, step)
+                result = self._execute_and_append(tc, step)
+                if (
+                    tc.name in _EDIT_TOOLS
+                    and result is not None
+                    and not result.startswith("Error")
+                ):
+                    edits_this_turn += 1
 
         return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
 
@@ -400,12 +460,15 @@ class Agent:
         self,
         tc: _ToolCall,
         step: int,
-    ) -> None:
+    ) -> str | None:
         """执行单个工具调用并把结果追加到 self.messages。
 
         Args:
             tc: 工具调用。
             step: Agent 循环步数。
+
+        Returns:
+            工具结果文本；参数解析失败或执行抛异常时返回 None。
         """
         self._emit(AgentEvent("tool_start", step, tool=tc.name))
 
@@ -423,7 +486,7 @@ class Agent:
             )
             self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail=str(exc)))
             self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            return
+            return None
 
         if not isinstance(arguments, dict):
             result = f"Tool arguments must be a JSON object, got: {type(arguments).__name__}"
@@ -437,7 +500,7 @@ class Agent:
             )
             self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail="invalid arguments type"))
             self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            return
+            return None
 
         start = time.perf_counter()
         try:
@@ -470,6 +533,7 @@ class Agent:
         self.state.update(tc.name, arguments, result, step)
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        return None if error is not None else result
 
 
 def _convert_tool_calls(tool_calls: list[Any]) -> list[_ToolCall]:

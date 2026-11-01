@@ -25,6 +25,7 @@ DEFAULT_MAX_BYTES = settings.context_tool_result_max_bytes // 2
 ALLOWED_EXECUTABLES: frozenset[str] = frozenset(
     {
         "git",
+        "node",
         "rg",
         "python",
         "python3",
@@ -86,6 +87,33 @@ FORBIDDEN_RG_OPTIONS: frozenset[str] = frozenset(
 )
 
 
+FORBIDDEN_NODE_OPTIONS: frozenset[str] = frozenset(
+    {
+        "-e",
+        "--eval",
+        "-p",
+        "--print",
+        "--input-type",
+        "-r",
+        "--require",
+        "--import",
+        "--loader",
+        "--experimental-loader",
+        "-i",
+        "--interactive",
+        "--inspect",
+        "--inspect-brk",
+        "--inspect-wait",
+        "--inspect-port",
+        "--watch",
+        "--watch-path",
+    }
+)
+
+# 短选项允许把值直接拼在后面（如 -e"code"），需要按前缀拦截。
+FORBIDDEN_NODE_SHORT_OPTION = re.compile(r"^-[eipr].*")
+
+
 def _strip_quotes(token: str) -> str:
     """去掉 token 两端成对的引号。
 
@@ -128,9 +156,10 @@ def _split_command(command: str) -> list[str]:
 @register(
     name="run_shell",
     description=(
-        "在仓库内执行受限的 shell 命令。支持 git、rg 等只读命令，"
-        "不支持管道、重定向和任意命令。运行测试请用 run_tests；"
-        "仅当需要特殊 pytest 参数时用 'python -m pytest'。返回 exit_code、stdout、stderr。"
+        "在仓库内执行受限的 shell 命令。支持 git、rg 等只读命令，以及 node（运行 JS 测试或脚本），"
+        "不支持管道、重定向和任意命令。运行 Python 测试请用 run_tests；"
+        "JS 测试用 'node --test'；仅当需要特殊 pytest 参数时用 'python -m pytest'。"
+        "返回 exit_code、stdout、stderr。"
     ),
     parameters={
         "type": "object",
@@ -146,7 +175,7 @@ def _split_command(command: str) -> list[str]:
             },
             "timeout": {
                 "type": "integer",
-                "description": "命令执行超时时间（秒）。默认为 60。",
+                "description": f"命令执行超时时间（秒）。默认为 {DEFAULT_TIMEOUT_SECONDS}。",
                 "default": DEFAULT_TIMEOUT_SECONDS,
             },
             "max_bytes": {
@@ -271,6 +300,13 @@ def _check_allowed(tokens: list[str]) -> None:
         extra = ""
         if exe == "pytest":
             extra = " (use run_tests; for special pytest arguments use 'python -m pytest')"
+        elif exe in {"npm", "npx", "yarn", "pnpm", "bun", "deno"}:
+            extra = (
+                " (package managers are not allowed; run JS tests with 'node --test'"
+                " and project scripts with 'node <script>')"
+            )
+        elif exe in {"vitest", "jest", "mocha", "tsx", "ts-node"}:
+            extra = " (use 'node --test' for JS tests; Breeze cannot invoke npm-installed test runners)"
         elif exe in {"cd", "pushd", "popd"}:
             extra = " (cwd is set via the cwd parameter, not via cd)"
         elif exe in {"sh", "bash", "cmd", "powershell", "zsh", "pwsh"}:
@@ -294,6 +330,8 @@ def _check_allowed(tokens: list[str]) -> None:
         missing_hint = ""
         if exe == "rg":
             missing_hint = " (ripgrep is not installed here; use the grep tool instead, it needs no external binary)"
+        elif exe == "node":
+            missing_hint = " (Node.js is not installed here; JS tests and scripts cannot be run)"
         raise ValueError(f"Executable not found on PATH: {exe}{missing_hint}")
 
     if exe == "git":
@@ -302,6 +340,12 @@ def _check_allowed(tokens: list[str]) -> None:
         sub = tokens[1].lower()
         if sub not in ALLOWED_GIT_SUBCOMMANDS:
             raise ValueError(f"Git subcommand forbidden: {sub}")
+
+    if exe == "node" and len(tokens) < 2:
+        raise ValueError(
+            "Node command requires a script or '--test'. "
+            "Run JS tests with 'node --test' or 'node --test <test-file>'."
+        )
 
     if exe in {"python", "python3"}:
         if len(tokens) < 3 or tokens[1] != "-m":
@@ -334,6 +378,8 @@ def _check_options(tokens: list[str], exe: str) -> None:
         forbidden = FORBIDDEN_GIT_OPTIONS
     elif exe == "rg":
         forbidden = FORBIDDEN_RG_OPTIONS
+    elif exe == "node":
+        forbidden = FORBIDDEN_NODE_OPTIONS
     else:
         return
 
@@ -343,6 +389,8 @@ def _check_options(tokens: list[str], exe: str) -> None:
         opt = token.split("=", 1)[0]
         if opt in forbidden:
             raise ValueError(f"{exe} option is forbidden: {opt}")
+        if exe == "node" and FORBIDDEN_NODE_SHORT_OPTION.match(token):
+            raise ValueError(f"{exe} option is forbidden: {token}")
 
 
 def _check_paths(tokens: list[str], exe: str) -> None:
