@@ -431,3 +431,24 @@ extra 下，普通安装不会带上。Breeze 每轮都带 10 个工具 schema�
 不含 1.106.6、含 1.105.7。上游修好后放宽上界时，这条测试会红，提醒重新实测。
 
 已装过 1.106 的环境需要手动回退：`pip install "litellm==1.103.0"`（与评估环境一致）。
+
+---
+
+## 持久指引：AGENTS.md 与会话计划（未发布）
+
+长场景开发需要两类信息不随对话增长而丢失：用户给 Agent 的总指引，以及
+Agent 自己维护的短期计划。两者都改为“每次调用从持久状态重新渲染”，而不是
+留在消息历史里。
+
+- **AGENTS.md**：仓库根目录的 `AGENTS.md` 在会话启动时读入 system prompt。
+  system 始终是上下文头部，因此轮数累计和回合内压缩都动不到它；`/new`
+  会重新读取，超过 8000 字符截断。指引不能放宽工具白名单与路径限制。
+- **`update_plan` 工具**：Agent 用完整的新计划覆盖旧计划，内容存进
+  `SessionState.plan`（上限 2000 字符，超长返回 Error 且不覆盖）。每步 LLM
+  调用前由 `ContextManager` 重新注入到 system 之后、回合归档之前，并计入
+  回合 Token 预算。
+- **持久化与查看**：计划随 `turn` 事件里的状态快照落盘，`--resume` 后恢复；
+  `breeze chat` 新增 `/plan` 命令查看当前计划。
+
+防回归：`tests/test_instructions.py`、`tests/test_plan_tool.py`，以及
+context / state / session / agent / chat 命令测试中的计划注入与 round-trip 断言。

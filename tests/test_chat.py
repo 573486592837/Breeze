@@ -151,6 +151,7 @@ def test_help_prints_commands() -> None:
     code, outputs, _, agents = _run(["/help", "/exit"])
     assert code == 0
     assert HELP_TEXT in outputs
+    assert "/plan" in HELP_TEXT
     assert agents == []
 
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from breeze.config import settings
 from breeze.context import ContextManager
+from breeze.instructions import load_project_instructions, render_project_instructions
 from breeze.llm import LLMClient, LLMResponse
 from breeze.state import SessionState, TurnLedger
 from breeze.tools import registry
@@ -50,8 +51,12 @@ def _environment_note() -> str:
 
 
 def default_system_prompt() -> str:
-    """默认系统提示，附带当前运行环境说明。"""
-    return f"{DEFAULT_SYSTEM_PROMPT}\n\n{_environment_note()}"
+    """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。"""
+    parts = [DEFAULT_SYSTEM_PROMPT, _environment_note()]
+    instructions, _ = load_project_instructions()
+    if instructions:
+        parts.append(render_project_instructions(instructions))
+    return "\n\n".join(parts)
 
 
 DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
@@ -98,6 +103,9 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 13. run_shell 的可执行文件仅限 git / python / python3 / rg / where。代码搜索
    一律用 grep 工具，不要用 run_shell 调 grep / rg / find；不要用 cd 切换目录，
    需要时传 cwd 参数；内联 Python 用 `python -m <module>`，不要用 `python -c`。
+14. 多步任务开始时用 update_plan 写一份 3-7 步计划；每完成一步或方向发生
+   变化后，用完整的新计划覆盖更新。计划保持简短，不要粘贴工具输出。
+   计划会自动注入上下文，回答中不必重复。
 """
 
 
@@ -172,6 +180,7 @@ class Agent:
         self.max_edit_attempts = (
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
         )
+        self._custom_system_prompt = system_prompt
         self.system_prompt = system_prompt if system_prompt is not None else default_system_prompt()
         self.context = context or ContextManager()
         self.state = SessionState()
@@ -232,7 +241,12 @@ class Agent:
 
             tools = registry.schemas() if remaining > 1 else []
             view = [self.messages[0], *self.messages[turn_start:]]
-            llm_messages = self.context.build(view, state=self.state, archive=self.ledger.render())
+            llm_messages = self.context.build(
+                view,
+                state=self.state,
+                archive=self.ledger.render(),
+                plan=self.state.plan,
+            )
 
             self._emit(AgentEvent("llm_start", step))
 
@@ -316,10 +330,15 @@ class Agent:
         return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
 
     def reset(self) -> None:
-        """清空消息日志、回合归档与会话状态，开始新会话。"""
+        """清空消息日志、回合归档与会话状态，开始新会话。
+
+        使用默认系统提示时顺带重读 AGENTS.md，用户改完指引后 /new 即可生效。
+        """
         self.messages = []
         self.ledger = TurnLedger()
         self.state = SessionState()
+        if self._custom_system_prompt is None:
+            self.system_prompt = default_system_prompt()
 
     def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
         """把本回合的问答结论与触碰文件归档，返回答案。

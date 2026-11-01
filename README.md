@@ -231,6 +231,7 @@ breeze --version
 | `/profile [name]` | 查看或切换压缩档位（short / medium / long / custom） |
 | `/set <key> <value>` | 调整 max_steps / max_edit_attempts / temperature |
 | `/config` | 查看模型、会话、trace 前缀与预算 |
+| `/plan` | 查看 Agent 维护的当前任务计划 |
 | `/new` | 重置对话（运行时配置保留） |
 | `/help` | 显示命令帮助 |
 | `/exit` | 退出（Ctrl+C / Ctrl+D 同样有效） |
@@ -238,6 +239,20 @@ breeze --version
 配置变更以 config 事件写入当前会话，`--resume` 时自动恢复。优先级为
 CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的配置 >
 配置文件与默认值。只执行命令、没有跑过回合的会话不会留下空文件。
+
+### 持久指引
+
+长场景开发里有两类信息需要“始终在上下文里”，Breeze 把它们固定在系统提示
+附近，而不是留在对话历史中：
+
+- **AGENTS.md**：在仓库根目录放一份 `AGENTS.md`，写清本项目的协作约定、
+  常用命令与代码风格。会话启动时读入 system prompt，因此不会随轮数累计或
+  回合内压缩被挤掉。使用默认系统提示时，`/new` 会重新读取；超过 8000 字符
+  会截断。它只补充行为约定，不能放宽工具白名单与路径限制。
+- **会话计划**：多步任务开始时 Agent 用 `update_plan` 写一份 3-7 步计划，
+  每完成一步或方向变化后用完整的新计划覆盖。计划存放在会话状态里，每次
+  调用 LLM 前重新注入到 system 之后，同样不会被压缩掉；随回合状态写入
+  会话文件，`--resume` 后可恢复。`/plan` 可随时查看。
 
 ---
 

@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from breeze.chat_commands import ChatController
-from breeze.state import TurnLedger
+from breeze.state import SessionState, TurnLedger
 
 
 class FakeLLM:
@@ -35,6 +35,7 @@ def _agent() -> SimpleNamespace:
         max_edit_attempts=5,
         context=None,
         ledger=TurnLedger(),
+        state=SessionState(),
     )
 
 
@@ -220,6 +221,34 @@ def test_set_rejects_invalid_values() -> None:
     assert "1 到 50" in controller.handle("/set max_steps 0", None)
     assert "0 到 2" in controller.handle("/set temperature 3", None)
     assert controller.max_steps == 10
+
+
+# ─── /plan ───
+
+
+def test_plan_before_agent_exists() -> None:
+    """首个回合前查看计划给出提示而非报错。"""
+    response = _controller().handle("/plan", None)
+
+    assert "尚未创建" in response
+
+
+def test_plan_empty() -> None:
+    """没有计划时说明为空。"""
+    response = _controller().handle("/plan", _agent())
+
+    assert "当前计划：(空)" in response
+
+
+def test_plan_shows_current_plan() -> None:
+    """有计划时原样展示。"""
+    agent = _agent()
+    agent.state.plan = "1. 读代码\n2. 改代码"
+
+    response = _controller().handle("/plan", agent)
+
+    assert "当前计划：" in response
+    assert "2. 改代码" in response
 
 
 # ─── /config ───

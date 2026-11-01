@@ -164,6 +164,60 @@ def test_extreme_overflow_demotes_spill_tools_too() -> None:
     assert all(c.startswith("[") for c in contents)
 
 
+# ─── 计划注入 ───
+
+
+def test_plan_injected_after_system_without_demotion() -> None:
+    """计划固定在 system 之后注入，无需等待降级。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system("SYS"), _user("q")]
+
+    result = cm.build(messages, plan="1. 读代码\n2. 改代码")
+
+    assert result[0]["content"] == "SYS"
+    assert result[1]["role"] == "user"
+    assert result[1]["content"].startswith("[Current plan")
+    assert "2. 改代码" in result[1]["content"]
+    assert result[-1]["content"] == "q"
+
+
+def test_empty_plan_not_injected() -> None:
+    """空计划不产生额外消息。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q")]
+
+    assert cm.build(messages, plan="  \n") == messages
+    assert cm.build(messages, plan=None) == messages
+
+
+def test_plan_precedes_archive_and_question() -> None:
+    """注入顺序为 system、计划、回合归档、当前问题。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system("SYS"), _user("q")]
+
+    result = cm.build(messages, archive="[Completed turns — 1 most recent of 1]", plan="1. step")
+
+    contents = [m["content"] for m in result]
+    assert contents[0] == "SYS"
+    assert contents[1].startswith("[Current plan")
+    assert contents[2].startswith("[Completed turns")
+    assert contents[3] == "q"
+
+
+def test_plan_counts_toward_budget() -> None:
+    """计划占用预算：同样内容在计划存在时会被降级。"""
+    body = _code_lines(120)
+    budget = _count_text_tokens(body) + 50
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
+
+    kept = ContextManager(ContextConfig(intra_turn_budget=budget)).build(messages)
+    assert next(m for m in kept if m["role"] == "tool")["content"] == body
+
+    plan = "step " * 200
+    spilled = ContextManager(ContextConfig(intra_turn_budget=budget)).build(messages, plan=plan)
+    assert next(m for m in spilled if m["role"] == "tool")["content"].startswith("[read_file compressed] a.py")
+
+
 # ─── 状态块注入 ───
 
 

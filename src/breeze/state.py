@@ -21,6 +21,7 @@ from typing import Any
 
 from breeze.config import settings
 
+PLAN_MAX_CHARS = 2000
 _GREP_DEF_RE = re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+):.*?\b(?:def|class)\s+(?P<name>\w+)")
 _READ_DEF_RE = re.compile(r"^\s*(?P<line>\d+) \| (?:async )?(?:def|class) (?P<name>\w+)", re.M)
 _TOTAL_LINES_RE = re.compile(r"file has (\d+) lines total")
@@ -36,6 +37,7 @@ class SessionState:
         reads: 文件路径 -> 最近读取描述，如 "lines 289-312 of 418"。
         edits: 文件路径 -> 最近一次编辑结果描述。
         tests: 最近一次 run_tests 的一行摘要。
+        plan: Agent 通过 update_plan 维护的短期计划。
     """
 
     def __init__(self, max_entries: int | None = None) -> None:
@@ -50,6 +52,7 @@ class SessionState:
         self.read_counts: dict[tuple[str, Any, Any], int] = {}
         self.edits: dict[str, str] = {}
         self.tests: str = ""
+        self.plan: str = ""
 
     def update(self, tool: str, arguments: dict[str, Any], result: str, step: int) -> None:
         """从一次工具执行结果更新状态。
@@ -76,6 +79,8 @@ class SessionState:
             self.edits[path] = f"{verb} at step {step}"
         elif tool == "run_tests":
             self._update_tests(result, step)
+        elif tool == "update_plan":
+            self.plan = _clip(str(arguments.get("content", "")), PLAN_MAX_CHARS)
 
     def _update_read(self, arguments: dict[str, Any], result: str, step: int) -> None:
         """记录文件读取范围与其中的 def/class 符号。"""
@@ -118,13 +123,14 @@ class SessionState:
         """序列化为 JSON 友好的字典，供会话持久化使用。
 
         Returns:
-            含 symbols/reads/edits/tests/read_counts 的字典。
+            含 symbols/reads/edits/tests/plan/read_counts 的字典。
         """
         return {
             "symbols": dict(self.symbols),
             "reads": dict(self.reads),
             "edits": dict(self.edits),
             "tests": self.tests,
+            "plan": self.plan,
             "read_counts": [[path, start, end, count] for (path, start, end), count in self.read_counts.items()],
         }
 
@@ -143,6 +149,7 @@ class SessionState:
         st.reads.update(data.get("reads") or {})
         st.edits.update(data.get("edits") or {})
         st.tests = data.get("tests") or ""
+        st.plan = data.get("plan") or ""
         for entry in data.get("read_counts") or []:
             path, start, end, count = entry
             st.read_counts[(path, start, end)] = count
