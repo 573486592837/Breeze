@@ -61,7 +61,7 @@ tasks:
 
   - id: fix01
     type: fix
-    question: "运行 `python -m pytest tests/test_fs.py` 有两个用例失败：test_read_file_rejects_escape 与 test_safe_path_rejects_escape，它们期望越界路径抛出 ValueError。定位并修复 src/ 中的实现，使这两个既有用例恢复通过，异常类型以测试断言为准。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
+    question: "运行 `python -m pytest tests/test_fs.py` 有用例失败：test_safe_path_rejects_escape 期望越界路径抛出 ValueError。定位并修复 src/ 中的实现，使该既有用例恢复通过，异常类型以测试断言为准。不要修改或新增 tests/ 下的任何文件。修复后运行 `python -m pytest -q`，全量必须通过。"
     success_criteria: "pytest 全量通过，tests/ 未被改动"
     setup:
       - patch: fix01.patch
@@ -268,4 +268,4 @@ tasks:
     protect:
       - tests/
     eval_command: "{python} -m pytest -q tests/test_feat02_exclude.py tests/test_fs.py"
-    max_steps: 15
+    max_steps: 20

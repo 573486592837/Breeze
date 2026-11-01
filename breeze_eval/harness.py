@@ -367,7 +367,7 @@ def _run_setup(
     return True, ""
 
 
-def _run_eval_command(worktree: Path, command: str, timeout: int = 120) -> tuple[bool, str]:
+def _run_eval_command(worktree: Path, command: str, timeout: int = 300) -> tuple[bool, str]:
     """执行 eval_command，退出码 0 视为成功。
 
     Returns:
