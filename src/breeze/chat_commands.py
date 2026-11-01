@@ -125,6 +125,8 @@ class ChatController:
             return self._set(argument, agent)
         if name == "config":
             return self._config()
+        if name == "plan":
+            return self._plan(agent)
         return f"未知命令 {command}；输入 /help 查看可用命令。"
 
     def build_context(self) -> ContextManager:
@@ -240,6 +242,15 @@ class ChatController:
             agent.max_edit_attempts = value
         self._record(max_edit_attempts=value)
         return f"max_edit_attempts 已设为：{value}"
+
+    def _plan(self, agent: Any | None) -> str:
+        """查看 Agent 维护的当前会话计划。"""
+        if agent is None:
+            return "当前计划：(尚未创建)"
+        plan = getattr(getattr(agent, "state", None), "plan", "")
+        if not plan:
+            return "当前计划：(空)"
+        return f"当前计划：\n{plan}"
 
     def _config(self) -> str:
         """返回当前运行时配置。"""

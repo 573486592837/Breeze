@@ -32,6 +32,7 @@ def _state() -> SessionState:
     st.update("read_file", {"path": "a.py", "start_line": 1, "end_line": 2}, "1 | def target():", 1)
     st.update("read_file", {"path": "a.py", "start_line": 1, "end_line": 2}, "1 | def target():", 2)
     st.update("run_tests", {}, "exit_code=0\nsummary: 3 passed", 3)
+    st.plan = "1. inspect\n2. fix"
     return st
 
 
@@ -96,6 +97,7 @@ def test_round_trip_restores_ledger_and_state(tmp_path: Path) -> None:
     assert restored_state.reads == state.reads
     assert restored_state.edits == state.edits
     assert restored_state.tests == state.tests
+    assert restored_state.plan == state.plan
     assert restored_state.read_counts == state.read_counts
 
 

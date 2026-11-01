@@ -70,6 +70,25 @@ def test_update_run_tests_records_summary_and_failure() -> None:
     assert "(step 2)" in st.tests
 
 
+def test_update_plan_replaces_previous_plan() -> None:
+    """update_plan 用完整的新计划覆盖旧计划。"""
+    st = _state()
+    st.update("update_plan", {"content": "1. 读代码"}, "Plan updated (9 chars).", 0)
+    st.update("update_plan", {"content": "1. 改代码\n2. 跑测试"}, "Plan updated (17 chars).", 1)
+
+    assert st.plan == "1. 改代码\n2. 跑测试"
+
+
+def test_to_dict_round_trip_keeps_plan() -> None:
+    """序列化与反序列化保留计划。"""
+    st = _state()
+    st.plan = "1. 读代码\n2. 改代码"
+
+    restored = SessionState.from_dict(st.to_dict())
+
+    assert restored.plan == st.plan
+
+
 def test_update_ignores_unknown_and_missing_summary() -> None:
     """未知工具与无 summary 的结果不应产生状态。"""
     st = _state()

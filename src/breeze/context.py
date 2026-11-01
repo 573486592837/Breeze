@@ -77,6 +77,21 @@ def _parse_arguments(raw: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _render_plan(plan: str | None) -> str:
+    """把会话计划包装成注入块；空计划返回空字符串。
+
+    Args:
+        plan: SessionState.plan 的当前内容。
+
+    Returns:
+        带说明头的计划块，或空字符串。
+    """
+    text = (plan or "").strip()
+    if not text:
+        return ""
+    return "[Current plan — agent-maintained; update with update_plan]\n" + text
+
+
 def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
     """把一条工具结果降级为一行指针。
 
@@ -164,6 +179,7 @@ class ContextManager:
         messages: list[dict[str, Any]],
         state: Any | None = None,
         archive: str | None = None,
+        plan: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
@@ -171,6 +187,7 @@ class ContextManager:
             messages: 当前回合的完整历史（system、user、若干轮）。
             state: SessionState 实例；发生降级或存在回合归档时注入。
             archive: TurnLedger 渲染的已完成回合文本；注入在 system 之后。
+            plan: Agent 维护的短期计划；非空时固定在 system 之后注入。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
@@ -200,18 +217,21 @@ class ContextManager:
                 converted.append(self._compact_tool_result(msg))
 
         budget = self.config.intra_turn_budget
-        if self._measure(head, converted, state, archive) > budget:
+        if self._measure(head, converted, state, archive, plan) > budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, budget, state, archive, READ_TOOLS
+                head, converted, id_to_name, id_to_args, budget, state, archive, plan, READ_TOOLS
             )
             demoted = demoted or spilled
-        if self._measure(head, converted, state, archive) > budget:
+        if self._measure(head, converted, state, archive, plan) > budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, budget, state, archive, SPILL_TOOLS
+                head, converted, id_to_name, id_to_args, budget, state, archive, plan, SPILL_TOOLS
             )
             demoted = demoted or spilled
 
         result: list[dict[str, Any]] = [head[0]]
+        plan_block = _render_plan(plan)
+        if plan_block:
+            result.append({"role": "user", "content": plan_block})
         if archive:
             result.append({"role": "user", "content": archive})
         result.append(head[1])
@@ -231,6 +251,7 @@ class ContextManager:
         budget: int,
         state: Any | None,
         archive: str | None,
+        plan: str | None,
         classes: frozenset[str],
     ) -> tuple[list[dict[str, Any]], bool]:
         """预算溢出时，从最旧开始把指定类别的工具结果降级为指针。
@@ -243,6 +264,7 @@ class ContextManager:
             budget: Token 上限。
             state: 用于计入状态块开销，可为 None。
             archive: 回合归档文本，计入 head 开销，可为 None。
+            plan: 计划块文本，计入 head 开销，可为 None。
             classes: 本次允许降级的工具类别。
 
         Returns:
@@ -251,7 +273,7 @@ class ContextManager:
         out = list(converted)
         changed = False
         for i, msg in enumerate(out):
-            if self._measure(head, out, state, archive) <= budget:
+            if self._measure(head, out, state, archive, plan) <= budget:
                 break
             if msg.get("role") != "tool":
                 continue
@@ -291,9 +313,13 @@ class ContextManager:
         body: list[dict[str, Any]],
         state: Any | None,
         archive: str | None = None,
+        plan: str | None = None,
     ) -> int:
-        """估算 head+archive(+状态块)+body 的实际 Token 总量。"""
+        """估算 head+plan+archive(+状态块)+body 的实际 Token 总量。"""
         total = self._count_messages(head) + self._count_messages(body)
+        plan_block = _render_plan(plan)
+        if plan_block:
+            total += _count_text_tokens(plan_block) + 10
         if archive:
             total += _count_text_tokens(archive) + 10
         if state is not None:

@@ -291,6 +291,20 @@ def test_agent_passes_system_prompt(trace: RunTrace, fake_tool: None) -> None:
     assert first[0]["content"] == "CUSTOM PROMPT"
 
 
+def test_default_system_prompt_includes_agents_md(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """仓库根目录的 AGENTS.md 应拼进默认系统提示。"""
+    from breeze.agent import default_system_prompt
+    from breeze.config import settings
+
+    (tmp_path / "AGENTS.md").write_text("总是先跑 tests", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+
+    prompt = default_system_prompt()
+
+    assert "[项目指引 — AGENTS.md]" in prompt
+    assert "总是先跑 tests" in prompt
+
+
 def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """缺失的外部命令应在默认提示里点名，并给出替代工具。"""
     from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
@@ -370,9 +384,9 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
     calls: list[int] = []
 
     class RecordingContext(ContextManager):
-        def build(self, messages, state=None, archive=None):
+        def build(self, messages, state=None, archive=None, plan=None):
             seen_state.append(state is not None)
-            return super().build(messages, state=state, archive=archive)
+            return super().build(messages, state=state, archive=archive, plan=plan)
 
     class RecordingLLM:
         model = "recorder"
@@ -415,6 +429,42 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "不要用 run_shell 调 grep" in prompt
     assert "cwd 参数" in prompt
     assert "全量测试用 run_tests" in prompt
+    assert "update_plan" in prompt
+
+
+def test_agent_injects_session_plan_before_question(trace: RunTrace) -> None:
+    """已有计划时，第一次调用就把它放在 system 之后。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, system_prompt="SYS")
+    agent.state.plan = "1. inspect\n2. patch"
+
+    agent.run("hi")
+
+    messages = llm.calls[0]["messages"]
+    assert messages[0]["content"] == "SYS"
+    assert messages[1]["content"].startswith("[Current plan")
+    assert "2. patch" in messages[1]["content"]
+    assert messages[-1]["content"] == "hi"
+
+
+def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
+    """update_plan 写入状态，并在下一次 LLM 调用时固定注入。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call("update_plan", {"content": "1. inspect\n2. patch"}, call_id="p1"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, system_prompt="SYS")
+
+    assert agent.run("plan it") == "done"
+
+    assert agent.state.plan == "1. inspect\n2. patch"
+    assert not any("[Current plan" in str(m.get("content", "")) for m in llm.calls[0]["messages"])
+    second = llm.calls[1]["messages"]
+    plan_msgs = [m for m in second if m["role"] == "user" and "[Current plan" in m["content"]]
+    assert len(plan_msgs) == 1
+    assert "2. patch" in plan_msgs[0]["content"]
 
 
 def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
