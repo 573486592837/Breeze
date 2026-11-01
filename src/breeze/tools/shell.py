@@ -153,6 +153,37 @@ def _split_command(command: str) -> list[str]:
     return [_strip_quotes(t) for t in raw]
 
 
+SHELL_OPERATORS: frozenset[str] = frozenset(
+    {"&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>>", "2>&1", "&>"}
+)
+
+
+def _check_shell_operators(tokens: list[str]) -> None:
+    """拒绝命令串联、管道与重定向。
+
+    命令以 shell=False 执行，这些符号不会被解释，而是作为参数传给可执行
+    文件，产生 exit 129 一类误导性错误（试跑中模型因此浪费了数步）。正则
+    里的 ``|`` 只要还在引号内就不会被当作独立 token，不受影响。
+
+    Args:
+        tokens: 拆分后的命令参数。
+
+    Raises:
+        ValueError: 命令包含 shell 操作符。
+    """
+    for token in tokens:
+        if token in SHELL_OPERATORS:
+            raise ValueError(
+                f"Shell operators are not supported: {token!r}. "
+                "Run one command per call, e.g. 'git status --short' then "
+                "'git log --oneline -5'."
+            )
+        if ";" in token:
+            raise ValueError(
+                "Shell command separators are not supported. Run one command per call."
+            )
+
+
 @register(
     name="run_shell",
     description=(
@@ -211,6 +242,7 @@ def run_shell(
     if not tokens:
         raise ValueError("Command is empty.")
 
+    _check_shell_operators(tokens)
     _check_allowed(tokens)
 
     workdir = safe_path(cwd)
