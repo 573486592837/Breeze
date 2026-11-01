@@ -452,3 +452,50 @@ Agent 自己维护的短期计划。两者都改为“每次调用从持久状�
 
 防回归：`tests/test_instructions.py`、`tests/test_plan_tool.py`，以及
 context / state / session / agent / chat 命令测试中的计划注入与 round-trip 断言。
+
+## run_shell 支持 node（未发布）
+
+用 Breeze 从零开发 2048 网页时，Agent 写出了 `node:test` 用例却无法执行：
+`run_shell` 的白名单里没有 node，它只能反复尝试 `npm`、`npx`、`dir`，最后在
+回答里声明“工具限制无法验证”。核心逻辑虽然事后人工验证 18/18 通过，但 Agent
+自己拿不到执行反馈。
+
+- `node` 加入 `ALLOWED_EXECUTABLES`，允许 `node --test`、`node <仓库内脚本>`
+  与 `node --version`；无参数的 node 会进入 REPL，直接拒绝。
+- 新增 `FORBIDDEN_NODE_OPTIONS`：内联执行（`-e` / `--eval` / `-p` / `--print`）、
+  模块预加载（`-r` / `--require` / `--import` / `--loader`）、调试端口
+  （`--inspect*`）与 watch 模式仍被拒绝；短选项拼接形式（如 `-ep`）按前缀拦截。
+- 包管理器（npm / npx / yarn / pnpm / bun / deno）被拒时提示改用 `node --test`；
+  缺少 node 时给出明确提示而非泛化的 not found。
+- 系统提示补充 JS 项目的测试入口，并提醒目录参数在部分 Node 版本上不可用。
+- 顺带修正 `run_shell` 的 timeout 参数描述：原先写死"默认为 60"，实际默认值
+  是 180。
+
+防回归：`tests/test_shell.py` 新增 node 白名单、危险选项、路径越界与提示文案
+测试。
+
+## 最终答案自检：阻止“声称已改但没编辑”（未发布）
+
+2048 试跑中，用户报告分数错误后，Agent 连续调用 9 次只读工具，没有发出任何
+`apply_patch`，却在最终回答里贴出完整的“修复代码”并声明已完成；另一次修复
+声称同时改了按钮和键盘处理，实际只改了按钮。两者 trace 里都没有编辑调用，也
+没有工具错误，说明这是模型侧的成功幻觉，而不是工具失败。
+
+Agent 主循环在“无工具调用的最终回答”处新增自检：若回答出现第一人称完成声明
+（如“我已经修复了”“完成了修复”“I have fixed”），但本回合没有一次成功的
+`apply_patch` / `create_file` / `git_restore`（返回 `Error` 不算成功），则把该
+回答作为 assistant 消息追加，再注入一条用户提醒，要求实际执行编辑或明确声明
+“本轮未修改”，然后继续循环。每回合最多提醒一次，避免死循环；编辑工具结果现在
+会回传给主循环用于判定。
+
+系统提示规则 11 同步补充：“已修改 / 已修复 / 已创建”只能对应本轮成功的编辑
+工具调用，只读文件不算完成。
+
+防回归：`tests/test_agent.py` 新增完成声明识别、无编辑时重申、仅提醒一次、编辑
+成功后不提醒、编辑失败仍提醒等用例。
+
+## 小文件整读（未发布）
+
+同一次试跑中，模型为了定位 `startNewGame`，对只有 272 行的 `js/ui.js` 先 grep
+再分段读取，花了 5 次调用才拿到目标区域。系统提示规则 2 补充：`read_file`
+结果会显示文件总行数，文件不超过约 400 行时直接整读，不再 grep + 分段探测。

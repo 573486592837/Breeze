@@ -730,6 +730,159 @@ def test_agent_no_halfway_nudge_after_edit(trace: RunTrace, tmp_path: Path, monk
     assert not any("一半的步数" in _flatten(call) for call in llm.calls)
 
 
+# ─── 最终答案自检：声称已改但未编辑 ───
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我已经修复了分数问题。",
+        "我已经找到了根源并完成了修复。",
+        "我修改了 css 定位。",
+        "I have fixed the score bug.",
+    ],
+)
+def test_claims_completed_edit_detects_first_person_claims(text: str) -> None:
+    """第一人称完成声明应被识别。"""
+    from breeze.agent import _claims_completed_edit
+
+    assert _claims_completed_edit(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "这个函数会修改文件内容。",
+        "修复这个问题的思路是……",
+        "本次未修改任何文件。",
+        "The fix is already in place.",
+    ],
+)
+def test_claims_completed_edit_ignores_non_claims(text: str) -> None:
+    """解释性文字不应被误判为完成声明。"""
+    from breeze.agent import _claims_completed_edit
+
+    assert not _claims_completed_edit(text)
+
+
+def test_agent_reprompts_when_claiming_edit_without_edits(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """声称已改但本轮没有编辑时，应追加提醒并继续循环。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    executed: list[str] = []
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda name, _arguments: executed.append(name) or "Patched x.py (1 replacement)",
+    )
+
+    llm = FakeLLMClient(
+        [
+            _text("我已经修复了分数问题。"),
+            _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}),
+            _text("已完成。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    assert agent.run("修好分数") == "已完成。"
+    assert executed == ["apply_patch"]
+
+    roles = [m["role"] for m in llm.calls[1]["messages"]]
+    assert roles[-2:] == ["assistant", "user"]
+    nudge = llm.calls[1]["messages"][-1]["content"]
+    assert "没有" in nudge
+    assert "apply_patch" in nudge
+
+    guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert len(guard_events) == 1
+    assert trace.summary()["errors"] == 0
+
+
+def test_agent_nudges_only_once_per_turn(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重复声称已改时只提醒一次，避免死循环。"""
+    from breeze.agent import Agent
+
+    monkeypatch.setattr("breeze.agent.registry.execute", lambda _name, _arguments: "ok")
+
+    llm = FakeLLMClient([_text("我已经修复了。"), _text("我已经修复了。")])
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    assert agent.run("修复") == "我已经修复了。"
+    assert len(llm.calls) == 2
+
+
+def test_agent_no_reprompt_without_claim(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """普通解释性回答不触发提醒。"""
+    from breeze.agent import Agent
+
+    monkeypatch.setattr("breeze.agent.registry.execute", lambda _name, _arguments: "ok")
+
+    llm = FakeLLMClient([_text("这个函数会修改文件内容。")])
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    assert agent.run("解释一下") == "这个函数会修改文件内容。"
+    assert len(llm.calls) == 1
+
+
+def test_agent_no_reprompt_after_successful_edit(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本轮有成功编辑时，完成声明不再提醒。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "Patched x.py (1 replacement)",
+    )
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}),
+            _text("我已经修复了分数问题。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    assert agent.run("修好分数") == "我已经修复了分数问题。"
+    assert len(llm.calls) == 2
+
+
+def test_agent_reprompts_after_failed_edit(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """编辑工具返回 Error 时不算成功，完成声明仍触发提醒。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "Error: old text not found in x.py",
+    )
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}),
+            _text("我已经修复了。"),
+            _text("本轮未修改：补丁未匹配，需要重新读取目标区域。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    assert agent.run("修复") == "本轮未修改：补丁未匹配，需要重新读取目标区域。"
+    assert len(llm.calls) == 3
+
+
 # ─── 多回合会话 ───
 
 

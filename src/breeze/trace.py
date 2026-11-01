@@ -219,6 +219,25 @@ class RunTrace:
             }
         )
 
+    def log_guard(self, step: int, message: str) -> None:
+        """记录一次运行中自检拦截。
+
+        自检拦截不是工具或 LLM 错误，不计入 errors，只用于事后诊断。
+
+        Args:
+            step: Agent 循环步数。
+            message: 拦截原因。
+        """
+        self._write(
+            {
+                "event": "guard",
+                "run_id": self.run_id,
+                "step": step,
+                "ts": _now_iso(),
+                "message": message,
+            }
+        )
+
     def summary(self) -> dict[str, Any]:
         """返回当前累计统计。
 
