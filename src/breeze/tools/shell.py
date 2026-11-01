@@ -16,7 +16,8 @@ from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 
-DEFAULT_TIMEOUT_SECONDS = 60
+# 测试与构建命令可能耗时一至数分钟，60 秒会让 Agent 误判超时。
+DEFAULT_TIMEOUT_SECONDS = 180
 # stdout 与 stderr 各按此上限截断，两者合计不超过上下文工具结果预算，
 # 保证 _compact_tool_result 兜底不被触发。
 DEFAULT_MAX_BYTES = settings.context_tool_result_max_bytes // 2

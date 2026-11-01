@@ -414,6 +414,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert '不得以"与本次任务无关"为由跳过' in prompt
     assert "不要用 run_shell 调 grep" in prompt
     assert "cwd 参数" in prompt
+    assert "全量测试用 run_tests" in prompt
 
 
 def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:

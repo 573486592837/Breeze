@@ -21,7 +21,8 @@ MAX_PATCH_LINES = 200
 MAX_CREATE_BYTES = 50_000
 MAX_DIFF_BYTES = 8_000
 MAX_TESTS_OUTPUT_BYTES = 8_000
-TESTS_TIMEOUT_SECONDS = 60
+# 全量测试通常比单文件慢得多（本仓库约 90 秒），60 秒会让 Agent 误判超时。
+TESTS_TIMEOUT_SECONDS = 240
 
 _PATTERN_RE = re.compile(r"^[A-Za-z0-9_./:=\-\[\]]+$")
 _PASSED_RE = re.compile(r"(\d+) passed")
