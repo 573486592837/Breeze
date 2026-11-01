@@ -499,3 +499,26 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 同一次试跑中，模型为了定位 `startNewGame`，对只有 272 行的 `js/ui.js` 先 grep
 再分段读取，花了 5 次调用才拿到目标区域。系统提示规则 2 补充：`read_file`
 结果会显示文件总行数，文件不超过约 400 行时直接整读，不再 grep + 分段探测。
+
+## run_shell 拒绝命令串联（未发布）
+
+2048 试跑中，模型多次把多条命令写成 `git status --short && git log --oneline -5`
+或 `git ls-files && ls -la`。由于 `run_shell` 以 `shell=False` 执行，`&&` 不会
+被解释，而是作为参数传给 git，返回 `unknown option/switch`（exit 129），模型
+只能重复尝试，浪费了数步。
+
+- 新增 `SHELL_OPERATORS` 校验：`&&`、`||`、`;`、`|`、`>`、`2>&1` 等命令串联、
+  管道与重定向在分词后直接拒绝，并提示“一次只跑一条命令”。
+- 引号内的正则（如 `rg "foo|bar"`）不会被误拒。
+- 系统提示规则 13 同步说明：一次 run_shell 只跑一条命令；列目录用 list_files，
+  确认仓库结构时不要重复列举同一目录。
+
+防回归：`tests/test_shell.py` 新增串联/管道/重定向拒绝与引号内 `|` 放行测试。
+
+## 编辑上限提示改为“如实汇报”（未发布）
+
+2048 试跑中模型在一回合内按函数逐个打补丁，12 次 `apply_patch` 用满后收到
+`Use git_restore to revert changes or report the failure`，容易诱导整体回滚。
+
+- 达到 `max_edit_attempts` 时的错误信息改为：停止编辑，准确汇报已完成与未完成
+  的修改，不要声称任务完成。

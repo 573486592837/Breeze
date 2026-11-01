@@ -56,6 +56,29 @@ def test_run_shell_empty_command(repo: Path) -> None:
             registry.execute("run_shell", {"command": cmd})
 
 
+def test_run_shell_rejects_shell_operators(repo: Path) -> None:
+    """命令串联、管道与重定向应被拒，并提示一次只跑一条命令。"""
+    for cmd in [
+        "git status --short && git log --oneline -5",
+        "git status || git log",
+        "git status; git log",
+        "git log | more",
+        "git status > out.txt",
+        "git log 2>&1",
+    ]:
+        with pytest.raises(ValueError, match="one command per call"):
+            registry.execute("run_shell", {"command": cmd})
+
+
+def test_run_shell_allows_quoted_regex_alternation(
+    repo: Path, fake_run: dict[str, Any]
+) -> None:
+    """引号内的正则 | 不是管道，不应被误拒。"""
+    out = registry.execute("run_shell", {"command": 'rg "foo|bar"'})
+    assert "exit_code: 0" in out
+    assert fake_run["cmd"] == ["rg", "foo|bar"]
+
+
 def test_run_shell_rejects_non_whitelisted_executable(repo: Path) -> None:
     """非白名单可执行文件应被拒。"""
     for cmd in ["curl http://example.com", "bash -c ls", "powershell Get_ChildItem"]:

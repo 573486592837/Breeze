@@ -503,6 +503,7 @@ def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: py
     errors = [e for e in apply_events if e["error"]]
     assert len(errors) == 3
     assert all("max_edit_attempts" in e["error"] for e in errors)
+    assert all("do not claim" in e["error"] for e in errors)
 
 
 def test_agent_edit_count_resets_between_runs(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:

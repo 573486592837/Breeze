@@ -136,6 +136,9 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
    上下文（历史被压缩为摘要）或对原文不确定，先重新读取该区域再编辑，
    禁止凭记忆编写 old。
 13. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。
+    一次 run_shell 只跑一条命令，不要用 && / || / ; / 管道 / 重定向串联，
+    需要多个结果时分别调用（互不依赖的可并行）。列目录用 list_files，不要
+    用 ls / dir；确认仓库结构时列一次即可，不要重复列举同一目录。
     代码搜索一律用 grep 工具，不要用 run_shell 调 grep / rg / find；不要用
     cd 切换目录，需要时传 cwd 参数；内联 Python 用 `python -m <module>`，
     不要用 `python -c`。node 只用于 `node --test` 或 `node <脚本路径>`，
@@ -358,9 +361,10 @@ class Agent:
                     edit_count += 1
                     if edit_count > self.max_edit_attempts:
                         error_msg = (
-                            f"Error: exceeded max_edit_attempts "
-                            f"({self.max_edit_attempts}). "
-                            f"Use git_restore to revert changes or report the failure."
+                            f"Error: max_edit_attempts ({self.max_edit_attempts}) "
+                            f"reached for this turn. Stop editing and report the "
+                            f"completed and remaining changes accurately; do not "
+                            f"claim the task is complete."
                         )
                         self.trace.log_tool(
                             step=step,
