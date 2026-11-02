@@ -202,6 +202,31 @@ def test_set_max_edit_attempts() -> None:
     assert agent.max_edit_attempts == 2
 
 
+def test_set_permission() -> None:
+    """切换权限模式并同步到 Agent。"""
+    session = StubSession()
+    agent = _agent()
+    controller = _controller(session=session)
+
+    response = controller.handle("/set permission open", agent)
+
+    assert "open" in response
+    assert controller.permission == "open"
+    assert agent.permission_mode == "open"
+    assert session.changes[-1] == {"permission": "open"}
+
+
+def test_set_permission_rejects_invalid() -> None:
+    """非法权限模式被拒，保持原值。"""
+    controller = _controller()
+
+    response = controller.handle("/set permission yolo", None)
+
+    assert "strict" in response
+    assert "confirm" in response
+    assert controller.permission == "strict"
+
+
 def test_set_temperature() -> None:
     controller = _controller()
 

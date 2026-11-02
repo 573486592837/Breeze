@@ -241,3 +241,17 @@ def test_trace_without_name_keeps_default_format(trace_dir: Path) -> None:
         assert trace.name is None
         assert trace.path.name.endswith("_run14.jsonl")
         assert trace.path.name.count("_") == 1
+
+
+def test_trace_log_permission_does_not_count_as_error(trace_dir: Path) -> None:
+    """权限判定事件独立记录，不计入 errors。"""
+    with RunTrace(trace_dir=trace_dir, run_id="perm1") as trace:
+        trace.log_permission(2, "ls -la", "denied", "confirm")
+        summary = trace.summary()
+
+    event = next(e for e in _read_events(trace.path) if e["event"] == "permission")
+    assert event["step"] == 2
+    assert event["command"] == "ls -la"
+    assert event["decision"] == "denied"
+    assert event["mode"] == "confirm"
+    assert summary["errors"] == 0

@@ -17,7 +17,7 @@ model = "openai/Pro/deepseek-ai/DeepSeek-V3.2"
 api_base = "https://api.siliconflow.cn/v1"
 # Name of the environment variable (or .env entry) holding the API key.
 # The key itself is never read from this file.
-api_key_env = "SILICONFLOW_API_KEY"
+api_key_env = "BREEZE_API_KEY"
 temperature = 0.0
 
 [agent]
@@ -25,6 +25,13 @@ temperature = 0.0
 max_steps = 10
 # Maximum apply_patch calls per run before further edits are rejected.
 max_edit_attempts = 5
+
+[shell]
+# Permission for run_shell when a command is not in the whitelist:
+#   strict  - reject (default)
+#   confirm - ask the user; only interactive chat can approve
+#   open    - execute without the whitelist (high risk)
+permission = "strict"
 
 [context]
 # Set to false to disable context management entirely.

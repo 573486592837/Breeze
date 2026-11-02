@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import contextlib
 import re
+import shutil
 import subprocess
-from pathlib import Path
 
+from breeze.capabilities import is_git_repo, is_python_project
 from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
@@ -48,31 +49,6 @@ def _is_protected(rel_path: str) -> bool:
     return any(normalized.startswith(p) for p in PROTECTED_PREFIXES)
 
 
-def _is_git_repo(root: Path) -> bool:
-    """检查 root 是否在 git 工作区内。
-
-    Args:
-        root: 要检查的目录。
-
-    Returns:
-        若是 git 仓库则返回 True。
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            shell=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
-
-
 @register(
     name="git_diff",
     description=(
@@ -101,7 +77,7 @@ def git_diff(path: str | None = None) -> str:
     """
     root = settings.repo_root.resolve()
 
-    if not _is_git_repo(root):
+    if not is_git_repo(root):
         return "Error: not a git repository"
 
     tokens = ["git", "diff", "--no-color", "--no-ext-diff", "--"]
@@ -163,7 +139,7 @@ def git_resotre(path: str) -> str:
     """
     root = settings.repo_root.resolve()
 
-    if not _is_git_repo(root):
+    if not is_git_repo(root):
         return "Error: not a git repository"
 
     try:
@@ -397,28 +373,88 @@ def create_file(path: str, content: str) -> str:
     return f"Created {rel} ({len(content.encode('utf-8'))} bytes)"
 
 
-def _is_python_project(root: Path) -> bool:
-    """检测项目是否是 Python 项目。
+@register(
+    name="delete_path",
+    description=(
+        "删除仓库内的文件或目录。非空目录必须显式传 recursive=true。"
+        ".git、traces、reports 与 .env 受保护，仓库根目录不可删除。"
+        "符号链接只删除链接本身，不会删除它指向的目标。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "待删除的路径，相对于仓库根目录。",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "删除非空目录时设为 true。默认为 false。",
+                "default": False,
+            },
+        },
+        "required": ["path"],
+    },
+)
+def delete_path(path: str, recursive: bool = False) -> str:
+    """删除文件或目录。
 
     Args:
-        root: 仓库根目录。
+        path: 相对仓库根目录的路径。
+        recursive: 非空目录必须为 True。
 
     Returns:
-        若存在 pyproject.toml、setup.py、pytest.ini、tox.ini 或
-        任一 tests/*.py 文件则返回 True。
+        成功时以 ``Deleted`` 开头，失败时以 ``Error:`` 开头。
     """
-    markers = [
-        "pyproject.toml",
-        "setup.py",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-    ]
-    for name in markers:
-        if (root / name).is_file():
-            return True
-    tests_dir = root / "tests"
-    return tests_dir.is_dir() and any(tests_dir.glob("*.py"))
+    root = settings.repo_root.resolve()
+    try:
+        target = safe_path(path)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    if target == root:
+        return "Error: refusing to delete the repository root"
+
+    raw = root / path
+    try:
+        raw_parent = raw.parent.resolve()
+        raw_parent.relative_to(root)
+    except ValueError:
+        return f"Error: path out of bounds: {path}"
+
+    if raw.is_symlink():
+        link_rel = (raw_parent / raw.name).relative_to(root).as_posix()
+        if _is_protected(link_rel):
+            return f"Error: path is protected: {link_rel}"
+        try:
+            raw.unlink()
+        except OSError as exc:
+            return f"Error: cannot delete symlink: {exc}"
+        return f"Deleted {link_rel} (symlink)"
+
+    rel = target.relative_to(root).as_posix()
+    if _is_protected(rel):
+        return f"Error: path is protected: {rel}"
+
+    if not target.exists():
+        return f"Error: no such file or directory: {path}"
+
+    try:
+        if target.is_dir():
+            if not recursive and any(target.iterdir()):
+                return (
+                    f"Error: directory not empty: {rel}. "
+                    "Pass recursive=true to delete it."
+                )
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+            return f"Deleted {rel} (directory)"
+        target.unlink()
+    except OSError as exc:
+        return f"Error: cannot delete {rel}: {exc}"
+    return f"Deleted {rel}"
 
 
 @register(
@@ -459,7 +495,7 @@ def run_tests(pattern: str | None = None) -> str:
             return f"Error: invalid pattern characters: {pattern}"
         tokens.append(pattern)
 
-    if not _is_python_project(root):
+    if not is_python_project(root):
         return (
             "Error: no Python project detected in this repository. "
             "run_tests only supports Python projects with pytest. "

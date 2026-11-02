@@ -153,20 +153,29 @@ def test_help_lists_current_options() -> None:
     assert "breeze ask --help" in top.stdout
     assert "--trace-name" in ask_help.stdout
     assert "--trace-name" in chat_help.stdout
+    assert "--permission" in ask_help.stdout
+    assert "--permission" in chat_help.stdout
     assert "--resume" in chat_help.stdout
     assert "--list" in chat_help.stdout
 
 
-def test_ask_custom_max_steps(repo: Path, tmp_path: Path) -> None:
-    """--max-steps 应传递给 Agent。"""
+def test_ask_custom_max_steps_and_permission(repo: Path, tmp_path: Path) -> None:
+    """--max-steps 与 --permission 应传递给 Agent。"""
     captured = {}
 
     original_agent = cli_module.Agent
 
     class CapturingAgent:
-        def __init__(self, llm, trace, max_steps, on_event=None):
+        def __init__(self, llm, trace, max_steps, on_event=None, permission_mode=None):
             captured["max_steps"] = max_steps
-            self._inner = original_agent(llm=llm, trace=trace, max_steps=max_steps, on_event=on_event)
+            captured["permission_mode"] = permission_mode
+            self._inner = original_agent(
+                llm=llm,
+                trace=trace,
+                max_steps=max_steps,
+                on_event=on_event,
+                permission_mode=permission_mode,
+            )
 
         def run(self, question):
             return self._inner.run(question)
@@ -184,6 +193,8 @@ def test_ask_custom_max_steps(repo: Path, tmp_path: Path) -> None:
                 str(tmp_path / "traces"),
                 "--max-steps",
                 "3",
+                "--permission",
+                "open",
             ],
         )
     finally:
@@ -191,6 +202,27 @@ def test_ask_custom_max_steps(repo: Path, tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert captured["max_steps"] == 3
+    assert captured["permission_mode"] == "open"
+
+
+def test_ask_rejects_invalid_permission(repo: Path, tmp_path: Path) -> None:
+    """--permission 只接受三种模式。"""
+    result = runner.invoke(
+        app,
+        [
+            "ask",
+            "hello",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "traces"),
+            "--permission",
+            "yolo",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "strict、confirm 或 open" in result.output
 
 
 def test_ask_custom_model(repo: Path, tmp_path: Path) -> None:

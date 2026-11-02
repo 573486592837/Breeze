@@ -310,7 +310,7 @@ def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pyte
     from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
 
     monkeypatch.setattr(
-        "breeze.agent.shutil.which",
+        "breeze.capabilities.shutil.which",
         lambda name: None if name in {"rg", "node"} else f"/fake/{name}",
     )
 
@@ -324,7 +324,7 @@ def test_default_system_prompt_without_missing_commands(monkeypatch: pytest.Monk
     """外部命令全部可用时不应出现缺失提示。"""
     from breeze.agent import default_system_prompt
 
-    monkeypatch.setattr("breeze.agent.shutil.which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr("breeze.capabilities.shutil.which", lambda name: f"/fake/{name}")
 
     prompt = default_system_prompt()
     assert "外部命令可用：git、rg、node。" in prompt
@@ -340,6 +340,75 @@ def test_agent_default_system_prompt_reaches_llm(trace: RunTrace, fake_tool: Non
     system = llm.calls[0]["messages"][0]
     assert system["role"] == "system"
     assert "运行环境：" in system["content"]
+
+
+def _caps(**overrides: bool) -> Any:
+    from breeze.capabilities import Capabilities
+
+    values: dict[str, bool] = {
+        "git": True,
+        "git_repo": True,
+        "node": True,
+        "rg": True,
+        "python_project": True,
+    }
+    values.update(overrides)
+    return Capabilities(**values)
+
+
+def _tool_names(llm: FakeLLMClient) -> set[str]:
+    tools = llm.calls[0]["tools"] or []
+    return {tool["function"]["name"] for tool in tools}
+
+
+def test_agent_hides_git_tools_outside_git_repo(trace: RunTrace) -> None:
+    """非 git 工作区不下发 git_diff / git_restore。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps(git_repo=False))
+    agent.run("hi")
+
+    names = _tool_names(llm)
+    assert "git_diff" not in names
+    assert "git_restore" not in names
+    assert "apply_patch" in names
+
+
+def test_agent_hides_run_tests_without_python_project(trace: RunTrace) -> None:
+    """非 Python 项目不下发 run_tests。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps(python_project=False))
+    agent.run("hi")
+
+    assert "run_tests" not in _tool_names(llm)
+
+
+def test_agent_keeps_capability_tools_when_available(trace: RunTrace) -> None:
+    """环境齐全时下发 git 与测试工具。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps())
+    agent.run("hi")
+
+    assert {"git_diff", "git_restore", "run_tests"} <= _tool_names(llm)
+
+
+def test_default_system_prompt_adapts_git_rules() -> None:
+    """非 git 工作区的提示词不再建议 git 工具，并说明替代方案。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(git_repo=False))
+
+    assert "git_restore 不可用" in prompt
+    assert "用 git_restore 回滚" not in prompt
+    assert "当前目录不是 git 工作区" in prompt
+
+
+def test_default_system_prompt_marks_run_tests_unavailable() -> None:
+    """非 Python 项目在环境说明里指出 run_tests 不可用。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(python_project=False))
+
+    assert "run_tests 不可用" in prompt
 
 
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:
@@ -1073,3 +1142,184 @@ def test_agent_events_do_not_touch_messages(trace: RunTrace, fake_tool: None) ->
 
     assert with_events == plain
     assert calls_with[0]["messages"] == calls_plain[0]["messages"]
+
+
+def test_agent_delete_counts_as_edit_for_claim_guard(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """delete_path 属于编辑操作，删除后的完成声明不应触发重申。"""
+
+    def fake_execute(name: str, arguments: dict[str, Any]) -> str:
+        return f"Deleted {arguments['path']}"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("delete_path", {"path": "old.py"}, call_id="d1"),
+            _text("我已经删除了 old.py"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("delete old.py") == "我已经删除了 old.py"
+    assert len(llm.calls) == 2
+
+
+# ─── 命令权限模式 ───
+
+
+def _tool_messages(agent: Agent) -> list[str]:
+    return [str(m.get("content", "")) for m in agent.messages if m.get("role") == "tool"]
+
+
+def _permission_events(trace: RunTrace) -> list[dict[str, Any]]:
+    return [e for e in _events(trace.path) if e["event"] == "permission"]
+
+
+def test_agent_strict_permission_rejects_unlisted(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """strict 模式下非白名单命令按工具错误返回。"""
+
+    def fake_execute(name: str, arguments: dict[str, Any]) -> str:
+        raise ValueError("Executable not allowed: ls")
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
+    )
+    agent = Agent(llm=llm, trace=trace, permission_mode="strict")
+
+    assert agent.run("list") == "done"
+    assert any("Executable not allowed" in msg for msg in _tool_messages(agent))
+    assert _permission_events(trace) == []
+
+
+def test_agent_confirm_permission_allows(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """confirm 模式在用户同意后执行非白名单命令并记录事件。"""
+    from breeze.tools import shell as shell_module
+
+    executed: list[str] = []
+
+    def reject(command: str, cwd: str = ".") -> None:
+        raise ValueError("Executable not allowed: ls")
+
+    monkeypatch.setattr(shell_module, "check_command", reject)
+    monkeypatch.setattr(
+        shell_module,
+        "run_unlisted",
+        lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
+    )
+
+    llm = FakeLLMClient(
+        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
+    )
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        permission_mode="confirm",
+        confirm_command=lambda _command: True,
+    )
+
+    assert agent.run("list") == "done"
+    assert executed == ["ls -la"]
+    events = _permission_events(trace)
+    assert events[-1]["decision"] == "allowed"
+    assert events[-1]["mode"] == "confirm"
+
+
+def test_agent_confirm_permission_denied(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """confirm 模式拒绝后不执行命令，并把拒绝结果返回给模型。"""
+    from breeze.tools import shell as shell_module
+
+    executed: list[str] = []
+
+    def reject(command: str, cwd: str = ".") -> None:
+        raise ValueError("Executable not allowed: ls")
+
+    monkeypatch.setattr(shell_module, "check_command", reject)
+    monkeypatch.setattr(
+        shell_module,
+        "run_unlisted",
+        lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
+    )
+
+    llm = FakeLLMClient(
+        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
+    )
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        permission_mode="confirm",
+        confirm_command=lambda _command: False,
+    )
+
+    assert agent.run("list") == "done"
+    assert executed == []
+    assert any("denied" in msg for msg in _tool_messages(agent))
+    assert _permission_events(trace)[-1]["decision"] == "denied"
+
+
+def test_agent_confirm_without_interactive_user_denies(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """非交互环境没有确认回调时，confirm 模式直接拒绝。"""
+    from breeze.tools import shell as shell_module
+
+    def reject(command: str, cwd: str = ".") -> None:
+        raise ValueError("Executable not allowed: ls")
+
+    monkeypatch.setattr(shell_module, "check_command", reject)
+
+    llm = FakeLLMClient(
+        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
+    )
+    agent = Agent(llm=llm, trace=trace, permission_mode="confirm", confirm_command=None)
+
+    assert agent.run("list") == "done"
+    assert any("no interactive user" in msg for msg in _tool_messages(agent))
+    assert _permission_events(trace)[-1]["decision"] == "denied"
+
+
+def test_agent_open_permission_runs_without_whitelist(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """open 模式跳过白名单直接执行。"""
+    from breeze.tools import shell as shell_module
+
+    executed: list[str] = []
+
+    def reject(command: str, cwd: str = ".") -> None:
+        raise ValueError("Executable not allowed: ls")
+
+    monkeypatch.setattr(shell_module, "check_command", reject)
+    monkeypatch.setattr(
+        shell_module,
+        "run_unlisted",
+        lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
+    )
+
+    llm = FakeLLMClient(
+        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
+    )
+    agent = Agent(llm=llm, trace=trace, permission_mode="open")
+
+    assert agent.run("list") == "done"
+    assert executed == ["ls -la"]
+    events = _permission_events(trace)
+    assert events[-1]["decision"] == "allowed"
+    assert events[-1]["mode"] == "open"
+
+
+def test_agent_rejects_invalid_permission_mode(trace: RunTrace) -> None:
+    """构造 Agent 时校验权限模式。"""
+    llm = FakeLLMClient([_text("ok")])
+
+    with pytest.raises(ValueError, match="Invalid permission mode"):
+        Agent(llm=llm, trace=trace, permission_mode="yolo")

@@ -79,6 +79,43 @@ def test_run_shell_allows_quoted_regex_alternation(
     assert fake_run["cmd"] == ["rg", "foo|bar"]
 
 
+# ─── 权限预检与开放执行 ───
+
+
+def test_check_command_accepts_whitelisted(repo: Path, whitelisted_which: None) -> None:
+    """check_command 对白名单命令不抛异常，且不执行。"""
+    shell.check_command("git status")
+    shell.check_command("node --test")
+
+
+def test_check_command_rejects_unlisted(repo: Path, whitelisted_which: None) -> None:
+    """check_command 对非白名单命令抛 ValueError。"""
+    with pytest.raises(ValueError, match="Executable not allowed"):
+        shell.check_command("ls -la")
+
+
+def test_check_command_still_rejects_operators(repo: Path) -> None:
+    """预检同样拒绝命令串联。"""
+    with pytest.raises(ValueError, match="one command per call"):
+        shell.check_command("git status && ls")
+
+
+def test_run_unlisted_executes_non_whitelisted(repo: Path, fake_run: dict[str, Any]) -> None:
+    """开放执行跳过可执行文件白名单。"""
+    out = shell.run_unlisted("ls -la")
+
+    assert "exit_code: 0" in out
+    assert fake_run["cmd"] == ["ls", "-la"]
+
+
+def test_run_unlisted_keeps_boundaries(repo: Path, fake_run: dict[str, Any]) -> None:
+    """开放执行仍拒绝操作符与越界 cwd。"""
+    with pytest.raises(ValueError, match="one command per call"):
+        shell.run_unlisted("ls && whoami")
+    with pytest.raises(ValueError, match="out of bounds"):
+        shell.run_unlisted("ls", cwd="..")
+
+
 def test_run_shell_rejects_non_whitelisted_executable(repo: Path) -> None:
     """非白名单可执行文件应被拒。"""
     for cmd in ["curl http://example.com", "bash -c ls", "powershell Get_ChildItem"]:

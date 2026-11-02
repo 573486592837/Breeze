@@ -238,21 +238,80 @@ def run_shell(
     Raises:
         ValueError: 命令为空、不在白名单、或 cwd 越界。
     """
-    tokens = _split_command(command)
-    if not tokens:
-        raise ValueError("Command is empty.")
-
-    _check_shell_operators(tokens)
-    _check_allowed(tokens)
-
-    workdir = safe_path(cwd)
-    if not workdir.is_dir():
-        raise ValueError(f"Path is not a directory: {cwd}")
+    tokens, workdir = _prepare(command, cwd, whitelist=True)
 
     timeout = max(1, int(timeout))
     max_bytes = max(1, int(max_bytes))
 
     returncode, stdout, stderr = run_command(tokens, workdir, timeout)
+    return _format_result(returncode, stdout, stderr, max_bytes)
+
+
+def check_command(command: str, cwd: str = ".") -> None:
+    """按严格白名单校验命令，但不执行。
+
+    供权限确认前预检使用；校验内容与 run_shell 一致。
+
+    Args:
+        command: 命令行字符串。
+        cwd: 工作目录，相对于仓库根目录。
+
+    Raises:
+        ValueError: 命令为空、含 shell 操作符、不在白名单或 cwd 越界。
+    """
+    _prepare(command, cwd, whitelist=True)
+
+
+def run_unlisted(
+    command: str,
+    cwd: str = ".",
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> str:
+    """跳过可执行文件白名单执行命令，仅供 open / confirm 模式使用。
+
+    仍保留 shell 操作符、cwd 边界、超时与输出上限检查；命令始终以
+    ``shell=False`` 执行。
+
+    Args:
+        command: 命令行字符串。
+        cwd: 工作目录，相对于仓库根目录。
+        timeout: 超时秒数，至少为 1。
+        max_bytes: 输出字节上限，至少为 1。
+
+    Returns:
+        包含 exit_code、stdout、stderr 的文本。
+
+    Raises:
+        ValueError: 命令为空、含 shell 操作符或 cwd 越界。
+    """
+    tokens, workdir = _prepare(command, cwd, whitelist=False)
+
+    timeout = max(1, int(timeout))
+    max_bytes = max(1, int(max_bytes))
+
+    returncode, stdout, stderr = run_command(tokens, workdir, timeout)
+    return _format_result(returncode, stdout, stderr, max_bytes)
+
+
+def _prepare(command: str, cwd: str, *, whitelist: bool) -> tuple[list[str], Path]:
+    """分词并完成白名单、操作符与 cwd 校验。"""
+    tokens = _split_command(command)
+    if not tokens:
+        raise ValueError("Command is empty.")
+
+    _check_shell_operators(tokens)
+    if whitelist:
+        _check_allowed(tokens)
+
+    workdir = safe_path(cwd)
+    if not workdir.is_dir():
+        raise ValueError(f"Path is not a directory: {cwd}")
+    return tokens, workdir
+
+
+def _format_result(returncode: int, stdout: str, stderr: str, max_bytes: int) -> str:
+    """把执行结果渲染为工具输出。"""
     if returncode == -1:
         return f"exit_code: -1\nstdout: \nstderr: {stderr}"
     return _render(returncode, stdout, stderr, max_bytes)

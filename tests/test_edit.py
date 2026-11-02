@@ -810,3 +810,98 @@ def test_run_tests_non_python_project(repo: Path) -> None:
     assert out.startswith("Error:")
     assert "no Python project" in out
     assert "run_shell" in out
+
+
+# ─── delete_path ───
+
+
+def test_delete_path_file(repo: Path) -> None:
+    """删除普通文件。"""
+    target = _make_file(repo, "old.py", "x = 1\n")
+
+    out = registry.execute("delete_path", {"path": "old.py"})
+
+    assert out.startswith("Deleted")
+    assert not target.exists()
+
+
+def test_delete_path_empty_directory(repo: Path) -> None:
+    """空目录无需 recursive。"""
+    target = repo / "empty"
+    target.mkdir()
+
+    out = registry.execute("delete_path", {"path": "empty"})
+
+    assert out.startswith("Deleted")
+    assert not target.exists()
+
+
+def test_delete_path_non_empty_requires_recursive(repo: Path) -> None:
+    """非空目录必须先传 recursive=true。"""
+    _make_file(repo, "pkg/a.py", "x = 1\n")
+
+    out = registry.execute("delete_path", {"path": "pkg"})
+    assert out.startswith("Error:")
+    assert "recursive=true" in out
+    assert (repo / "pkg" / "a.py").exists()
+
+    out = registry.execute("delete_path", {"path": "pkg", "recursive": True})
+    assert out.startswith("Deleted")
+    assert not (repo / "pkg").exists()
+
+
+def test_delete_path_protected(repo: Path) -> None:
+    """保护路径拒绝删除。"""
+    for rel in (".env", ".git/config", "traces/run.jsonl", "reports/report.md"):
+        target = _make_file(repo, rel, "secret")
+
+        out = registry.execute("delete_path", {"path": rel})
+
+        assert "protected" in out
+        assert target.exists()
+
+
+def test_delete_path_refuses_repository_root(repo: Path) -> None:
+    """仓库根目录不可删除。"""
+    for path in (".", ""):
+        out = registry.execute("delete_path", {"path": path})
+
+        assert out.startswith("Error:")
+        assert "repository root" in out
+    assert repo.exists()
+
+
+def test_delete_path_missing(repo: Path) -> None:
+    """不存在的路径返回明确错误。"""
+    out = registry.execute("delete_path", {"path": "nope.txt"})
+
+    assert out.startswith("Error:")
+    assert "no such file" in out
+
+
+def test_delete_path_out_of_bounds(repo: Path, tmp_path: Path) -> None:
+    """越界路径拒绝删除。"""
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+
+    out = registry.execute("delete_path", {"path": "../outside.txt"})
+
+    assert "out of bounds" in out
+    assert outside.exists()
+    outside.unlink()
+
+
+def test_delete_path_symlink_keeps_target(repo: Path) -> None:
+    """符号链接只删除链接本身，不删除目标。"""
+    target = _make_file(repo, "real.txt", "keep me\n")
+    link = repo / "link.txt"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink not supported in this environment")
+
+    out = registry.execute("delete_path", {"path": "link.txt"})
+
+    assert "symlink" in out
+    assert not link.exists()
+    assert target.exists()

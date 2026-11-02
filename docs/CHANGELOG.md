@@ -522,3 +522,59 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 
 - 达到 `max_edit_attempts` 时的错误信息改为：停止编辑，准确汇报已完成与未完成
   的修改，不要声称任务完成。
+
+## API Key 变量名与供应商解耦（未发布）
+
+- 默认 `api_key_env` 从 `SILICONFLOW_API_KEY` 改为 `BREEZE_API_KEY`，换模型
+  供应商时不必再沿用旧名字。
+- 新变量为空且仍使用默认名时，自动回退读取 `SILICONFLOW_API_KEY`，已有
+  `.env` 无需立即修改；显式配置 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
+  时只读指定变量，不回退。
+- 同步更新 `.env.example`、`breeze.toml.example`、README 与 CONTRIBUTING。
+
+## 按环境裁剪工具集（未发布）
+
+Agent 启动时探测一次环境（git 可执行且是否在工作区、node、rg、是否 Python
+项目），只把当前可用的工具下发给模型，避免对注定失败的工具反复尝试：
+
+- 非 git 工作区隐藏 `git_diff` / `git_restore`；系统提示同步把“用 git_restore
+  回滚”替换为“重新读取后用 apply_patch 修正”。
+- 未检测到 Python 项目时隐藏 `run_tests`，环境说明提示改用 `run_shell`
+  （如 `node --test`）。
+- 环境说明继续列出缺失的外部命令与替代工具。
+
+新增 `capabilities` 模块与 `registry.schemas(only=...)`；git 工作区与 Python
+项目检测从 `edit.py` 收敛到该模块，避免两套判断。防回归：`tests/test_capabilities.py`、
+`tests/test_registry.py` 的过滤测试，以及 agent 测试中的工具集/提示词断言。
+
+## 文件与目录删除（未发布）
+
+2048 试跑中，模型为验证遮罩可见性创建了临时脚本 `verify-overlay.mjs`，并在
+回答里明确说明“当前工具集没有删除文件的能力，故保留”。补上删除能力：
+
+- 新增 `delete_path(path, recursive=False)`：文件直接删除；空目录可删；非空
+  目录必须显式 `recursive=true`。
+- 沿用路径与保护规则：拒绝仓库根目录、`.git/`、`traces/`、`reports/` 与
+  `.env`；符号链接只删除链接本身，不触碰指向的目标。
+- `delete_path` 计入编辑工具集合，参与“声称已改但未编辑”的完成声明自检。
+- 提示词补充“删除用 delete_path，不要用 run_shell 的 rm / del”。
+- `create_file` 原本就会创建父目录，因此不新增独立建目录工具。
+
+## 命令权限模式（未发布）
+
+`run_shell` 对非白名单命令原本只有“直接拒绝”一种处理，模型只能反复换写法。
+新增三档权限：
+
+- `strict`（默认）：保持原白名单与选项限制。
+- `confirm`：命令未通过校验时逐条询问用户；`ask`、eval、管道输入等非交互
+  场景没有确认回调，按拒绝处理。
+- `open`：跳过可执行文件白名单直接执行，供信任场景使用；仍拒绝命令串联、
+  管道与重定向，并保留 cwd 边界、超时与输出上限。
+
+配置入口：`[shell] permission`、`BREEZE_PERMISSION`、`--permission` 与 chat
+内 `/set permission`；`/config` 显示当前模式。`shell` 新增无副作用的
+`check_command` 与 `run_unlisted`，Agent 按模式选择执行路径；每次判定写入
+trace 的 `permission` 事件（不计入 errors）。
+
+防回归：shell 预检/开放执行、agent 三种模式、trace 事件、chat 命令、配置与
+CLI 参数测试。
