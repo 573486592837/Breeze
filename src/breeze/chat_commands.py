@@ -21,7 +21,7 @@ from breeze.context import ContextConfig, ContextManager
 from breeze.trace import normalize_trace_name
 
 _ALLOWED_PROFILES = ", ".join([*CONTEXT_PROFILES, CUSTOM_PROFILE])
-_SET_KEYS = ("max_steps", "max_edit_attempts", "temperature", "permission")
+_SET_KEYS = ("max_steps", "max_edit_failures", "temperature", "permission")
 _SET_USAGE = f"用法：/set <{'|'.join(_SET_KEYS)}> <值>"
 
 
@@ -41,7 +41,7 @@ class ChatController:
         llm: 当前 LLM 客户端；切换模型后指向新实例。
         trace_prefix: 后续回合 trace 文件名前缀。
         max_steps: 每回合最大步数。
-        max_edit_attempts: 每回合 apply_patch 次数上限。
+        max_edit_failures: 每回合连续编辑失败次数上限。
         temperature: 采样温度。
         profile: 压缩档位。
         intra_turn_budget: 单回合内上下文的 Token 预算。
@@ -57,7 +57,7 @@ class ChatController:
         session: Any | None = None,
         repo_root: str = "",
         max_steps: int | None = None,
-        max_edit_attempts: int | None = None,
+        max_edit_failures: int | None = None,
         temperature: float | None = None,
         profile: str | None = None,
         trace_prefix: str = "trace",
@@ -75,7 +75,7 @@ class ChatController:
             session: SessionStore；提供时把配置变更写成 config 事件。
             repo_root: 仓库根目录，仅用于 /config 展示。
             max_steps: 每回合最大步数，None 时使用配置值。
-            max_edit_attempts: 编辑次数上限，None 时使用配置值。
+            max_edit_failures: 连续编辑失败上限，None 时使用配置值。
             temperature: 采样温度，None 时使用配置值。
             profile: 压缩档位，None 时使用配置值。
             trace_prefix: trace 文件名前缀。
@@ -90,8 +90,8 @@ class ChatController:
         self.session = session
         self.repo_root = repo_root
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
-        self.max_edit_attempts = (
-            max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
+        self.max_edit_failures = (
+            max_edit_failures if max_edit_failures is not None else settings.agent_max_edit_failures
         )
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.permission = (permission or settings.shell_permission).lower()
@@ -148,7 +148,7 @@ class ChatController:
         """把控制器状态应用到刚创建或恢复的 Agent。"""
         agent.llm = self.llm
         agent.max_steps = self.max_steps
-        agent.max_edit_attempts = self.max_edit_attempts
+        agent.max_edit_failures = self.max_edit_failures
         agent.permission_mode = self.permission
         agent.context = self.build_context()
         agent.ledger.answer_preview = self.answer_preview
@@ -258,12 +258,12 @@ class ChatController:
             return f"max_steps 已设为：{value}"
 
         if not 1 <= value <= 50:
-            return "max_edit_attempts 需在 1 到 50 之间"
-        self.max_edit_attempts = value
+            return "max_edit_failures 需在 1 到 50 之间"
+        self.max_edit_failures = value
         if agent is not None:
-            agent.max_edit_attempts = value
-        self._record(max_edit_attempts=value)
-        return f"max_edit_attempts 已设为：{value}"
+            agent.max_edit_failures = value
+        self._record(max_edit_failures=value)
+        return f"max_edit_failures 已设为：{value}"
 
     def _plan(self, agent: Any | None) -> str:
         """查看 Agent 维护的当前会话计划。"""
@@ -285,7 +285,7 @@ class ChatController:
                 f"  session: {session_id}",
                 f"  trace 前缀: {self.trace_prefix}",
                 f"  max_steps: {self.max_steps}",
-                f"  max_edit_attempts: {self.max_edit_attempts}",
+                f"  max_edit_failures: {self.max_edit_failures}",
                 f"  permission: {self.permission}",
                 f"  temperature: {self.temperature:g}",
                 f"  profile: {self.profile} (intra_turn_budget={self.intra_turn_budget})",

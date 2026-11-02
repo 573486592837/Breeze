@@ -32,7 +32,7 @@ def _agent() -> SimpleNamespace:
     return SimpleNamespace(
         llm=FakeLLM("agent-model"),
         max_steps=10,
-        max_edit_attempts=5,
+        max_edit_failures=3,
         context=None,
         ledger=TurnLedger(),
         state=SessionState(),
@@ -192,14 +192,14 @@ def test_set_max_steps() -> None:
     assert session.changes[-1] == {"max_steps": 3}
 
 
-def test_set_max_edit_attempts() -> None:
+def test_set_max_edit_failures() -> None:
     agent = _agent()
     controller = _controller()
 
-    controller.handle("/set max_edit_attempts 2", agent)
+    controller.handle("/set max_edit_failures 2", agent)
 
-    assert controller.max_edit_attempts == 2
-    assert agent.max_edit_attempts == 2
+    assert controller.max_edit_failures == 2
+    assert agent.max_edit_failures == 2
 
 
 def test_set_permission() -> None:
