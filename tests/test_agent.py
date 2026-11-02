@@ -998,6 +998,32 @@ def test_agent_reprompts_after_failed_edit(
     assert len(llm.calls) == 3
 
 
+def test_agent_recovers_from_empty_final_answer(trace: RunTrace) -> None:
+    """最终回答为空时应再请求一次总结，而不是直接返回空占位。"""
+    from breeze.agent import Agent
+
+    llm = FakeLLMClient([_text(""), _text("已完成撤销逻辑，界面与测试尚未完成。")])
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("继续") == "已完成撤销逻辑，界面与测试尚未完成。"
+    assert len(llm.calls) == 2
+    assert llm.calls[1]["tools"] == []
+    assert "没有内容" in llm.calls[1]["messages"][-1]["content"]
+    guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert [e["message"] for e in guard_events] == ["empty final answer; asking for a summary once"]
+
+
+def test_agent_empty_answer_recovery_runs_once(trace: RunTrace) -> None:
+    """恢复调用仍为空时返回占位文本，不无限重试。"""
+    from breeze.agent import Agent
+
+    llm = FakeLLMClient([_text(""), _text("")])
+    agent = Agent(llm=llm, trace=trace, max_steps=1)
+
+    assert agent.run("继续") == "(empty response)"
+    assert len(llm.calls) == 2
+
+
 # ─── 多回合会话 ───
 
 

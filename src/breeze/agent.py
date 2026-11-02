@@ -43,6 +43,11 @@ _EDIT_CLAIM_NUDGE = (
     "明确说明“本轮未修改”及原因。不要把未写入文件的代码当作已完成。"
 )
 
+_EMPTY_ANSWER_NUDGE = (
+    "你刚才的回复没有内容。请用简洁的中文直接给出最终答案："
+    "准确说明已经完成和尚未完成的部分，不要再调用工具。"
+)
+
 
 def _claims_completed_edit(text: str) -> bool:
     """判断最终回答是否声称本轮完成了代码修改。
@@ -419,7 +424,9 @@ class Agent:
             )
 
             if not tool_calls:
-                answer = resp.content or "(empty response)"
+                answer = resp.content or ""
+                if not answer.strip():
+                    answer = self._recover_empty_answer(step, turn_start)
                 if (
                     _claims_completed_edit(answer)
                     and edits_this_turn == 0
@@ -500,6 +507,52 @@ class Agent:
         self.state = SessionState()
         if self._custom_system_prompt is None:
             self.system_prompt = default_system_prompt(self.capabilities, self.permission_mode)
+
+    def _recover_empty_answer(self, step: int, turn_start: int) -> str:
+        """最终回答为空时，再请求一次总结。
+
+        推理模型在最后一步（工具已收起）偶尔只产出推理内容、content 为空；
+        直接把 "(empty response)" 交给用户，会看起来像任务没有结果。
+
+        Args:
+            step: 触发恢复的循环步数，用于 trace。
+            turn_start: 本回合在消息日志中的起始下标。
+
+        Returns:
+            恢复调用得到的回答；仍为空时返回 "(empty response)"。
+        """
+        self.messages.append({"role": "assistant", "content": "(empty response)"})
+        self.messages.append({"role": "user", "content": _EMPTY_ANSWER_NUDGE})
+        self.trace.log_guard(step, "empty final answer; asking for a summary once")
+
+        view = [self.messages[0], *self.messages[turn_start:]]
+        llm_messages = self.context.build(
+            view,
+            state=self.state,
+            archive=self.ledger.render(),
+            plan=self.state.plan,
+        )
+
+        self._emit(AgentEvent("llm_start", step))
+        try:
+            resp, latency_ms = self._call_llm(llm_messages, [])
+        except Exception as exc:
+            self.trace.log_error(step, f"LLM call failed: {exc}")
+            self._emit(AgentEvent("llm_end", step, ok=False, detail=str(exc)))
+            return "(empty response)"
+
+        self.trace.log_llm(
+            step=step,
+            model=getattr(self.llm, "model", "unknown"),
+            prompt_tokens=resp.prompt_tokens,
+            completion_tokens=resp.completion_tokens,
+            total_tokens=resp.total_tokens,
+            latency_ms=latency_ms,
+            content=resp.content,
+            tool_calls=[],
+        )
+        self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
+        return (resp.content or "").strip() or "(empty response)"
 
     def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
         """把本回合的问答结论与触碰文件归档，返回答案。
