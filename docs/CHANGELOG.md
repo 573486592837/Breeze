@@ -434,7 +434,52 @@ extra 下，普通安装不会带上。Breeze 每轮都带 10 个工具 schema�
 
 ---
 
-## 持久指引：AGENTS.md 与会话计划（未发布）
+## Agent 可用性、权限模式与评估基线 (v1.5.0)
+
+自 v1.3.2 起累计 46 个提交。原计划的 v1.4.0 QoL 波次没有单独发版，
+与 2048 网页真实试跑后的可用性改进一并发布为 v1.5.0：压缩档位和会话内
+配置、更可信的固定评估集、AGENTS.md 与计划注入、按环境裁剪工具、删除
+能力、命令权限模式，以及一轮轮 trace 里暴露出来的提示词与执行纪律修正。
+
+### 压缩档位与会话内配置
+
+- `[context] profile` 一次设定压缩强度，同时覆盖回合预算与会话归档预算：
+  short（12000 / 800 / 4 / 3000）、medium（24000 / 1500 / 8 / 6000，默认）、
+  long（48000 / 3000 / 16 / 12000）；`custom` 完全忽略档位，按显式配置执行。
+  显式参数与环境变量优先于档位，`BREEZE_CONTEXT_PROFILE` 可整体切换。
+- 三档实测（long.yaml repeat=3，DeepSeek-V3.2）：A 5/5 459K、B 4/5 492K、
+  C 5/5 460K tokens，差距在噪声内。结论是档位作为“默认舒适区”，不宣称
+  token 收益；评估报告同步记录 `effective_config`。
+- `breeze chat` 新增 `/model`、`/trace`、`/profile`、`/set`、`/config`：
+  切换模型、trace 前缀、档位与 max_steps / max_edit_attempts / temperature；
+  变更以 `config` 事件落盘，`--resume` 恢复，优先级为 CLI 参数 >
+  会话内保存值 > 配置文件与环境变量。
+- 答案改为 Panel + Markdown 渲染，每回合显示本轮 Token 与 Trace Summary，
+  `--trace-name` 支持前缀命名；`chat --list --search <关键词>` 可检索历史会话。
+
+### 固定评估集 v2
+
+- 新的 `tasks/quality.yaml`（17 个自动判定任务，`core` 8 / `chat` 2 / `full` 17）
+  取代人工评分的 baseline.yaml 作为默认；`scripts/eval.py` 新增 `--suite`。
+- 三条防作弊边界：每个任务在独立 worktree 中执行；`protect` 用
+  `git status --porcelain` 检查（改、删、新增测试都算违规）；`{python}`
+  固定解释器。评分改为按 run 统计 `passes` / `success_rate` / `pass_all`。
+- `chat` 档用多回合 `turns` 走 `run_chat`，覆盖 `breeze chat` 的真实路径；
+  报告按 run 输出失败原因，便于定位是模型问题还是任务本身。
+- 新增 `scripts/check_tasks.py` 预检（不耗 API）：setup 后 protect 必须干净、
+  修复前必须失败。预检当场抓到 feat03 的过期 fixture patch，任务已修。
+- 移除 `repo_map`：真实 trace 中从未被调用，只增加 schema 与提示噪声。
+- 评估子进程输出优先按 UTF-8 解码；放宽全量测试与 shell 超时，避免长任务
+  被误判超时；sdist 测试不再假定 fixtures 存在。
+
+### 运行过程可感知
+
+- 新增 `AgentEvent`（llm_start / llm_end / tool_start / tool_end）与
+  `Agent.on_event` 回调；交互式终端显示单行进度，非 TTY 不输出，
+  事件不会进入 prompt 或 trace，也不改变追问结果。
+
+### 持久指引：AGENTS.md 与会话计划
+
 
 长场景开发需要两类信息不随对话增长而丢失：用户给 Agent 的总指引，以及
 Agent 自己维护的短期计划。两者都改为“每次调用从持久状态重新渲染”，而不是
@@ -453,7 +498,7 @@ Agent 自己维护的短期计划。两者都改为“每次调用从持久状�
 防回归：`tests/test_instructions.py`、`tests/test_plan_tool.py`，以及
 context / state / session / agent / chat 命令测试中的计划注入与 round-trip 断言。
 
-## run_shell 支持 node（未发布）
+### run_shell 支持 node
 
 用 Breeze 从零开发 2048 网页时，Agent 写出了 `node:test` 用例却无法执行：
 `run_shell` 的白名单里没有 node，它只能反复尝试 `npm`、`npx`、`dir`，最后在
@@ -474,7 +519,7 @@ context / state / session / agent / chat 命令测试中的计划注入与 round
 防回归：`tests/test_shell.py` 新增 node 白名单、危险选项、路径越界与提示文案
 测试。
 
-## 最终答案自检：阻止“声称已改但没编辑”（未发布）
+### 最终答案自检：阻止“声称已改但没编辑”
 
 2048 试跑中，用户报告分数错误后，Agent 连续调用 9 次只读工具，没有发出任何
 `apply_patch`，却在最终回答里贴出完整的“修复代码”并声明已完成；另一次修复
@@ -494,13 +539,13 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 防回归：`tests/test_agent.py` 新增完成声明识别、无编辑时重申、仅提醒一次、编辑
 成功后不提醒、编辑失败仍提醒等用例。
 
-## 小文件整读（未发布）
+### 小文件整读
 
 同一次试跑中，模型为了定位 `startNewGame`，对只有 272 行的 `js/ui.js` 先 grep
 再分段读取，花了 5 次调用才拿到目标区域。系统提示规则 2 补充：`read_file`
 结果会显示文件总行数，文件不超过约 400 行时直接整读，不再 grep + 分段探测。
 
-## run_shell 拒绝命令串联（未发布）
+### run_shell 拒绝命令串联
 
 2048 试跑中，模型多次把多条命令写成 `git status --short && git log --oneline -5`
 或 `git ls-files && ls -la`。由于 `run_shell` 以 `shell=False` 执行，`&&` 不会
@@ -515,7 +560,7 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 
 防回归：`tests/test_shell.py` 新增串联/管道/重定向拒绝与引号内 `|` 放行测试。
 
-## 编辑上限提示改为“如实汇报”（未发布）
+### 编辑上限提示改为“如实汇报”
 
 2048 试跑中模型在一回合内按函数逐个打补丁，12 次 `apply_patch` 用满后收到
 `Use git_restore to revert changes or report the failure`，容易诱导整体回滚。
@@ -523,7 +568,7 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 - 达到 `max_edit_attempts` 时的错误信息改为：停止编辑，准确汇报已完成与未完成
   的修改，不要声称任务完成。
 
-## API Key 变量名与供应商解耦（未发布）
+### API Key 变量名与供应商解耦
 
 - 默认 `api_key_env` 从 `SILICONFLOW_API_KEY` 改为 `BREEZE_API_KEY`，换模型
   供应商时不必再沿用旧名字。
@@ -532,7 +577,7 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
   时只读指定变量，不回退。
 - 同步更新 `.env.example`、`breeze.toml.example`、README 与 CONTRIBUTING。
 
-## 按环境裁剪工具集（未发布）
+### 按环境裁剪工具集
 
 Agent 启动时探测一次环境（git 可执行且是否在工作区、node、rg、是否 Python
 项目），只把当前可用的工具下发给模型，避免对注定失败的工具反复尝试：
@@ -547,7 +592,7 @@ Agent 启动时探测一次环境（git 可执行且是否在工作区、node、
 项目检测从 `edit.py` 收敛到该模块，避免两套判断。防回归：`tests/test_capabilities.py`、
 `tests/test_registry.py` 的过滤测试，以及 agent 测试中的工具集/提示词断言。
 
-## 文件与目录删除（未发布）
+### 文件与目录删除
 
 2048 试跑中，模型为验证遮罩可见性创建了临时脚本 `verify-overlay.mjs`，并在
 回答里明确说明“当前工具集没有删除文件的能力，故保留”。补上删除能力：
@@ -560,7 +605,7 @@ Agent 启动时探测一次环境（git 可执行且是否在工作区、node、
 - 提示词补充“删除用 delete_path，不要用 run_shell 的 rm / del”。
 - `create_file` 原本就会创建父目录，因此不新增独立建目录工具。
 
-## 命令权限模式（未发布）
+### 命令权限模式
 
 `run_shell` 对非白名单命令原本只有“直接拒绝”一种处理，模型只能反复换写法。
 新增三档权限：
@@ -579,7 +624,7 @@ trace 的 `permission` 事件（不计入 errors）。
 防回归：shell 预检/开放执行、agent 三种模式、trace 事件、chat 命令、配置与
 CLI 参数测试。
 
-## 权限模式提示词同步（未发布）
+### 权限模式提示词同步
 
 权限模式加入后，系统提示仍写死“可执行文件仅限白名单”，模型在 confirm/open
 下不会主动尝试非白名单命令，模式实际用不起来。
@@ -588,3 +633,13 @@ CLI 参数测试。
   open 说明可执行任意命令（仍为 shell=False、一次只跑一条）。
 - Agent 构造与 `/new` 重载提示时传入当前 permission_mode。
 - 防回归：三种模式的默认提示与 Agent 系统提示测试。
+
+### 验证
+
+全量 560 passed / 2 skipped，ruff check 全绿；packaging 测试覆盖 wheel/sdist
+边界与 `breeze.__version__` 单点（构建产物为 `breeze-1.5.0.dist-info`）。
+新能力另做四项真实探针：非 git 目录不再出现 git 工具调用；`delete_path`
+删除临时脚本且无其它改动；`open` 模式直接执行 `whoami`（trace 记
+`permission allowed/open`）；`confirm` 在非交互输入下拒绝并返回
+“no interactive user is available”（trace 记 `permission denied/confirm`）。
+

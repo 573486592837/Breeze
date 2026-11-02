@@ -2,9 +2,9 @@
 
 > 面向代码场景的 Token 高效 Agent。
 
-Breeze 是一个面向代码仓库的 CLI Agent，目标是在代码问答、检索、编辑、测试等任务中，以更少的 Token 完成同等或更好的任务。它不追求成为通用聊天助手，也不急于构建多 Agent 平台，而是聚焦代码场景，通过仓库地图、混合检索、上下文压缩、缓存与模型路由等机制，降低 LLM 调用成本，并让 Agent 的行为可观测、可评估、可迭代。
+Breeze 是一个面向代码仓库的 CLI Agent，目标是在代码问答、检索、编辑、测试等任务中，以更少的 Token 完成同等或更好的任务。它不追求成为通用聊天助手，也不急于构建多 Agent 平台，而是聚焦代码场景，通过上下文压缩、按环境裁剪的工具集与可重复的固定评估集，降低 LLM 调用成本，并让 Agent 的行为可观测、可评估、可迭代。
 
-当前状态：v0.8.0 — 工具系统、ReAct Loop、CLI、Trace、编辑能力与长任务评估已可用。
+当前状态：v1.5.0 — 工具系统、ReAct Loop、多回合会话、持久指引、命令权限模式与固定评估集已可用。
 
 ---
 
@@ -139,7 +139,10 @@ DeepSeek-V3.2 能力限制——P3 手测中它报告"已完成收紧符号链�
 | v1.2.0 | 交互式多回合会话 `breeze chat`、并行工具调用 | 已完成 |
 | v1.2.1 | 会话持久化 `~/.breeze/sessions`、`--resume` / `--list` | 已完成 |
 | v1.3.0 | release/debug 打包分离（评估框架移出包）、版本单点化与 `breeze --version`、README 变更史拆分 | 已完成 |
-| v1.4.0 | QoL：Small Model 路由、压缩参数默认值调优、Hybrid Retriever | 计划中 |
+| v1.3.1 | `.env` 查找改为从 cwd 向上，wheel 安装也能读到 | 已完成 |
+| v1.3.2 | litellm 上界锁到 1.106 之前，避开未声明的 `mcp` 依赖 | 已完成 |
+| v1.4.0 | QoL 波次（压缩档位、会话内命令、评估基线 v2、移除 repo_map），并入 v1.5.0 | 已完成 |
+| v1.5.0 | Agent 可用性：AGENTS.md 与计划注入、按环境裁剪工具、`delete_path`、命令权限模式、2048 真实试跑修正 | 已完成 |
 
 ---
 
@@ -401,7 +404,7 @@ breeze/
 │   ├── check_tasks.py    # 任务预检（修复前必须失败）
 │   └── report.py
 ├── tasks/
-│   ├── quality.yaml      # 固定评估集（15 个自动判定任务，core/full）
+│   ├── quality.yaml      # 固定评估集（17 个自动判定任务，core/chat/full）
 │   ├── baseline.yaml     # 20 个人工评分短任务（旧）
 │   ├── long.yaml         # 5 个 bug 修复任务
 │   ├── feature.yaml      # 3 个功能添加任务
