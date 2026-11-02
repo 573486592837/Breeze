@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import shutil
 import subprocess
 
 from breeze.capabilities import is_git_repo, is_python_project
@@ -370,6 +371,90 @@ def create_file(path: str, content: str) -> str:
         return f"Error: cannot write file: {exc}"
 
     return f"Created {rel} ({len(content.encode('utf-8'))} bytes)"
+
+
+@register(
+    name="delete_path",
+    description=(
+        "删除仓库内的文件或目录。非空目录必须显式传 recursive=true。"
+        ".git、traces、reports 与 .env 受保护，仓库根目录不可删除。"
+        "符号链接只删除链接本身，不会删除它指向的目标。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "待删除的路径，相对于仓库根目录。",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "删除非空目录时设为 true。默认为 false。",
+                "default": False,
+            },
+        },
+        "required": ["path"],
+    },
+)
+def delete_path(path: str, recursive: bool = False) -> str:
+    """删除文件或目录。
+
+    Args:
+        path: 相对仓库根目录的路径。
+        recursive: 非空目录必须为 True。
+
+    Returns:
+        成功时以 ``Deleted`` 开头，失败时以 ``Error:`` 开头。
+    """
+    root = settings.repo_root.resolve()
+    try:
+        target = safe_path(path)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    if target == root:
+        return "Error: refusing to delete the repository root"
+
+    raw = root / path
+    try:
+        raw_parent = raw.parent.resolve()
+        raw_parent.relative_to(root)
+    except ValueError:
+        return f"Error: path out of bounds: {path}"
+
+    if raw.is_symlink():
+        link_rel = (raw_parent / raw.name).relative_to(root).as_posix()
+        if _is_protected(link_rel):
+            return f"Error: path is protected: {link_rel}"
+        try:
+            raw.unlink()
+        except OSError as exc:
+            return f"Error: cannot delete symlink: {exc}"
+        return f"Deleted {link_rel} (symlink)"
+
+    rel = target.relative_to(root).as_posix()
+    if _is_protected(rel):
+        return f"Error: path is protected: {rel}"
+
+    if not target.exists():
+        return f"Error: no such file or directory: {path}"
+
+    try:
+        if target.is_dir():
+            if not recursive and any(target.iterdir()):
+                return (
+                    f"Error: directory not empty: {rel}. "
+                    "Pass recursive=true to delete it."
+                )
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+            return f"Deleted {rel} (directory)"
+        target.unlink()
+    except OSError as exc:
+        return f"Error: cannot delete {rel}: {exc}"
+    return f"Deleted {rel}"
 
 
 @register(

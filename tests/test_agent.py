@@ -1142,3 +1142,25 @@ def test_agent_events_do_not_touch_messages(trace: RunTrace, fake_tool: None) ->
 
     assert with_events == plain
     assert calls_with[0]["messages"] == calls_plain[0]["messages"]
+
+
+def test_agent_delete_counts_as_edit_for_claim_guard(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """delete_path 属于编辑操作，删除后的完成声明不应触发重申。"""
+
+    def fake_execute(name: str, arguments: dict[str, Any]) -> str:
+        return f"Deleted {arguments['path']}"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("delete_path", {"path": "old.py"}, call_id="d1"),
+            _text("我已经删除了 old.py"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("delete old.py") == "我已经删除了 old.py"
+    assert len(llm.calls) == 2

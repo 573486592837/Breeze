@@ -91,7 +91,7 @@ Agent Loop  (ReAct；步数预算、半程收敛提醒、编辑次数上限)
   +-- Tool System
   |     +-- list_files / read_file / grep                         (已实现)
   |     +-- run_shell（可执行文件与子命令白名单、shell=False）        (已实现)
-  |     +-- apply_patch / create_file / git_diff / git_restore / run_tests  (已实现)
+  |     +-- apply_patch / create_file / delete_path / git_diff / git_restore / run_tests  (已实现)
   |
   +-- Trace      每回合一个 JSONL（run_start/llm_call/tool_call/run_summary）(已实现)
   +-- Eval       包外的 breeze_eval/ + worktree 隔离，不进发行包     (已实现)
@@ -378,7 +378,7 @@ breeze/
 │       ├── fs.py
 │       ├── search.py
 │       ├── shell.py
-│       └── edit.py       # apply_patch, create_file, git_diff, git_restore, run_tests
+│       └── edit.py       # apply_patch, create_file, delete_path, git_diff, git_restore, run_tests
 ├── breeze_eval/
 │   └── harness.py        # 评估框架（包外的开发面，不进 wheel）
 ├── scripts/

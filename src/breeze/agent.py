@@ -25,7 +25,7 @@ from breeze.trace import RunTrace
 DEFAULT_MAX_STEPS = 10
 DEFAULT_MAX_EDIT_ATTEMPTS = 5
 
-_EDIT_TOOLS = frozenset({"apply_patch", "create_file", "git_restore"})
+_EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -156,7 +156,8 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
    改用 run_shell 的 'python -m pytest'）；JS 项目用 run_shell 的 'node --test'。
    不要用 npm / npx / yarn 等包管理器。
 5. 如果修改有误，用 git_restore 回滚单个文件后重试。
-6. 不要修改 .git、traces、reports 目录下的内容。
+6. 不要修改 .git、traces、reports 目录下的内容。删除文件或目录用 delete_path，
+   不要用 run_shell 的 rm / del；非空目录必须传 recursive=true。
 7. 不要修改测试文件来让测试通过，只修改被测代码。
 8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。
    超过后会被拒绝，此时应报告失败或回滚。

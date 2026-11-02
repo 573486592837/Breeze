@@ -546,3 +546,16 @@ Agent 启动时探测一次环境（git 可执行且是否在工作区、node、
 新增 `capabilities` 模块与 `registry.schemas(only=...)`；git 工作区与 Python
 项目检测从 `edit.py` 收敛到该模块，避免两套判断。防回归：`tests/test_capabilities.py`、
 `tests/test_registry.py` 的过滤测试，以及 agent 测试中的工具集/提示词断言。
+
+## 文件与目录删除（未发布）
+
+2048 试跑中，模型为验证遮罩可见性创建了临时脚本 `verify-overlay.mjs`，并在
+回答里明确说明“当前工具集没有删除文件的能力，故保留”。补上删除能力：
+
+- 新增 `delete_path(path, recursive=False)`：文件直接删除；空目录可删；非空
+  目录必须显式 `recursive=true`。
+- 沿用路径与保护规则：拒绝仓库根目录、`.git/`、`traces/`、`reports/` 与
+  `.env`；符号链接只删除链接本身，不触碰指向的目标。
+- `delete_path` 计入编辑工具集合，参与“声称已改但未编辑”的完成声明自检。
+- 提示词补充“删除用 delete_path，不要用 run_shell 的 rm / del”。
+- `create_file` 原本就会创建父目录，因此不新增独立建目录工具。
