@@ -17,7 +17,7 @@ model = "openai/Pro/deepseek-ai/DeepSeek-V3.2"
 api_base = "https://api.siliconflow.cn/v1"
 # Name of the environment variable (or .env entry) holding the API key.
 # The key itself is never read from this file.
-api_key_env = "SILICONFLOW_API_KEY"
+api_key_env = "BREEZE_API_KEY"
 temperature = 0.0
 
 [agent]

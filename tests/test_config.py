@@ -32,7 +32,7 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     user_config = tmp_path / "_user_config.toml"
     monkeypatch.setattr("breeze.config.USER_CONFIG_PATH", user_config, raising=False)
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
+    monkeypatch.setenv("BREEZE_API_KEY", "test-key")
     return user_config
 
 
@@ -51,9 +51,47 @@ def test_defaults_llm_fields() -> None:
     assert isinstance(llm["temperature"], float)
 
 
-def test_defaults_api_key_env_is_siliconflow() -> None:
-    """默认密钥变量名保持 SILICONFLOW_API_KEY，老配置无需改动。"""
-    assert DEFAULTS["llm"]["api_key_env"] == "SILICONFLOW_API_KEY"
+def test_defaults_api_key_env_is_breeze() -> None:
+    """默认密钥变量名与供应商解耦，使用 BREEZE_API_KEY。"""
+    assert DEFAULTS["llm"]["api_key_env"] == "BREEZE_API_KEY"
+
+
+def test_legacy_siliconflow_key_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """新变量名未设置时，回退读取旧的 SILICONFLOW_API_KEY。"""
+    monkeypatch.delenv("BREEZE_API_KEY", raising=False)
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key_env == "BREEZE_API_KEY"
+    assert s.api_key == "legacy-secret"
+
+
+def test_primary_key_wins_over_legacy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_API_KEY 优先于旧变量名。"""
+    monkeypatch.setenv("BREEZE_API_KEY", "new-secret")
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key == "new-secret"
+
+
+def test_legacy_fallback_only_for_default_env_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式指定其他变量名时，不回退到 SILICONFLOW_API_KEY。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[llm]\napi_key_env = "CUSTOM_API_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
+    monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.api_key_env == "CUSTOM_API_KEY"
+    assert s.api_key == ""
 
 
 def test_settings_reads_key_from_named_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -467,6 +505,7 @@ def test_settings_repo_root_resolved(tmp_path: Path) -> None:
 
 def test_settings_missing_api_key_does_not_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """缺 key 时配置仍可用：校验属于 LLMClient，import 期不能抛。"""
+    monkeypatch.delenv("BREEZE_API_KEY", raising=False)
     monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
 
     s = Settings(repo_root=tmp_path)
@@ -484,7 +523,11 @@ def test_config_import_without_api_key(tmp_path: Path) -> None:
     import subprocess
     import sys
 
-    env = {k: v for k, v in os.environ.items() if k != "SILICONFLOW_API_KEY"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("SILICONFLOW_API_KEY", "BREEZE_API_KEY") and not k.startswith("BREEZE_")
+    }
     proc = subprocess.run(
         [sys.executable, "-c", "from breeze.config import settings; print(repr(settings.api_key))"],
         cwd=tmp_path,
@@ -499,11 +542,11 @@ def test_config_import_without_api_key(tmp_path: Path) -> None:
 
 def test_find_dotenv_path_prefers_nearest(tmp_path: Path) -> None:
     """逐级向上时最近的一份 .env 生效。"""
-    (tmp_path / ".env").write_text("SILICONFLOW_API_KEY=far\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("BREEZE_API_KEY=far\n", encoding="utf-8")
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     near = nested / ".env"
-    near.write_text("SILICONFLOW_API_KEY=near\n", encoding="utf-8")
+    near.write_text("BREEZE_API_KEY=near\n", encoding="utf-8")
 
     assert find_dotenv_path(nested) == near.resolve()
 
@@ -531,7 +574,7 @@ def test_dotenv_is_loaded_from_cwd_when_installed(tmp_path: Path) -> None:
 
     work_dir = tmp_path / "proj"
     work_dir.mkdir()
-    (work_dir / ".env").write_text("SILICONFLOW_API_KEY=dotenv-from-cwd\n", encoding="utf-8")
+    (work_dir / ".env").write_text("BREEZE_API_KEY=dotenv-from-cwd\n", encoding="utf-8")
     probe = tmp_path / "probe.py"
     probe.write_text(
         "import breeze.config as c\nprint(c.settings.api_key)\nprint(c.__file__)\n",

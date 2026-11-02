@@ -16,8 +16,8 @@ python -m ruff check src tests
 python -m ruff format src tests
 ```
 
-- API Key：仓库根或用户目录放 `.env`，写入 `SILICONFLOW_API_KEY=...`。
-  密钥永远不进配置文件，也不进 git。
+- API Key：仓库根或用户目录放 `.env`，写入 `BREEZE_API_KEY=...`（旧的
+  `SILICONFLOW_API_KEY` 仍作为回退）。密钥永远不进配置文件，也不进 git。
 - 第三方依赖的上界必须有理由，并把理由写在 `pyproject.toml` 的注释里，同时补一条
   解析 pyproject 的防回归测试（见 `tests/test_packaging.py` 对 `litellm<1.106` 的断言：
   1.106.0 起带 `tools` 的 `completion()` 会 import 未声明的 `mcp`）。放宽上界前

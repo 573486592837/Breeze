@@ -171,7 +171,7 @@ pip install -e ".[dev]"
 复制 `.env.example` 为 `.env`，填入 API Key：
 
 ```bash
-SILICONFLOW_API_KEY=sk-your-key-here
+BREEZE_API_KEY=sk-your-key-here
 BREEZE_MODEL=openai/Pro/deepseek-ai/DeepSeek-V3.2
 BREEZE_API_BASE=https://api.siliconflow.cn/v1
 LITELLM_LOCAL_MODEL_COST_MAP=True
@@ -308,9 +308,10 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 这些是防御边界。改动会削弱安全模型，或导致模型感知与实际行为不一致。
 
 API Key 只从环境变量读取，永不写入配置文件；变量名默认是
-`SILICONFLOW_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
+`BREEZE_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
 改成其他服务商的变量名（如 `OPENAI_API_KEY`），同时用 `model` 与
-`api_base` 指向对应服务。
+`api_base` 指向对应服务。旧变量名 `SILICONFLOW_API_KEY` 仍会作为回退
+读取，已有 `.env` 无需立即修改。
 
 ---
 

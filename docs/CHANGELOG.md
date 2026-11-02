@@ -522,3 +522,12 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
 
 - 达到 `max_edit_attempts` 时的错误信息改为：停止编辑，准确汇报已完成与未完成
   的修改，不要声称任务完成。
+
+## API Key 变量名与供应商解耦（未发布）
+
+- 默认 `api_key_env` 从 `SILICONFLOW_API_KEY` 改为 `BREEZE_API_KEY`，换模型
+  供应商时不必再沿用旧名字。
+- 新变量为空且仍使用默认名时，自动回退读取 `SILICONFLOW_API_KEY`，已有
+  `.env` 无需立即修改；显式配置 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
+  时只读指定变量，不回退。
+- 同步更新 `.env.example`、`breeze.toml.example`、README 与 CONTRIBUTING。

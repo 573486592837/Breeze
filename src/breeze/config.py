@@ -49,11 +49,14 @@ _dotenv_path = find_dotenv_path()
 if _dotenv_path is not None:
     load_dotenv(_dotenv_path)
 
+DEFAULT_API_KEY_ENV = "BREEZE_API_KEY"
+LEGACY_API_KEY_ENV = "SILICONFLOW_API_KEY"
+
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
         "model": "openai/Pro/deepseek-ai/DeepSeek-V3.2",
         "api_base": "https://api.siliconflow.cn/v1",
-        "api_key_env": "SILICONFLOW_API_KEY",
+        "api_key_env": DEFAULT_API_KEY_ENV,
         "temperature": 0.0,
     },
     "agent": {
@@ -299,6 +302,9 @@ class Settings:
         self.api_key_env: str = cfg["llm"]["api_key_env"]
         self.llm_temperature: float = float(cfg["llm"]["temperature"])
         self.api_key: str = os.getenv(self.api_key_env, "")
+        if not self.api_key and self.api_key_env == DEFAULT_API_KEY_ENV:
+            # 旧版默认变量名；保留回退，老 .env 无需立即改名。
+            self.api_key = os.getenv(LEGACY_API_KEY_ENV, "")
 
         self.agent_max_steps: int = int(cfg["agent"]["max_steps"])
         self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])
