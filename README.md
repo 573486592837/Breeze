@@ -47,7 +47,7 @@ Breeze 当前不计划做：
 - 无沙箱、无限制地执行任意命令。
 - 只靠截断上下文来“优化” Token。
 - 没有评估集就宣称效果提升。
-- 当前阶段不支持代码编辑（写操作），仅支持只读任务。
+- 没有约束的自动改写（写操作受路径边界、权限模式与连续失败上限约束）。
 
 ---
 
@@ -70,7 +70,7 @@ Breeze 当前不计划做：
 CLI  (breeze ask 单轮 | breeze chat 多回合 / --resume / --list)
   |
   v
-Agent Loop  (ReAct；步数预算、半程收敛提醒、编辑次数上限)
+Agent Loop  (ReAct；步数预算、半程收敛提醒、连续编辑失败上限)
   |
   +-- Context Manager  策略 v2：压缩单位是"用户回合"，不是"轮"
   |     +-- 定位类结果恒降级为一行指针 (grep/list_files)           (已实现)
@@ -232,7 +232,7 @@ breeze --version
 | `/model [name]` | 查看或切换模型 |
 | `/trace [prefix]` | 查看或设置后续回合的 trace 文件名前缀 |
 | `/profile [name]` | 查看或切换压缩档位（short / medium / long / custom） |
-| `/set <key> <value>` | 调整 max_steps / max_edit_attempts / temperature |
+| `/set <key> <value>` | 调整 max_steps / max_edit_failures / temperature |
 | `/config` | 查看模型、会话、trace 前缀与预算 |
 | `/plan` | 查看 Agent 维护的当前任务计划 |
 | `/new` | 重置对话（运行时配置保留） |
@@ -277,7 +277,7 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 ### 可配置项
 
 - `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
-- `[agent]`：max_steps、max_edit_attempts
+- `[agent]`：max_steps、max_edit_failures（连续编辑失败上限）
 - `[shell]`：permission（strict / confirm / open，默认 strict）
 - `[context]`：enable、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
   state_max_entries、tool_result_max/head/tail_bytes

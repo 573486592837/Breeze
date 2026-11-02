@@ -62,7 +62,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "agent": {
         "max_steps": 10,
-        "max_edit_attempts": 5,
+        "max_edit_failures": 3,
     },
     "shell": {
         "permission": "strict",
@@ -95,7 +95,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_API_KEY_ENV": ("llm", "api_key_env"),
     "BREEZE_TEMPERATURE": ("llm", "temperature"),
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
-    "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
+    "BREEZE_MAX_EDIT_FAILURES": ("agent", "max_edit_failures"),
     "BREEZE_PERMISSION": ("shell", "permission"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
     "BREEZE_CONTEXT_PROFILE": ("context", "profile"),
@@ -312,7 +312,7 @@ class Settings:
             self.api_key = os.getenv(LEGACY_API_KEY_ENV, "")
 
         self.agent_max_steps: int = int(cfg["agent"]["max_steps"])
-        self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])
+        self.agent_max_edit_failures: int = int(cfg["agent"]["max_edit_failures"])
 
         permission = str(cfg["shell"]["permission"]).lower()
         if permission not in PERMISSION_MODES:

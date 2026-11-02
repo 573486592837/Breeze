@@ -136,7 +136,7 @@ def test_defaults_agent_fields() -> None:
     """agent section 的字段齐全且为 int。"""
     agent = DEFAULTS["agent"]
     assert agent["max_steps"] == 10
-    assert agent["max_edit_attempts"] == 5
+    assert agent["max_edit_failures"] == 3
     assert isinstance(agent["max_steps"], int)
 
 
@@ -325,7 +325,7 @@ def test_repo_config_overrides_defaults(tmp_path: Path) -> None:
 
     assert cfg["agent"]["max_steps"] == 3
     # 其他字段保持默认
-    assert cfg["agent"]["max_edit_attempts"] == 5
+    assert cfg["agent"]["max_edit_failures"] == 3
 
 
 def test_user_config_overrides_defaults(tmp_path: Path, isolated_config: Path) -> None:
@@ -495,7 +495,7 @@ def test_unknown_type_mismatch_silently_ignored(tmp_path: Path) -> None:
 def test_settings_reads_repo_config(tmp_path: Path) -> None:
     """Settings 从 repo_root 下的 breeze.toml 读值。"""
     (tmp_path / "breeze.toml").write_text(
-        "[agent]\nmax_steps = 3\nmax_edit_attempts = 2\n"
+        "[agent]\nmax_steps = 3\nmax_edit_failures = 2\n"
         "[context]\nintra_turn_budget = 500\n"
         '[llm]\nmodel = "openai/test-model"\ntemperature = 0.5\n',
         encoding="utf-8",
@@ -504,7 +504,7 @@ def test_settings_reads_repo_config(tmp_path: Path) -> None:
     s = Settings(repo_root=tmp_path)
 
     assert s.agent_max_steps == 3
-    assert s.agent_max_edit_attempts == 2
+    assert s.agent_max_edit_failures == 2
     assert s.context_intra_turn_budget == 500
     assert s.model == "openai/test-model"
     assert s.llm_temperature == 0.5
@@ -661,7 +661,7 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     s = Settings(repo_root=tmp_path)
 
     assert isinstance(s.agent_max_steps, int)
-    assert isinstance(s.agent_max_edit_attempts, int)
+    assert isinstance(s.agent_max_edit_failures, int)
     assert isinstance(s.context_enable, bool)
     assert isinstance(s.context_intra_turn_budget, int)
     assert isinstance(s.llm_temperature, float)

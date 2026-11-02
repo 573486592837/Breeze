@@ -901,7 +901,7 @@ def _effective_config(llm: Any) -> dict[str, Any]:
         "chat.max_records": settings.chat_max_records,
         "chat.max_chars": settings.chat_max_chars,
         "agent.max_steps": settings.agent_max_steps,
-        "agent.max_edit_attempts": settings.agent_max_edit_attempts,
+        "agent.max_edit_failures": settings.agent_max_edit_failures,
     }
 
 

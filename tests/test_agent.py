@@ -581,8 +581,10 @@ def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
     assert "2. patch" in plan_msgs[0]["content"]
 
 
-def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
-    """超过 max_edit_attempts 的 apply_patch 调用应被拦截。"""
+def test_many_successful_edits_do_not_hit_failure_cap(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """连续成功的并行编辑不受失败上限约束。"""
     from breeze.agent import Agent
     from breeze.tools import registry
 
@@ -595,16 +597,45 @@ def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: py
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call(
-            "apply_patch",
-            {"path": "x.py", "old": "a", "new": "b"},
-            call_id=f"c{i}",
-        )
+        _tool_call("apply_patch", {"path": f"f{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}")
         for i in range(6)
     ] + [_text("done")]
 
     llm = FakeLLMClient(responses)
-    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_attempts=3)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=3)
+    result = agent.run("edit six files")
+
+    assert result == "done"
+    assert executed.count("apply_patch") == 6
+
+    tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
+    assert len(apply_events) == 6
+    assert not [e for e in apply_events if e["error"]]
+
+
+def test_agent_stops_after_consecutive_edit_failures(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """连续失败达到上限后，本回合后续编辑被拒绝。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, _arguments):
+        executed.append(name)
+        return "Error: old text not found in x.py"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    responses = [
+        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
+        for i in range(6)
+    ] + [_text("done")]
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=3)
     result = agent.run("edit x.py")
 
     assert result == "done"
@@ -614,87 +645,113 @@ def test_agent_max_edit_attempts_limits_patches(trace: RunTrace, monkeypatch: py
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
     assert len(apply_events) == 6
 
-    errors = [e for e in apply_events if e["error"]]
-    assert len(errors) == 3
-    assert all("max_edit_attempts" in e["error"] for e in errors)
-    assert all("do not claim" in e["error"] for e in errors)
+    rejected = [e for e in apply_events if e["error"]]
+    assert len(rejected) == 3
+    assert all("max_edit_failures" in e["error"] for e in rejected)
+    assert all("do not claim" in e["error"] for e in rejected)
 
 
-def test_agent_edit_count_resets_between_runs(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
-    """两次 run 的编辑计数独立。"""
+def test_agent_edit_failure_streak_resets_on_success(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """成功编辑会清零连续失败计数，卡顿后仍可继续编辑。"""
     from breeze.agent import Agent
     from breeze.tools import registry
 
+    results = iter(
+        [
+            "Error: old text not found",
+            "Error: old text not found",
+            "Patched x.py (1 replacement)",
+            "Error: old text not found",
+            "Error: old text not found",
+            "Patched x.py (1 replacement)",
+        ]
+    )
     executed: list[str] = []
 
-    def fake_execute(name, arguments):
+    def fake_execute(name, _arguments):
         executed.append(name)
-        return "Patched"
+        return next(results)
 
     monkeypatch.setattr(registry, "execute", fake_execute)
 
-    # 第一次 run：3 次调用
-    responses1 = [
-        _tool_call(
-            "apply_patch",
-            {"path": "x.py", "old": "a", "new": "b"},
-            call_id=f"c{i}",
-        )
+    responses = [
+        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
+        for i in range(6)
+    ] + [_text("done")]
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=3)
+    result = agent.run("edit x.py")
+
+    assert result == "done"
+    assert executed.count("apply_patch") == 6
+
+    tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
+    assert not [e for e in apply_events if e["error"]]
+
+
+def test_agent_edit_failure_cap_resets_between_runs(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """两次 run 的失败计数独立。"""
+    from breeze.agent import Agent
+    from breeze.tools import registry
+
+    results = iter(
+        [
+            "Error: old text not found",
+            "Error: old text not found",
+            "Error: old text not found",
+            "Patched x.py (1 replacement)",
+        ]
+    )
+    executed: list[str] = []
+
+    def fake_execute(name, _arguments):
+        executed.append(name)
+        return next(results)
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    responses = [
+        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
         for i in range(3)
     ] + [_text("done1")]
+    responses += [_tool_call("apply_patch", {"path": "y.py", "old": "c", "new": "d"}, call_id="d0")]
+    responses += [_text("done2")]
 
-    llm1 = FakeLLMClient(responses1)
-    agent1 = Agent(llm=llm1, trace=trace, max_steps=10, max_edit_attempts=3)
-    assert agent1.run("first") == "done1"
-    assert executed.count("apply_patch") == 3
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=3)
 
-    # 第二次 run：又是 3 次调用，应全部执行
-    executed.clear()
-    responses2 = [
-        _tool_call(
-            "apply_patch",
-            {"path": "y.py", "old": "c", "new": "d"},
-            call_id=f"d{i}",
-        )
-        for i in range(3)
-    ] + [_text("done2")]
-
-    llm2 = FakeLLMClient(responses2)
-    agent2 = Agent(llm=llm2, trace=trace, max_steps=10, max_edit_attempts=3)
-    assert agent2.run("second") == "done2"
-    assert executed.count("apply_patch") == 3
+    assert agent.run("first") == "done1"
+    assert agent.run("second") == "done2"
+    assert executed.count("apply_patch") == 4
 
 
-def test_agent_edit_count_ignores_other_tools(
+def test_agent_edit_failure_cap_ignores_read_tools(
     trace: RunTrace, fake_tool: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """非 apply_patch 工具不占编辑配额。"""
+    """读工具失败不占编辑失败配额。"""
     from breeze.agent import Agent
 
-    # 前 3 轮用 fake_echo，后 3 轮用 apply_patch（应全部执行）
     responses = (
-        [_tool_call("fake_echo", {"text": "x"}, call_id=f"e{i}") for i in range(3)]
-        + [
-            _tool_call(
-                "apply_patch",
-                {"path": "x.py", "old": "a", "new": "b"},
-                call_id=f"p{i}",
-            )
-            for i in range(3)
-        ]
+        [_tool_call("fake_echo", {"text": "x"}, call_id=f"e{i}") for i in range(4)]
+        + [_tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id="p0")]
         + [_text("done")]
     )
 
     llm = FakeLLMClient(responses)
-    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_attempts=3)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=3)
     result = agent.run("mixed")
 
     assert result == "done"
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
-    errors = [e for e in apply_events if e["error"]]
-    assert len(errors) == 0
+    assert not [e for e in apply_events if e["error"]]
 
 
 # ─── 配置集成 ───
@@ -724,16 +781,16 @@ def test_agent_explicit_max_steps_overrides_settings(trace: RunTrace, monkeypatc
     assert agent.max_steps == 3
 
 
-def test_agent_uses_settings_for_max_edit_attempts(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
-    """不传 max_edit_attempts 时用 settings 的值。"""
+def test_agent_uses_settings_for_max_edit_failures(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """不传 max_edit_failures 时用 settings 的值。"""
     from breeze.config import settings
 
-    monkeypatch.setattr(settings, "agent_max_edit_attempts", 2)
+    monkeypatch.setattr(settings, "agent_max_edit_failures", 2)
 
     llm = FakeLLMClient([_text("ok")])
     agent = Agent(llm=llm, trace=trace)
 
-    assert agent.max_edit_attempts == 2
+    assert agent.max_edit_failures == 2
 
 
 # ─── 结构化会话状态接线 ───

@@ -23,9 +23,9 @@ from breeze.trace import RunTrace
 # Deprecated: use settings.agent_max_steps instead.
 # Kept for backward compatibility with code that imports this constant.
 DEFAULT_MAX_STEPS = 10
-DEFAULT_MAX_EDIT_ATTEMPTS = 5
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
+_WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -279,7 +279,7 @@ class Agent:
         llm: LLMClient,
         trace: RunTrace,
         max_steps: int | None = None,
-        max_edit_attempts: int | None = None,
+        max_edit_failures: int | None = None,
         system_prompt: str | None = None,
         context: ContextManager | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
@@ -293,7 +293,7 @@ class Agent:
             llm: LLM 客户端。
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
-            max_edit_attempts: 单次运行允许的 apply_patch 调用上限。
+            max_edit_failures: 单次运行允许的连续编辑失败次数；成功编辑后清零。
             system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
             context: 上下文管理器。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
@@ -316,8 +316,8 @@ class Agent:
         self.permission_mode = mode
         self.confirm_command = confirm_command
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
-        self.max_edit_attempts = (
-            max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
+        self.max_edit_failures = (
+            max_edit_failures if max_edit_failures is not None else settings.agent_max_edit_failures
         )
         self._custom_system_prompt = system_prompt
         self.system_prompt = (
@@ -348,14 +348,14 @@ class Agent:
         self.messages.append({"role": "user", "content": question})
         turn_start = len(self.messages) - 1
 
-        edit_count = 0
         edits_this_turn = 0
+        edit_failures = 0
         edit_claim_nudged = False
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
 
-            if self.max_steps >= 8 and step == self.max_steps // 2 and edit_count == 0:
+            if self.max_steps >= 8 and step == self.max_steps // 2 and edits_this_turn == 0:
                 self.messages.append(
                     {
                         "role": "user",
@@ -461,39 +461,41 @@ class Agent:
             )
 
             for tc in tool_calls:
-                if tc.name == "apply_patch":
-                    edit_count += 1
-                    if edit_count > self.max_edit_attempts:
-                        error_msg = (
-                            f"Error: max_edit_attempts ({self.max_edit_attempts}) "
-                            f"reached for this turn. Stop editing and report the "
-                            f"completed and remaining changes accurately; do not "
-                            f"claim the task is complete."
-                        )
-                        self.trace.log_tool(
-                            step=step,
-                            tool=tc.name,
-                            arguments={"raw": tc.arguments_json},
-                            result=error_msg,
-                            latency_ms=0.0,
-                            error=error_msg,
-                        )
-                        self.messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": error_msg,
-                            }
-                        )
-                        continue
+                if tc.name in _WRITE_TOOLS and edit_failures >= self.max_edit_failures:
+                    error_msg = (
+                        f"Error: max_edit_failures ({self.max_edit_failures}) reached "
+                        f"for this turn after {edit_failures} consecutive failed edits. "
+                        f"Stop editing and report the completed and remaining changes "
+                        f"accurately; do not claim the task is complete."
+                    )
+                    self.trace.log_tool(
+                        step=step,
+                        tool=tc.name,
+                        arguments={"raw": tc.arguments_json},
+                        result=error_msg,
+                        latency_ms=0.0,
+                        error=error_msg,
+                    )
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": error_msg,
+                        }
+                    )
+                    continue
 
                 result = self._execute_and_append(tc, step)
-                if (
-                    tc.name in _EDIT_TOOLS
-                    and result is not None
-                    and not result.startswith("Error")
-                ):
+                succeeded = result is not None and not result.startswith(
+                    ("Error", "Tool execution failed", "Failed")
+                )
+                if tc.name in _EDIT_TOOLS and succeeded:
                     edits_this_turn += 1
+                if tc.name in _WRITE_TOOLS:
+                    if succeeded:
+                        edit_failures = 0
+                    else:
+                        edit_failures += 1
 
         return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
 
