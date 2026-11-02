@@ -643,3 +643,20 @@ CLI 参数测试。
 `permission allowed/open`）；`confirm` 在非交互输入下拒绝并返回
 “no interactive user is available”（trace 记 `permission denied/confirm`）。
 
+---
+
+## 最终回答为空时的恢复（未发布）
+
+2026-11-02 的既有项目多回合试跑（2048 增加撤销功能）里，V4 Flash
+（`openai/deepseek-reasoner`）在第 10 步 —— 工具已收起、只要求给最终答案的
+那一步 —— 返回了 content 为空的响应。Agent 直接把 `(empty response)` 当作
+答案交给用户，会话归档里也存了一条空结论；同一次修复回合则正常给出了“哪些
+完成、哪些没完成”的汇报。
+
+- 无工具调用且 content 为空白时，追加一次总结请求（本轮不再提供工具），
+  拿到内容即作为最终答案；trace 写入 `guard` 事件说明原因。
+- 恢复调用仍为空时保留 `(empty response)` 并结束，不做第二次重试，避免推理
+  模型反复空转。
+- 防回归：`tests/test_agent.py` 覆盖“恢复成功”和“恢复仍为空只调用一次”。
+
+
