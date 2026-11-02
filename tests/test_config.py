@@ -135,7 +135,7 @@ def test_env_api_key_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_defaults_agent_fields() -> None:
     """agent section 的字段齐全且为 int。"""
     agent = DEFAULTS["agent"]
-    assert agent["max_steps"] == 10
+    assert agent["max_steps"] == 15
     assert agent["max_edit_failures"] == 3
     assert isinstance(agent["max_steps"], int)
 
@@ -314,7 +314,7 @@ def test_load_defaults_only(tmp_path: Path) -> None:
     # 必须是拷贝，不是引用
     assert cfg is not DEFAULTS
     cfg["agent"]["max_steps"] = 999
-    assert DEFAULTS["agent"]["max_steps"] == 10
+    assert DEFAULTS["agent"]["max_steps"] == 15
 
 
 def test_repo_config_overrides_defaults(tmp_path: Path) -> None:
@@ -489,7 +489,7 @@ def test_unknown_type_mismatch_silently_ignored(tmp_path: Path) -> None:
     cfg = load_config(tmp_path)
 
     # 默认为完整表结构
-    assert cfg["agent"]["max_steps"] == 10
+    assert cfg["agent"]["max_steps"] == 15
 
 
 def test_settings_reads_repo_config(tmp_path: Path) -> None:

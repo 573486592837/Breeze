@@ -245,7 +245,7 @@ def test_set_rejects_invalid_values() -> None:
     assert "需要整数" in controller.handle("/set max_steps abc", None)
     assert "1 到 50" in controller.handle("/set max_steps 0", None)
     assert "0 到 2" in controller.handle("/set temperature 3", None)
-    assert controller.max_steps == 10
+    assert controller.max_steps == 15
 
 
 # ─── /plan ───

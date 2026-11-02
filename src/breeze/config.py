@@ -61,7 +61,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "temperature": 0.0,
     },
     "agent": {
-        "max_steps": 10,
+        "max_steps": 15,
         "max_edit_failures": 3,
     },
     "shell": {
