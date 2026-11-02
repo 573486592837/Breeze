@@ -10,6 +10,8 @@ import contextlib
 import re
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 from breeze.capabilities import is_git_repo, is_python_project
 from breeze.config import settings
@@ -457,6 +459,25 @@ def delete_path(path: str, recursive: bool = False) -> str:
     return f"Deleted {rel}"
 
 
+def _test_python(root: Path) -> str:
+    """选择运行 pytest 的解释器：优先仓库内虚拟环境，否则当前解释器。"""
+    candidates = (
+        root / ".venv" / "Scripts" / "python.exe",
+        root / "venv" / "Scripts" / "python.exe",
+        root / ".venv" / "bin" / "python",
+        root / "venv" / "bin" / "python",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
+def _pytest_missing(output: str) -> bool:
+    """判断输出是否是 pytest 模块缺失。"""
+    return "No module named pytest" in output or "No module named 'pytest'" in output
+
+
 @register(
     name="run_tests",
     description=(
@@ -488,12 +509,11 @@ def run_tests(pattern: str | None = None) -> str:
     """
     root = settings.repo_root.resolve()
 
-    tokens = ["pytest", "-q"]
-
+    pattern_args: list[str] = []
     if pattern:
         if not _PATTERN_RE.match(pattern):
             return f"Error: invalid pattern characters: {pattern}"
-        tokens.append(pattern)
+        pattern_args.append(pattern)
 
     if not is_python_project(root):
         return (
@@ -503,7 +523,20 @@ def run_tests(pattern: str | None = None) -> str:
             "for example 'npm test' or 'cargo test'."
         )
 
+    python = _test_python(root)
+    tokens = [python, "-m", "pytest", "-q", *pattern_args]
     returncode, stdout, stderr = run_command(tokens, root, timeout=TESTS_TIMEOUT_SECONDS)
+
+    if _pytest_missing(stdout + stderr):
+        # 当前解释器没装 pytest 时，退回 PATH 上的 pytest（常见于已激活的项目环境）。
+        tokens = ["pytest", "-q", *pattern_args]
+        returncode, stdout, stderr = run_command(tokens, root, timeout=TESTS_TIMEOUT_SECONDS)
+        if _pytest_missing(stdout + stderr) or (returncode == -1 and "Command not found" in stderr):
+            return (
+                "Error: pytest is not available. Install pytest in the Python "
+                f"environment used by run_tests ({python}), or use run_shell with "
+                "your project's test command."
+            )
 
     if returncode == -1:
         return f"Error: {stderr.strip()}"

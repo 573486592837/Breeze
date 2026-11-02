@@ -645,10 +645,11 @@ CLI 参数测试。
 
 ---
 
-## 空答案恢复与编辑失败上限 (v1.5.1)
+## 空答案、编辑上限与 run_tests (v1.5.1)
 
-v1.5.0 发布后的两处修正，不引入新能力：一处是推理模型在最后一步给出空回答，
-另一处是编辑上限的口径从“调用次数”改为“连续失败次数”。
+v1.5.0 发布后的三处修正，不引入新能力：推理模型在最后一步给出空回答、
+编辑上限的口径从“调用次数”改为“连续失败次数”，以及 `run_tests` 不再依赖
+PATH 上的 `pytest`。
 
 ### 最终回答为空时的恢复
 
@@ -682,9 +683,24 @@ v1.5.0 发布后的两处修正，不引入新能力：一处是推理模型在�
 - 防回归：`tests/test_agent.py` 覆盖并行成功编辑不触发上限、连续失败拦截、
   成功清零、跨 run 独立，以及读工具不占配额。
 
+### run_tests 使用当前解释器
+
+Python 试跑（`trials/task-cli-python`）里，模型调用 `run_tests` 得到
+`Error: Command not found: pytest`：工具硬编码执行 `pytest`，依赖 PATH 上
+恰好有该命令。Breeze 以完整路径启动、或项目环境未激活时，工具虽然可用却
+必然失败，模型只能改用 `run_shell` 兜底。
+
+- 优先使用仓库内 `.venv` / `venv` 的解释器（Windows `Scripts/python.exe`，
+  其他平台 `bin/python`），否则使用运行 Breeze 的 `sys.executable`，统一以
+  `python -m pytest -q` 执行。
+- 当前解释器缺少 pytest 时，退回 PATH 上的 `pytest` 一次；仍不可用则返回
+  明确错误，提示安装 pytest 或改用 `run_shell`。
+- 防回归：`tests/test_edit.py` 覆盖解释器选择、PATH 回退与缺失提示；在试跑
+  仓库实测 `run_tests` 返回 `exit_code=0 / 22 passed`。
+
 ### 验证
 
-全量 564 passed / 2 skipped，ruff check 全绿；`breeze.__version__` 与
+全量 567 passed / 2 skipped，ruff check 全绿；`breeze.__version__` 与
 packaging 测试同步到 1.5.1。
 
 - 空答案恢复：单测覆盖“恢复成功”和“恢复仍为空只调用一次”，恢复调用不携带工具。
