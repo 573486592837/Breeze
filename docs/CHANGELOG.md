@@ -684,9 +684,35 @@ user 1.5%；再加工具 schema/格式开销 38,019 Token，固定开销约占�
 （system + 工具 schema）与调用次数。结构上 state 块几乎每次调用都变化且位于 body
 之前，是前缀复用的主要破坏点；若改用支持缓存的 provider，应优先把它移到末尾。
 
+### SiliconFlow 对照（2026-11-02，`openai/deepseek-ai/DeepSeek-V4-Flash`）
+
+| 指标 | 交大 deepseek-reasoner | SiliconFlow V4 Flash |
+|---|---|---|
+| 调用 / 工具 | 22 / 24 | 22 / 22 |
+| prompt / completion | 149,690 / 6,816 | 122,982 / 3,613 |
+| LLM 延迟 | 208.6s | 54.5s |
+| provider 缓存 | 3/22 次，0 命中 | 22/22 次，62.7% |
+| 本地前缀复用 | 46.3% | 62.8% |
+| 任务结果 | 28 passed | 17 passed |
+| errors | 0 | 1（`ls` 被 strict 拦截） |
+| 费用 | $0.156506 | LiteLLM 无该模型费用映射 |
+
+- 本地前缀复用与 provider 命中率几乎重合（62.8% vs 62.7%），说明该指标可以作为
+  缓存收益的先验。
+- provider 命中包含工具 schema，因此单次命中可高于只统计消息的本地前缀；总量仍
+  对齐。
+- state 块变化仍是最明显的断点：turn 1 step 11 的 state 从 211 增至 252 Token，
+  命中从 5,888 掉到 3,584；把 state 移到 body 之后可让前缀继续复用。
+- 最后一步 `tools=[]` 会移除工具 schema，导致该次调用完全 miss（step 14：5,156
+  prompt，hit=0）；保留 schema 并用 `tool_choice=none` 禁止调用，可保住这次缓存。
+- 质量：两次都实现了 `--sort` / `--reverse`；V4 Flash 回合 1 用满 15 步但未补测试，
+  回合 2 补 4 个用例后 17 passed。单样本不足以判断质量差异。
+- SiliconFlow 的 `api_base` 需要模型名带 `openai/` 前缀；`.env` 里直接写
+  `deepseek-ai/DeepSeek-V4-Flash` 会被 LiteLLM 拒绝（Provider NOT provided）。
+
 ### 验证
 
-578 passed / 2 skipped，ruff check 全绿。
+579 passed / 2 skipped，ruff check 全绿。
 
 ## 默认步数预算上调到 15（未发布）
 
