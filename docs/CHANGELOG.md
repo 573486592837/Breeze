@@ -645,6 +645,49 @@ CLI 参数测试。
 
 ---
 
+## 成本与缓存可观测性（未发布）
+
+此前只优化 prompt tokens，没有记录 provider 的缓存命中与单次调用费用；而 prompt
+变小不一定等于成本下降，缓存命中与固定开销同样决定账单。本阶段先补测量，不改
+上下文策略。
+
+- `LLMResponse` 提取 `cache_hit_tokens` / `cache_miss_tokens` / `cost_usd`，兼容
+  DeepSeek 的 `prompt_cache_hit_tokens`、OpenAI 的
+  `prompt_tokens_details.cached_tokens` 与 Anthropic 的 `cache_read_input_tokens`；
+  字段缺失时保持 `None`，不当成 0 命中。
+- `ContextManager.build_with_stats()` 输出每次提示词按
+  system / plan / archive / user / state / body 的组成，以及与上一次调用完全相同的
+  消息前缀 Token（缓存可复用的上界）。
+- trace 的每次 `llm_call` 记录组成、缓存与费用；summary 汇总命中率、前缀复用率与
+  费用。CLI 摘要只在 provider 真正报告缓存时显示命中率，并标注
+  `cache_reported x/y calls`。
+- 新增 `scripts/cache_report.py`，从 trace JSONL 聚合每次运行与总体的调用、组成、
+  前缀复用、缓存与费用。
+
+### 基线（2026-11-02，task-cli 两回合 `--sort` / `--reverse`）
+
+| 指标 | 值 |
+|---|---|
+| 调用 / 工具调用 | 22 / 24 |
+| prompt / completion | 149,690 / 6,816 |
+| 费用（LiteLLM 报告） | $0.156506 |
+| 本地前缀复用 | 46.3%（51,668 / 111,671 消息 Token） |
+| provider 缓存报告 | 3/22 次，命中均为 0 |
+| 任务结果 | 28 passed，0 errors |
+
+消息组成：system 38.0%、body 48.9%、state 6.4%、archive 3.8%、plan 1.4%、
+user 1.5%；再加工具 schema/格式开销 38,019 Token，固定开销约占实际 prompt 的
+53.8%。
+
+结论：当前交大 endpoint 不返回稳定的缓存字段，且 `response_cost` 与 total_tokens
+严格线性（约 $1/M），本次无法证明缓存能降本。最大可优化项是每次调用的固定开销
+（system + 工具 schema）与调用次数。结构上 state 块几乎每次调用都变化且位于 body
+之前，是前缀复用的主要破坏点；若改用支持缓存的 provider，应优先把它移到末尾。
+
+### 验证
+
+578 passed / 2 skipped，ruff check 全绿。
+
 ## 默认步数预算上调到 15（未发布）
 
 Python 试跑里，任务在 10 步预算下于收尾阶段耗尽步数，只能跨回合续跑。用同一

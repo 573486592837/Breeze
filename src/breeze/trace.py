@@ -39,6 +39,13 @@ class _Counters:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    estimated_prompt_tokens: int = 0
+    cacheable_prefix_tokens: int = 0
+    cache_reported_calls: int = 0
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cost_reported_calls: int = 0
+    cost_usd: float = 0.0
     llm_latency_ms: float = 0.0
     tool_latency_ms: float = 0.0
     errors: int = 0
@@ -126,6 +133,11 @@ class RunTrace:
         latency_ms: float,
         content: str | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        cache_hit_tokens: int | None = None,
+        cache_miss_tokens: int | None = None,
+        cost_usd: float | None = None,
+        prompt_breakdown: dict[str, int] | None = None,
+        cacheable_prefix_tokens: int | None = None,
     ) -> None:
         """记录一次 LLM 调用。
 
@@ -138,6 +150,12 @@ class RunTrace:
             latency_ms: 调用耗时（毫秒）。
             content: 助手文本内容，可为 None。
             tool_calls: 工具调用列表，可为 None。
+            cache_hit_tokens: provider 报告的缓存命中输入 Token；
+                provider 不支持时为 None。
+            cache_miss_tokens: provider 报告的缓存未命中输入 Token。
+            cost_usd: LiteLLM 估算的本次调用费用（美元）。
+            prompt_breakdown: 按注入位置统计的消息 Token 组成。
+            cacheable_prefix_tokens: 与上一次调用相同的消息前缀 Token。
         """
         c = self._counters
         c.llm_calls += 1
@@ -145,6 +163,18 @@ class RunTrace:
         c.completion_tokens += completion_tokens
         c.total_tokens += total_tokens
         c.llm_latency_ms += latency_ms
+
+        if prompt_breakdown is not None:
+            c.estimated_prompt_tokens += sum(prompt_breakdown.values())
+        if cacheable_prefix_tokens is not None:
+            c.cacheable_prefix_tokens += cacheable_prefix_tokens
+        if cache_hit_tokens is not None or cache_miss_tokens is not None:
+            c.cache_reported_calls += 1
+            c.cache_hit_tokens += cache_hit_tokens or 0
+            c.cache_miss_tokens += cache_miss_tokens or 0
+        if cost_usd is not None:
+            c.cost_reported_calls += 1
+            c.cost_usd += cost_usd
 
         self._write(
             {
@@ -157,6 +187,11 @@ class RunTrace:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
+                "cache_hit_tokens": cache_hit_tokens,
+                "cache_miss_tokens": cache_miss_tokens,
+                "cost_usd": cost_usd,
+                "prompt_breakdown": prompt_breakdown,
+                "cacheable_prefix_tokens": cacheable_prefix_tokens,
                 "content_preview": _preview(content, CONTENT_PREVIEW_LIMIT),
                 "tool_calls": tool_calls or [],
             }
@@ -266,6 +301,17 @@ class RunTrace:
             包含 run_id、路径、调用次数、Token 与延迟的字典。
         """
         c = self._counters
+        cache_total = c.cache_hit_tokens + c.cache_miss_tokens
+        cache_hit_rate = (
+            round(c.cache_hit_tokens / cache_total, 4)
+            if c.cache_reported_calls and cache_total
+            else None
+        )
+        prefix_ratio = (
+            round(c.cacheable_prefix_tokens / c.estimated_prompt_tokens, 4)
+            if c.estimated_prompt_tokens
+            else None
+        )
         return {
             "run_id": self.run_id,
             "trace_path": str(self.path),
@@ -274,6 +320,14 @@ class RunTrace:
             "prompt_tokens": c.prompt_tokens,
             "completion_tokens": c.completion_tokens,
             "total_tokens": c.total_tokens,
+            "estimated_prompt_tokens": c.estimated_prompt_tokens,
+            "cache_reported_calls": c.cache_reported_calls,
+            "cache_hit_tokens": c.cache_hit_tokens,
+            "cache_miss_tokens": c.cache_miss_tokens,
+            "cache_hit_rate": cache_hit_rate,
+            "cacheable_prefix_tokens": c.cacheable_prefix_tokens,
+            "cacheable_prefix_ratio": prefix_ratio,
+            "cost_usd": round(c.cost_usd, 6) if c.cost_reported_calls else None,
             "llm_latency_ms": round(c.llm_latency_ms, 2),
             "tool_latency_ms": round(c.tool_latency_ms, 2),
             "errors": c.errors,

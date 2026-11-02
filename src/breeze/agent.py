@@ -386,7 +386,7 @@ class Agent:
 
             tools = registry.schemas(self.tool_names) if remaining > 1 else []
             view = [self.messages[0], *self.messages[turn_start:]]
-            llm_messages = self.context.build(
+            llm_messages, prompt_stats = self.context.build_with_stats(
                 view,
                 state=self.state,
                 archive=self.ledger.render(),
@@ -413,6 +413,11 @@ class Agent:
                 latency_ms=latency_ms,
                 content=resp.content,
                 tool_calls=[{"name": tc.name, "arguments": tc.arguments_json} for tc in tool_calls],
+                cache_hit_tokens=resp.cache_hit_tokens,
+                cache_miss_tokens=resp.cache_miss_tokens,
+                cost_usd=resp.cost_usd,
+                prompt_breakdown=prompt_stats.breakdown(),
+                cacheable_prefix_tokens=prompt_stats.cacheable_prefix_tokens,
             )
             self._emit(
                 AgentEvent(
@@ -507,6 +512,7 @@ class Agent:
         self.messages = []
         self.ledger = TurnLedger()
         self.state = SessionState()
+        self.context.reset()
         if self._custom_system_prompt is None:
             self.system_prompt = default_system_prompt(self.capabilities, self.permission_mode)
 
@@ -528,7 +534,7 @@ class Agent:
         self.trace.log_guard(step, "empty final answer; asking for a summary once")
 
         view = [self.messages[0], *self.messages[turn_start:]]
-        llm_messages = self.context.build(
+        llm_messages, prompt_stats = self.context.build_with_stats(
             view,
             state=self.state,
             archive=self.ledger.render(),
@@ -552,6 +558,11 @@ class Agent:
             latency_ms=latency_ms,
             content=resp.content,
             tool_calls=[],
+            cache_hit_tokens=resp.cache_hit_tokens,
+            cache_miss_tokens=resp.cache_miss_tokens,
+            cost_usd=resp.cost_usd,
+            prompt_breakdown=prompt_stats.breakdown(),
+            cacheable_prefix_tokens=prompt_stats.cacheable_prefix_tokens,
         )
         self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
         return (resp.content or "").strip() or "(empty response)"

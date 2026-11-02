@@ -127,3 +127,84 @@ def test_explicit_api_key_bypasses_missing_config(monkeypatch: pytest.MonkeyPatc
     client = LLMClient(model="test/model", api_key="explicit-key")
 
     assert client.api_key == "explicit-key"
+
+
+def _usage_response(usage: types.SimpleNamespace, hidden: dict | None = None) -> types.SimpleNamespace:
+    msg = types.SimpleNamespace(content="ok", tool_calls=[])
+    resp = types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)], usage=usage)
+    if hidden is not None:
+        resp._hidden_params = hidden
+    return resp
+
+
+def test_extracts_deepseek_cache_tokens(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DeepSeek 原生字段直接映射到 cache_hit/miss。"""
+    usage = types.SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=5,
+        total_tokens=105,
+        prompt_cache_hit_tokens=80,
+        prompt_cache_miss_tokens=20,
+    )
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: _usage_response(usage))
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.cache_hit_tokens == 80
+    assert resp.cache_miss_tokens == 20
+
+
+def test_extracts_openai_cached_tokens(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenAI 兼容接口的 cached_tokens 视为命中，未命中由总量推导。"""
+    usage = types.SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=5,
+        total_tokens=105,
+        prompt_tokens_details=types.SimpleNamespace(cached_tokens=60),
+    )
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: _usage_response(usage))
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.cache_hit_tokens == 60
+    assert resp.cache_miss_tokens == 40
+
+
+def test_extracts_anthropic_cache_read_tokens(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anthropic 的 cache_read_input_tokens 也视为命中。"""
+    usage = types.SimpleNamespace(
+        prompt_tokens=100,
+        completion_tokens=5,
+        total_tokens=105,
+        cache_read_input_tokens=30,
+    )
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: _usage_response(usage))
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.cache_hit_tokens == 30
+    assert resp.cache_miss_tokens == 70
+
+
+def test_cache_fields_none_when_provider_omits_them(
+    client: LLMClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """provider 不返回缓存字段时保持 None，不能当成 0 命中。"""
+    usage = types.SimpleNamespace(prompt_tokens=100, completion_tokens=5, total_tokens=105)
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: _usage_response(usage))
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.cache_hit_tokens is None
+    assert resp.cache_miss_tokens is None
+
+
+def test_extracts_response_cost(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """LiteLLM 的 response_cost 写入 cost_usd。"""
+    usage = types.SimpleNamespace(prompt_tokens=100, completion_tokens=5, total_tokens=105)
+    resp_obj = _usage_response(usage, hidden={"response_cost": 0.00123})
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: resp_obj)
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.cost_usd == pytest.approx(0.00123)

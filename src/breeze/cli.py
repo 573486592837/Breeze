@@ -460,6 +460,31 @@ def _answer_panel(answer: str) -> Panel:
     return Panel(Markdown(answer), title="Answer", border_style="green")
 
 
+def _add_cost_cache_rows(
+    table: Table,
+    *,
+    llm_calls: int,
+    cost_usd: float | None,
+    cache_reported_calls: int,
+    cache_hit_tokens: int,
+    cache_miss_tokens: int,
+    cacheable_prefix_tokens: int,
+    estimated_prompt_tokens: int,
+) -> None:
+    """向摘要表追加成本与缓存指标；缺失的指标不显示。"""
+    if cost_usd is not None:
+        table.add_row("cost_usd", f"${cost_usd:.6f}")
+    if cache_reported_calls:
+        table.add_row("cache_reported", f"{cache_reported_calls}/{llm_calls} calls")
+        table.add_row("cache_hit_tokens", str(cache_hit_tokens))
+        total = cache_hit_tokens + cache_miss_tokens
+        if total:
+            table.add_row("cache_hit_rate", f"{cache_hit_tokens / total:.1%}")
+    if estimated_prompt_tokens:
+        ratio = cacheable_prefix_tokens / estimated_prompt_tokens
+        table.add_row("cacheable_prefix", f"{ratio:.1%} ({cacheable_prefix_tokens} tok)")
+
+
 def _print_summary(summary: dict, title: str = "Trace Summary") -> None:
     """打印 trace 摘要。"""
     table = Table(title=title, show_header=False, border_style="cyan")
@@ -473,6 +498,16 @@ def _print_summary(summary: dict, title: str = "Trace Summary") -> None:
     table.add_row("prompt_tokens", str(summary["prompt_tokens"]))
     table.add_row("completion_tokens", str(summary["completion_tokens"]))
     table.add_row("total_tokens", str(summary["total_tokens"]))
+    _add_cost_cache_rows(
+        table,
+        llm_calls=summary["llm_calls"],
+        cost_usd=summary.get("cost_usd"),
+        cache_reported_calls=summary.get("cache_reported_calls", 0),
+        cache_hit_tokens=summary.get("cache_hit_tokens", 0),
+        cache_miss_tokens=summary.get("cache_miss_tokens", 0),
+        cacheable_prefix_tokens=summary.get("cacheable_prefix_tokens", 0),
+        estimated_prompt_tokens=summary.get("estimated_prompt_tokens", 0),
+    )
     table.add_row("llm_latency_ms", f"{summary['llm_latency_ms']:.1f}")
     table.add_row("tool_latency_ms", f"{summary['tool_latency_ms']:.1f}")
     table.add_row("errors", str(summary["errors"]))
@@ -489,9 +524,20 @@ def _print_chat_summary(summaries: list[dict]) -> None:
 
     table.add_row("turns", str(len(summaries)))
     for key in ("llm_calls", "tool_calls", "prompt_tokens", "completion_tokens", "total_tokens", "errors"):
-        table.add_row(key, str(sum(int(s.get(key, 0)) for s in summaries)))
+        table.add_row(key, str(sum(int(s.get(key, 0) or 0) for s in summaries)))
+    costs = [s.get("cost_usd") for s in summaries if s.get("cost_usd") is not None]
+    _add_cost_cache_rows(
+        table,
+        llm_calls=sum(int(s.get("llm_calls", 0) or 0) for s in summaries),
+        cost_usd=sum(costs) if costs else None,
+        cache_reported_calls=sum(int(s.get("cache_reported_calls", 0) or 0) for s in summaries),
+        cache_hit_tokens=sum(int(s.get("cache_hit_tokens", 0) or 0) for s in summaries),
+        cache_miss_tokens=sum(int(s.get("cache_miss_tokens", 0) or 0) for s in summaries),
+        cacheable_prefix_tokens=sum(int(s.get("cacheable_prefix_tokens", 0) or 0) for s in summaries),
+        estimated_prompt_tokens=sum(int(s.get("estimated_prompt_tokens", 0) or 0) for s in summaries),
+    )
     for key in ("llm_latency_ms", "tool_latency_ms"):
-        table.add_row(key, f"{sum(float(s.get(key, 0.0)) for s in summaries):.1f}")
+        table.add_row(key, f"{sum(float(s.get(key, 0.0) or 0.0) for s in summaries):.1f}")
 
     console.print()
     console.print(table)

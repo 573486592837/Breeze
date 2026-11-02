@@ -60,6 +60,56 @@ def test_trace_log_llm(trace_dir: Path) -> None:
     assert e["tool_calls"][0]["name"] == "list_files"
 
 
+def test_trace_logs_cache_cost_and_prompt_breakdown(trace_dir: Path) -> None:
+    """缓存、成本与 prompt 组成应写入事件并计入 summary。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run-cache") as trace:
+        trace.log_llm(
+            step=0,
+            model="openai/deepseek-reasoner",
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            latency_ms=10.0,
+            cache_hit_tokens=60,
+            cache_miss_tokens=40,
+            cost_usd=0.0012,
+            prompt_breakdown={"system": 50, "plan": 0, "archive": 0, "user": 10, "state": 0, "body": 40},
+            cacheable_prefix_tokens=80,
+        )
+        summary = trace.summary()
+
+    event = [e for e in _read_events(trace.path) if e["event"] == "llm_call"][0]
+    assert event["cache_hit_tokens"] == 60
+    assert event["cache_miss_tokens"] == 40
+    assert event["cost_usd"] == pytest.approx(0.0012)
+    assert event["cacheable_prefix_tokens"] == 80
+    assert event["prompt_breakdown"]["system"] == 50
+
+    assert summary["cache_reported_calls"] == 1
+    assert summary["cache_hit_rate"] == 0.6
+    assert summary["estimated_prompt_tokens"] == 100
+    assert summary["cacheable_prefix_ratio"] == 0.8
+    assert summary["cost_usd"] == pytest.approx(0.0012)
+
+
+def test_trace_summary_cache_unknown_stays_none(trace_dir: Path) -> None:
+    """provider 不报告缓存时，命中率与成本为 None 而不是 0。"""
+    with RunTrace(trace_dir=trace_dir, run_id="run-nocache") as trace:
+        trace.log_llm(
+            step=0,
+            model="openai/deepseek-reasoner",
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            latency_ms=10.0,
+        )
+        summary = trace.summary()
+
+    assert summary["cache_reported_calls"] == 0
+    assert summary["cache_hit_rate"] is None
+    assert summary["cost_usd"] is None
+
+
 def test_trace_log_tool(trace_dir: Path) -> None:
     """log_tool 应写入完整字段。"""
     with RunTrace(trace_dir=trace_dir, run_id="run2") as trace:
