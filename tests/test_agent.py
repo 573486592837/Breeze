@@ -411,6 +411,51 @@ def test_default_system_prompt_marks_run_tests_unavailable() -> None:
     assert "run_tests 不可用" in prompt
 
 
+def test_default_system_prompt_reflects_confirm_mode() -> None:
+    """confirm 模式提示模型可以请求用户确认非白名单命令。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), permission_mode="confirm")
+
+    assert "先询问用户是否执行" in prompt
+    assert "可执行文件仅限" not in prompt
+
+
+def test_default_system_prompt_reflects_open_mode() -> None:
+    """open 模式提示模型可以执行任意命令。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), permission_mode="open")
+
+    assert "open 模式" in prompt
+    assert "可执行任意命令" in prompt
+
+
+def test_default_system_prompt_strict_keeps_whitelist() -> None:
+    """strict 模式保留原白名单表述。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), permission_mode="strict")
+
+    assert "可执行文件仅限" in prompt
+
+
+def test_agent_prompt_follows_permission_mode(trace: RunTrace) -> None:
+    """Agent 构造的系统提示应包含当前权限模式。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        capabilities=_caps(),
+        permission_mode="open",
+    )
+
+    agent.run("hi")
+
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "open 模式" in system
+
+
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:
     """每次调用都应传递工具 schema。"""
     llm = FakeLLMClient([_text("ok")])

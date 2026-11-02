@@ -105,6 +105,26 @@ def _adapt_git_rules(prompt: str, capabilities: Capabilities) -> str:
     )
 
 
+_SHELL_RULE_STRICT = "13. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。"
+_SHELL_RULE_CONFIRM = (
+    "13. run_shell 默认只允许 git / node / python / python3 / rg / where；"
+    "其他命令会先询问用户是否执行，用户拒绝后不要反复尝试。"
+)
+_SHELL_RULE_OPEN = (
+    "13. run_shell 当前为 open 模式，可执行任意命令；命令仍以 shell=False "
+    "直接执行，一次只跑一条命令。"
+)
+
+
+def _adapt_shell_rule(prompt: str, permission_mode: str) -> str:
+    """按权限模式改写 run_shell 规则，避免 open/confirm 下模型自我封锁。"""
+    if permission_mode == "confirm":
+        return prompt.replace(_SHELL_RULE_STRICT, _SHELL_RULE_CONFIRM)
+    if permission_mode == "open":
+        return prompt.replace(_SHELL_RULE_STRICT, _SHELL_RULE_OPEN)
+    return prompt
+
+
 def _enabled_tool_names(capabilities: Capabilities) -> frozenset[str]:
     """按环境能力裁剪工具集。"""
     names = set(registry.TOOLS)
@@ -125,14 +145,20 @@ def _shell_limits(arguments: dict[str, Any]) -> dict[str, Any]:
     return limits
 
 
-def default_system_prompt(capabilities: Capabilities | None = None) -> str:
+def default_system_prompt(
+    capabilities: Capabilities | None = None,
+    permission_mode: str | None = None,
+) -> str:
     """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
 
     Args:
         capabilities: 环境能力；None 时探测 settings.repo_root。
+        permission_mode: run_shell 权限模式；None 时使用配置值。
     """
     caps = capabilities if capabilities is not None else detect(settings.repo_root)
-    parts = [_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), _environment_note(caps)]
+    mode = (permission_mode or settings.shell_permission).lower()
+    prompt = _adapt_shell_rule(_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), mode)
+    parts = [prompt, _environment_note(caps)]
     instructions, _ = load_project_instructions()
     if instructions:
         parts.append(render_project_instructions(instructions))
@@ -290,7 +316,9 @@ class Agent:
         )
         self._custom_system_prompt = system_prompt
         self.system_prompt = (
-            system_prompt if system_prompt is not None else default_system_prompt(self.capabilities)
+            system_prompt
+            if system_prompt is not None
+            else default_system_prompt(self.capabilities, self.permission_mode)
         )
         self.context = context or ContextManager()
         self.state = SessionState()
@@ -471,7 +499,7 @@ class Agent:
         self.ledger = TurnLedger()
         self.state = SessionState()
         if self._custom_system_prompt is None:
-            self.system_prompt = default_system_prompt(self.capabilities)
+            self.system_prompt = default_system_prompt(self.capabilities, self.permission_mode)
 
     def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
         """把本回合的问答结论与触碰文件归档，返回答案。

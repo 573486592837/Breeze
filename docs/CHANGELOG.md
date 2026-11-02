@@ -578,3 +578,13 @@ trace 的 `permission` 事件（不计入 errors）。
 
 防回归：shell 预检/开放执行、agent 三种模式、trace 事件、chat 命令、配置与
 CLI 参数测试。
+
+## 权限模式提示词同步（未发布）
+
+权限模式加入后，系统提示仍写死“可执行文件仅限白名单”，模型在 confirm/open
+下不会主动尝试非白名单命令，模式实际用不起来。
+
+- 提示词规则 13 按模式改写：strict 保留白名单；confirm 说明会先询问用户；
+  open 说明可执行任意命令（仍为 shell=False、一次只跑一条）。
+- Agent 构造与 `/new` 重载提示时传入当前 permission_mode。
+- 防回归：三种模式的默认提示与 Agent 系统提示测试。
