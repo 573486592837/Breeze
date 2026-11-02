@@ -9,8 +9,8 @@ from __future__ import annotations
 import contextlib
 import re
 import subprocess
-from pathlib import Path
 
+from breeze.capabilities import is_git_repo, is_python_project
 from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
@@ -48,31 +48,6 @@ def _is_protected(rel_path: str) -> bool:
     return any(normalized.startswith(p) for p in PROTECTED_PREFIXES)
 
 
-def _is_git_repo(root: Path) -> bool:
-    """检查 root 是否在 git 工作区内。
-
-    Args:
-        root: 要检查的目录。
-
-    Returns:
-        若是 git 仓库则返回 True。
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-            shell=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
-
-
 @register(
     name="git_diff",
     description=(
@@ -101,7 +76,7 @@ def git_diff(path: str | None = None) -> str:
     """
     root = settings.repo_root.resolve()
 
-    if not _is_git_repo(root):
+    if not is_git_repo(root):
         return "Error: not a git repository"
 
     tokens = ["git", "diff", "--no-color", "--no-ext-diff", "--"]
@@ -163,7 +138,7 @@ def git_resotre(path: str) -> str:
     """
     root = settings.repo_root.resolve()
 
-    if not _is_git_repo(root):
+    if not is_git_repo(root):
         return "Error: not a git repository"
 
     try:
@@ -397,30 +372,6 @@ def create_file(path: str, content: str) -> str:
     return f"Created {rel} ({len(content.encode('utf-8'))} bytes)"
 
 
-def _is_python_project(root: Path) -> bool:
-    """检测项目是否是 Python 项目。
-
-    Args:
-        root: 仓库根目录。
-
-    Returns:
-        若存在 pyproject.toml、setup.py、pytest.ini、tox.ini 或
-        任一 tests/*.py 文件则返回 True。
-    """
-    markers = [
-        "pyproject.toml",
-        "setup.py",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-    ]
-    for name in markers:
-        if (root / name).is_file():
-            return True
-    tests_dir = root / "tests"
-    return tests_dir.is_dir() and any(tests_dir.glob("*.py"))
-
-
 @register(
     name="run_tests",
     description=(
@@ -459,7 +410,7 @@ def run_tests(pattern: str | None = None) -> str:
             return f"Error: invalid pattern characters: {pattern}"
         tokens.append(pattern)
 
-    if not _is_python_project(root):
+    if not is_python_project(root):
         return (
             "Error: no Python project detected in this repository. "
             "run_tests only supports Python projects with pytest. "

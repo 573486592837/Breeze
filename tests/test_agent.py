@@ -310,7 +310,7 @@ def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pyte
     from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
 
     monkeypatch.setattr(
-        "breeze.agent.shutil.which",
+        "breeze.capabilities.shutil.which",
         lambda name: None if name in {"rg", "node"} else f"/fake/{name}",
     )
 
@@ -324,7 +324,7 @@ def test_default_system_prompt_without_missing_commands(monkeypatch: pytest.Monk
     """外部命令全部可用时不应出现缺失提示。"""
     from breeze.agent import default_system_prompt
 
-    monkeypatch.setattr("breeze.agent.shutil.which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr("breeze.capabilities.shutil.which", lambda name: f"/fake/{name}")
 
     prompt = default_system_prompt()
     assert "外部命令可用：git、rg、node。" in prompt
@@ -340,6 +340,75 @@ def test_agent_default_system_prompt_reaches_llm(trace: RunTrace, fake_tool: Non
     system = llm.calls[0]["messages"][0]
     assert system["role"] == "system"
     assert "运行环境：" in system["content"]
+
+
+def _caps(**overrides: bool) -> Any:
+    from breeze.capabilities import Capabilities
+
+    values: dict[str, bool] = {
+        "git": True,
+        "git_repo": True,
+        "node": True,
+        "rg": True,
+        "python_project": True,
+    }
+    values.update(overrides)
+    return Capabilities(**values)
+
+
+def _tool_names(llm: FakeLLMClient) -> set[str]:
+    tools = llm.calls[0]["tools"] or []
+    return {tool["function"]["name"] for tool in tools}
+
+
+def test_agent_hides_git_tools_outside_git_repo(trace: RunTrace) -> None:
+    """非 git 工作区不下发 git_diff / git_restore。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps(git_repo=False))
+    agent.run("hi")
+
+    names = _tool_names(llm)
+    assert "git_diff" not in names
+    assert "git_restore" not in names
+    assert "apply_patch" in names
+
+
+def test_agent_hides_run_tests_without_python_project(trace: RunTrace) -> None:
+    """非 Python 项目不下发 run_tests。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps(python_project=False))
+    agent.run("hi")
+
+    assert "run_tests" not in _tool_names(llm)
+
+
+def test_agent_keeps_capability_tools_when_available(trace: RunTrace) -> None:
+    """环境齐全时下发 git 与测试工具。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps())
+    agent.run("hi")
+
+    assert {"git_diff", "git_restore", "run_tests"} <= _tool_names(llm)
+
+
+def test_default_system_prompt_adapts_git_rules() -> None:
+    """非 git 工作区的提示词不再建议 git 工具，并说明替代方案。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(git_repo=False))
+
+    assert "git_restore 不可用" in prompt
+    assert "用 git_restore 回滚" not in prompt
+    assert "当前目录不是 git 工作区" in prompt
+
+
+def test_default_system_prompt_marks_run_tests_unavailable() -> None:
+    """非 Python 项目在环境说明里指出 run_tests 不可用。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(python_project=False))
+
+    assert "run_tests 不可用" in prompt
 
 
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:

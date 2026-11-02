@@ -60,6 +60,20 @@ def test_execute_passes_kwargs() -> None:
     assert registry.execute("_test_add", {"a": 3, "b": 5}) == "8"
 
 
+def test_schemas_filters_by_names() -> None:
+    """schemas 只返回指定工具，用于按环境裁剪工具集。"""
+    for name in ("_test_one", "_test_two"):
+        registry.register(
+            name=name,
+            description=name,
+            parameters={"type": "object", "properties": {}},
+        )(lambda: "")
+
+    names = [schema["function"]["name"] for schema in registry.schemas({"_test_one"})]
+
+    assert names == ["_test_one"]
+
+
 def test_duplicate_registration_raises() -> None:
     """同名工具重复注册应抛 ValueError。"""
 

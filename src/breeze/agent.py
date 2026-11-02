@@ -6,12 +6,12 @@ ReAct 风格的代码仓库 Agent，使用 LLM 的 function calling 能力多步
 import contextlib
 import json
 import re
-import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from breeze.capabilities import Capabilities, detect
 from breeze.config import settings
 from breeze.context import ContextManager
 from breeze.instructions import load_project_instructions, render_project_instructions
@@ -24,8 +24,6 @@ from breeze.trace import RunTrace
 # Kept for backward compatibility with code that imports this constant.
 DEFAULT_MAX_STEPS = 10
 DEFAULT_MAX_EDIT_ATTEMPTS = 5
-
-_EXTERNAL_TOOLS = ("git", "rg", "node")
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "git_restore"})
 
@@ -58,17 +56,21 @@ def _claims_completed_edit(text: str) -> bool:
     return bool(_EDIT_CLAIM_RE.search(text))
 
 
-def _environment_note() -> str:
-    """生成运行环境说明：仓库根与外部命令可用性。
+def _environment_note(capabilities: Capabilities) -> str:
+    """生成运行环境说明：仓库根、外部命令与项目类型。
 
     模型常在缺少外部命令时反复试错（例如机器没装 ripgrep 却用 run_shell 调
     rg，再改用被白名单拒绝的 find）。提前告诉它哪些命令可用，可以省掉这些步数。
 
+    Args:
+        capabilities: 启动时探测到的环境能力。
+
     Returns:
         多行说明文本，且不含可变的时间戳等内容。
     """
-    available = [name for name in _EXTERNAL_TOOLS if shutil.which(name)]
-    missing = [name for name in _EXTERNAL_TOOLS if name not in available]
+    command_fields = (("git", capabilities.git), ("rg", capabilities.rg), ("node", capabilities.node))
+    available = [name for name, ok in command_fields if ok]
+    missing = [name for name, ok in command_fields if not ok]
     lines = [f"仓库根目录：{settings.repo_root}"]
     if missing:
         lines.append(
@@ -78,12 +80,49 @@ def _environment_note() -> str:
         )
     else:
         lines.append(f"外部命令可用：{'、'.join(available)}。")
+    if not capabilities.git_tools:
+        lines.append("当前目录不是 git 工作区：git_diff / git_restore 不可用，不要尝试调用。")
+    if not capabilities.python_project:
+        lines.append("未检测到 Python 项目：run_tests 不可用；测试请用 run_shell（如 node --test）。")
     return "运行环境：\n" + "\n".join(f"- {line}" for line in lines)
 
 
-def default_system_prompt() -> str:
-    """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。"""
-    parts = [DEFAULT_SYSTEM_PROMPT, _environment_note()]
+_GIT_DIFF_RULE = "3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。"
+_GIT_DIFF_FALLBACK = "3. 需要确认整体改动时重新读取相关文件；当前目录不是 git 工作区，git_diff 不可用。"
+_GIT_RESTORE_RULE = "5. 如果修改有误，用 git_restore 回滚单个文件后重试。"
+_GIT_RESTORE_FALLBACK = (
+    "5. 如果修改有误，重新读取文件后用 apply_patch 修正；当前目录不是 git 工作区，"
+    "git_restore 不可用。"
+)
+
+
+def _adapt_git_rules(prompt: str, capabilities: Capabilities) -> str:
+    """非 git 工作区时，把提示词里的 git 工具规则替换为替代方案。"""
+    if capabilities.git_tools:
+        return prompt
+    return prompt.replace(_GIT_DIFF_RULE, _GIT_DIFF_FALLBACK).replace(
+        _GIT_RESTORE_RULE, _GIT_RESTORE_FALLBACK
+    )
+
+
+def _enabled_tool_names(capabilities: Capabilities) -> frozenset[str]:
+    """按环境能力裁剪工具集。"""
+    names = set(registry.TOOLS)
+    if not capabilities.git_tools:
+        names -= {"git_diff", "git_restore"}
+    if not capabilities.python_project:
+        names.discard("run_tests")
+    return frozenset(names)
+
+
+def default_system_prompt(capabilities: Capabilities | None = None) -> str:
+    """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
+
+    Args:
+        capabilities: 环境能力；None 时探测 settings.repo_root。
+    """
+    caps = capabilities if capabilities is not None else detect(settings.repo_root)
+    parts = [_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), _environment_note(caps)]
     instructions, _ = load_project_instructions()
     if instructions:
         parts.append(render_project_instructions(instructions))
@@ -202,6 +241,7 @@ class Agent:
         system_prompt: str | None = None,
         context: ContextManager | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
+        capabilities: Capabilities | None = None,
     ) -> None:
         """初始化 Agent。
 
@@ -213,16 +253,23 @@ class Agent:
             system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
             context: 上下文管理器。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
+            capabilities: 环境能力；None 时探测 settings.repo_root。
         """
         self.llm = llm
         self.trace = trace
         self.on_event = on_event
+        self.capabilities = (
+            capabilities if capabilities is not None else detect(settings.repo_root)
+        )
+        self.tool_names = _enabled_tool_names(self.capabilities)
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
         self.max_edit_attempts = (
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
         )
         self._custom_system_prompt = system_prompt
-        self.system_prompt = system_prompt if system_prompt is not None else default_system_prompt()
+        self.system_prompt = (
+            system_prompt if system_prompt is not None else default_system_prompt(self.capabilities)
+        )
         self.context = context or ContextManager()
         self.state = SessionState()
         self.ledger = TurnLedger()
@@ -282,7 +329,7 @@ class Agent:
                     }
                 )
 
-            tools = registry.schemas() if remaining > 1 else []
+            tools = registry.schemas(self.tool_names) if remaining > 1 else []
             view = [self.messages[0], *self.messages[turn_start:]]
             llm_messages = self.context.build(
                 view,
@@ -402,7 +449,7 @@ class Agent:
         self.ledger = TurnLedger()
         self.state = SessionState()
         if self._custom_system_prompt is None:
-            self.system_prompt = default_system_prompt()
+            self.system_prompt = default_system_prompt(self.capabilities)
 
     def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
         """把本回合的问答结论与触碰文件归档，返回答案。

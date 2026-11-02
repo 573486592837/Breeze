@@ -531,3 +531,18 @@ Agent 主循环在“无工具调用的最终回答”处新增自检：若回�
   `.env` 无需立即修改；显式配置 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
   时只读指定变量，不回退。
 - 同步更新 `.env.example`、`breeze.toml.example`、README 与 CONTRIBUTING。
+
+## 按环境裁剪工具集（未发布）
+
+Agent 启动时探测一次环境（git 可执行且是否在工作区、node、rg、是否 Python
+项目），只把当前可用的工具下发给模型，避免对注定失败的工具反复尝试：
+
+- 非 git 工作区隐藏 `git_diff` / `git_restore`；系统提示同步把“用 git_restore
+  回滚”替换为“重新读取后用 apply_patch 修正”。
+- 未检测到 Python 项目时隐藏 `run_tests`，环境说明提示改用 `run_shell`
+  （如 `node --test`）。
+- 环境说明继续列出缺失的外部命令与替代工具。
+
+新增 `capabilities` 模块与 `registry.schemas(only=...)`；git 工作区与 Python
+项目检测从 `edit.py` 收敛到该模块，避免两套判断。防回归：`tests/test_capabilities.py`、
+`tests/test_registry.py` 的过滤测试，以及 agent 测试中的工具集/提示词断言。

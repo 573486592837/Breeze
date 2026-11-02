@@ -4,7 +4,7 @@
 并通过 schemas 导出为 OpenAI 兼容的 JSON Schema 列表。
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Any
 
 TOOLS: dict[str, dict[str, Any]] = {}
@@ -66,7 +66,16 @@ def execute(name: str, arguments: dict[str, Any]) -> str:
     return TOOLS[name]["fn"](**arguments)
 
 
-def schemas() -> list[dict[str, Any]]:
-    """返回所有已注册工具的 OpenAI 兼容 schema 列表。"""
+def schemas(only: Collection[str] | None = None) -> list[dict[str, Any]]:
+    """返回已注册工具的 OpenAI 兼容 schema 列表。
 
-    return [entry["schema"] for entry in TOOLS.values()]
+    Args:
+        only: 只返回这些工具；None 表示全部。用于按环境裁剪工具集。
+
+    Returns:
+        schema 列表，顺序与注册顺序一致。
+    """
+    if only is None:
+        return [entry["schema"] for entry in TOOLS.values()]
+    wanted = set(only)
+    return [entry["schema"] for name, entry in TOOLS.items() if name in wanted]
