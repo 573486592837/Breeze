@@ -559,3 +559,22 @@ Agent 启动时探测一次环境（git 可执行且是否在工作区、node、
 - `delete_path` 计入编辑工具集合，参与“声称已改但未编辑”的完成声明自检。
 - 提示词补充“删除用 delete_path，不要用 run_shell 的 rm / del”。
 - `create_file` 原本就会创建父目录，因此不新增独立建目录工具。
+
+## 命令权限模式（未发布）
+
+`run_shell` 对非白名单命令原本只有“直接拒绝”一种处理，模型只能反复换写法。
+新增三档权限：
+
+- `strict`（默认）：保持原白名单与选项限制。
+- `confirm`：命令未通过校验时逐条询问用户；`ask`、eval、管道输入等非交互
+  场景没有确认回调，按拒绝处理。
+- `open`：跳过可执行文件白名单直接执行，供信任场景使用；仍拒绝命令串联、
+  管道与重定向，并保留 cwd 边界、超时与输出上限。
+
+配置入口：`[shell] permission`、`BREEZE_PERMISSION`、`--permission` 与 chat
+内 `/set permission`；`/config` 显示当前模式。`shell` 新增无副作用的
+`check_command` 与 `run_unlisted`，Agent 按模式选择执行路径；每次判定写入
+trace 的 `permission` 事件（不计入 errors）。
+
+防回归：shell 预检/开放执行、agent 三种模式、trace 事件、chat 命令、配置与
+CLI 参数测试。

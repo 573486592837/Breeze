@@ -19,7 +19,7 @@ from breeze import __version__
 from breeze.agent import Agent, AgentEvent
 from breeze.chat import run_chat
 from breeze.chat_commands import ChatController
-from breeze.config import settings
+from breeze.config import PERMISSION_MODES, settings
 from breeze.llm import LLMClient
 from breeze.session import SessionStore
 from breeze.trace import RunTrace
@@ -49,6 +49,17 @@ def _version_callback(value: bool) -> None:
     if value:
         console.print(f"breeze {__version__}")
         raise typer.Exit()
+
+
+def _validate_permission(value: str | None) -> str | None:
+    """校验 --permission 取值并统一小写。"""
+    if value is None:
+        return None
+    mode = value.lower()
+    if mode not in PERMISSION_MODES:
+        error_console.print("[red]--permission 只能是 strict、confirm 或 open[/red]")
+        raise typer.Exit(code=1)
+    return mode
 
 
 @app.callback()
@@ -90,6 +101,11 @@ def ask(
         min=1,
         max=50,
     ),
+    permission: str = typer.Option(
+        None,
+        "--permission",
+        help="command permission: strict | confirm | open (default: from config)",
+    ),
     trace_dir: Path = typer.Option(
         Path("traces"),
         "--trace-dir",
@@ -110,6 +126,7 @@ def ask(
     ),
 ) -> None:
     """Ask one question and print the answer (single turn)."""
+    permission = _validate_permission(permission)
     repo_root = (repo or Path.cwd()).resolve()
     if not repo_root.is_dir():
         error_console.print(f"[red]invalid repository directory: {repo_root}[/red]")
@@ -127,7 +144,13 @@ def ask(
 
         with RunTrace(trace_dir=trace_dir, name=trace_name) as trace:
             progress = _TurnProgress(console)
-            agent = Agent(llm=llm, trace=trace, max_steps=max_steps, on_event=progress.on_event)
+            agent = Agent(
+                llm=llm,
+                trace=trace,
+                max_steps=max_steps,
+                on_event=progress.on_event,
+                permission_mode=permission,
+            )
 
             if not quiet:
                 console.print(f"[dim]model: {llm.model}[/dim]")
@@ -183,6 +206,11 @@ def chat(
         min=1,
         max=50,
     ),
+    permission: str = typer.Option(
+        None,
+        "--permission",
+        help="command permission: strict | confirm | open (default: from config)",
+    ),
     trace_dir: Path = typer.Option(
         Path("traces"),
         "--trace-dir",
@@ -219,6 +247,7 @@ def chat(
     ),
 ) -> None:
     """Start an interactive multi-turn session; /help lists in-session commands."""
+    permission = _validate_permission(permission)
     if list_sessions:
         _print_sessions(session_dir, search)
         return
@@ -262,6 +291,7 @@ def chat(
             repo_root=str(repo_root),
             max_steps=max_steps if max_steps is not None else saved.get("max_steps"),
             max_edit_attempts=saved.get("max_edit_attempts"),
+            permission=permission or saved.get("permission"),
             temperature=saved.get("temperature"),
             profile=saved.get("profile"),
             trace_prefix=trace_name or saved.get("trace_prefix") or session.session_id,
@@ -273,6 +303,7 @@ def chat(
 
         console.print(
             f"[dim]model: {controller.llm.model} | repo: {repo_root} | "
+            f"permission: {controller.permission} | "
             f"session: {session.session_id} | /help 查看命令[/dim]"
         )
         if resume:
@@ -295,6 +326,18 @@ def chat(
             )
 
         progress = _TurnProgress(console)
+
+        def _confirm_command(command: str) -> bool:
+            console.print("未列入白名单的命令：", style="yellow")
+            console.print(f"  {command}", markup=False)
+            try:
+                answer = input("允许执行？[y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return False
+            return answer in {"y", "yes"}
+
+        confirm_command = _confirm_command if sys.stdin.isatty() else None
+
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(
                 llm=controller.llm,
@@ -303,6 +346,8 @@ def chat(
                 max_edit_attempts=controller.max_edit_attempts,
                 context=controller.build_context(),
                 on_event=progress.on_event,
+                permission_mode=controller.permission,
+                confirm_command=confirm_command,
             ),
             trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=controller.trace_prefix),
             input_fn=input,

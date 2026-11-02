@@ -37,8 +37,16 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_defaults_has_expected_sections() -> None:
-    """DEFAULTS 应包含六个 section。"""
-    assert set(DEFAULTS.keys()) == {"llm", "agent", "context", "trace", "sessions", "chat"}
+    """DEFAULTS 应包含七个 section。"""
+    assert set(DEFAULTS.keys()) == {
+        "llm",
+        "agent",
+        "shell",
+        "context",
+        "trace",
+        "sessions",
+        "chat",
+    }
 
 
 def test_defaults_llm_fields() -> None:
@@ -130,6 +138,31 @@ def test_defaults_agent_fields() -> None:
     assert agent["max_steps"] == 10
     assert agent["max_edit_attempts"] == 5
     assert isinstance(agent["max_steps"], int)
+
+
+def test_default_permission_is_strict() -> None:
+    """默认权限模式为 strict。"""
+    assert DEFAULTS["shell"]["permission"] == "strict"
+
+
+def test_permission_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_PERMISSION 覆盖权限模式。"""
+    monkeypatch.setenv("BREEZE_PERMISSION", "open")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.shell_permission == "open"
+
+
+def test_permission_invalid_raises(tmp_path: Path) -> None:
+    """非法权限模式在加载配置时立即报错。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[shell]\npermission = "yolo"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid shell permission mode"):
+        Settings(repo_root=tmp_path)
 
 
 def test_defaults_context_fields() -> None:

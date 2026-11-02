@@ -275,6 +275,7 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 - `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
 - `[agent]`：max_steps、max_edit_attempts
+- `[shell]`：permission（strict / confirm / open，默认 strict）
 - `[context]`：enable、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
   state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
@@ -318,6 +319,20 @@ API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 Agent 启动时会探测环境，只向模型下发当前可用的工具：非 git 工作区不会出现
 `git_diff` / `git_restore`，未检测到 Python 项目时不会出现 `run_tests`。
 系统提示会同步给出替代做法，减少注定失败的工具调用。
+
+### 命令权限模式
+
+`run_shell` 遇到非白名单命令时，按 `[shell] permission`（或 `--permission`、
+`BREEZE_PERMISSION`、chat 内 `/set permission`）处理：
+
+| 模式 | 行为 |
+|---|---|
+| `strict`（默认） | 直接拒绝 |
+| `confirm` | 在交互式 chat 中逐条询问；`ask`、eval、管道输入等非交互场景按拒绝处理 |
+| `open` | 跳过白名单直接执行（高风险，确认你信任当前任务） |
+
+三种模式都拒绝命令串联/管道/重定向，并保留 cwd 边界、超时与输出上限。
+每次权限判定会写入 trace 的 `permission` 事件，便于事后审计。
 
 ---
 

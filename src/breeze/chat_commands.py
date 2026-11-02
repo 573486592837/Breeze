@@ -10,12 +10,18 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from breeze.config import CONTEXT_PROFILES, CUSTOM_PROFILE, context_profile_values, settings
+from breeze.config import (
+    CONTEXT_PROFILES,
+    CUSTOM_PROFILE,
+    PERMISSION_MODES,
+    context_profile_values,
+    settings,
+)
 from breeze.context import ContextConfig, ContextManager
 from breeze.trace import normalize_trace_name
 
 _ALLOWED_PROFILES = ", ".join([*CONTEXT_PROFILES, CUSTOM_PROFILE])
-_SET_KEYS = ("max_steps", "max_edit_attempts", "temperature")
+_SET_KEYS = ("max_steps", "max_edit_attempts", "temperature", "permission")
 _SET_USAGE = f"用法：/set <{'|'.join(_SET_KEYS)}> <值>"
 
 
@@ -59,6 +65,7 @@ class ChatController:
         answer_preview: int | None = None,
         max_records: int | None = None,
         max_chars: int | None = None,
+        permission: str | None = None,
     ) -> None:
         """初始化控制器。
 
@@ -76,6 +83,7 @@ class ChatController:
             answer_preview: 归档答案字符上限，None 时按档位或配置取默认。
             max_records: 归档回合数上限，None 时按档位或配置取默认。
             max_chars: 归档字符上限，None 时按档位或配置取默认。
+            permission: run_shell 权限模式，None 时使用配置值。
         """
         self.llm = llm
         self.llm_factory = llm_factory
@@ -86,6 +94,9 @@ class ChatController:
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
         )
         self.temperature = temperature if temperature is not None else settings.llm_temperature
+        self.permission = (permission or settings.shell_permission).lower()
+        if self.permission not in PERMISSION_MODES:
+            self.permission = settings.shell_permission
         self.profile = (profile or settings.context_profile).lower()
 
         preset = context_profile_values(self.profile) if profile and self.profile != CUSTOM_PROFILE else None
@@ -138,6 +149,7 @@ class ChatController:
         agent.llm = self.llm
         agent.max_steps = self.max_steps
         agent.max_edit_attempts = self.max_edit_attempts
+        agent.permission_mode = self.permission
         agent.context = self.build_context()
         agent.ledger.answer_preview = self.answer_preview
         agent.ledger.max_records = self.max_records
@@ -209,6 +221,16 @@ class ChatController:
         if key not in _SET_KEYS:
             return f"未知参数：{key}；可选 {', '.join(_SET_KEYS)}"
 
+        if key == "permission":
+            value = raw.lower()
+            if value not in PERMISSION_MODES:
+                return f"permission 可选：{', '.join(PERMISSION_MODES)}"
+            self.permission = value
+            if agent is not None:
+                agent.permission_mode = value
+            self._record(permission=value)
+            return f"permission 已设为：{value}"
+
         if key == "temperature":
             try:
                 value = float(raw)
@@ -264,6 +286,7 @@ class ChatController:
                 f"  trace 前缀: {self.trace_prefix}",
                 f"  max_steps: {self.max_steps}",
                 f"  max_edit_attempts: {self.max_edit_attempts}",
+                f"  permission: {self.permission}",
                 f"  temperature: {self.temperature:g}",
                 f"  profile: {self.profile} (intra_turn_budget={self.intra_turn_budget})",
             ]

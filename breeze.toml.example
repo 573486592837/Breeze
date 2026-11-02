@@ -26,6 +26,13 @@ max_steps = 10
 # Maximum apply_patch calls per run before further edits are rejected.
 max_edit_attempts = 5
 
+[shell]
+# Permission for run_shell when a command is not in the whitelist:
+#   strict  - reject (default)
+#   confirm - ask the user; only interactive chat can approve
+#   open    - execute without the whitelist (high risk)
+permission = "strict"
+
 [context]
 # Set to false to disable context management entirely.
 enable = true

@@ -238,6 +238,27 @@ class RunTrace:
             }
         )
 
+    def log_permission(self, step: int, command: str, decision: str, mode: str) -> None:
+        """记录一次命令权限判定。
+
+        Args:
+            step: Agent 循环步数。
+            command: 被检查的命令。
+            decision: ``allowed`` 或 ``denied``。
+            mode: 当前权限模式（confirm / open）。
+        """
+        self._write(
+            {
+                "event": "permission",
+                "run_id": self.run_id,
+                "step": step,
+                "ts": _now_iso(),
+                "command": command,
+                "decision": decision,
+                "mode": mode,
+            }
+        )
+
     def summary(self) -> dict[str, Any]:
         """返回当前累计统计。
 

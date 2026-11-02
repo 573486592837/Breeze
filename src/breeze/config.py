@@ -51,6 +51,7 @@ if _dotenv_path is not None:
 
 DEFAULT_API_KEY_ENV = "BREEZE_API_KEY"
 LEGACY_API_KEY_ENV = "SILICONFLOW_API_KEY"
+PERMISSION_MODES = ("strict", "confirm", "open")
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
@@ -62,6 +63,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "agent": {
         "max_steps": 10,
         "max_edit_attempts": 5,
+    },
+    "shell": {
+        "permission": "strict",
     },
     "context": {
         "enable": True,
@@ -92,6 +96,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_TEMPERATURE": ("llm", "temperature"),
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
     "BREEZE_MAX_EDIT_ATTEMPTS": ("agent", "max_edit_attempts"),
+    "BREEZE_PERMISSION": ("shell", "permission"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
     "BREEZE_CONTEXT_PROFILE": ("context", "profile"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
@@ -308,6 +313,14 @@ class Settings:
 
         self.agent_max_steps: int = int(cfg["agent"]["max_steps"])
         self.agent_max_edit_attempts: int = int(cfg["agent"]["max_edit_attempts"])
+
+        permission = str(cfg["shell"]["permission"]).lower()
+        if permission not in PERMISSION_MODES:
+            raise ValueError(
+                f"Invalid shell permission mode: {permission}. "
+                f"Choose from {', '.join(PERMISSION_MODES)}."
+            )
+        self.shell_permission: str = permission
 
         self.context_enable: bool = bool(cfg["context"]["enable"])
         self.context_profile: str = str(cfg["context"]["profile"])

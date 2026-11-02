@@ -18,7 +18,7 @@ HELP_TEXT = (
     "  /model [name]       查看或切换模型\n"
     "  /trace [prefix]     查看或设置 trace 文件名前缀\n"
     "  /profile [name]     查看或切换压缩档位（short / medium / long / custom）\n"
-    "  /set <key> <value>  调整 max_steps / max_edit_attempts / temperature\n"
+    "  /set <key> <value>  调整 max_steps / max_edit_attempts / temperature / permission\n"
     "  /config             查看当前运行配置\n"
     "  /plan               查看 Agent 维护的当前计划\n"
     "  /new                重置对话（运行时配置保留）\n"

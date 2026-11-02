@@ -12,12 +12,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from breeze.capabilities import Capabilities, detect
-from breeze.config import settings
+from breeze.config import PERMISSION_MODES, settings
 from breeze.context import ContextManager
 from breeze.instructions import load_project_instructions, render_project_instructions
 from breeze.llm import LLMClient, LLMResponse
 from breeze.state import SessionState, TurnLedger
-from breeze.tools import registry
+from breeze.tools import registry, shell
 from breeze.trace import RunTrace
 
 # Deprecated: use settings.agent_max_steps instead.
@@ -113,6 +113,16 @@ def _enabled_tool_names(capabilities: Capabilities) -> frozenset[str]:
     if not capabilities.python_project:
         names.discard("run_tests")
     return frozenset(names)
+
+
+def _shell_limits(arguments: dict[str, Any]) -> dict[str, Any]:
+    """提取 run_shell 的可选执行限制，避免把 None 传给执行函数。"""
+    limits: dict[str, Any] = {}
+    for key in ("timeout", "max_bytes"):
+        value = arguments.get(key)
+        if value is not None:
+            limits[key] = value
+    return limits
 
 
 def default_system_prompt(capabilities: Capabilities | None = None) -> str:
@@ -243,6 +253,8 @@ class Agent:
         context: ContextManager | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
         capabilities: Capabilities | None = None,
+        permission_mode: str | None = None,
+        confirm_command: Callable[[str], bool] | None = None,
     ) -> None:
         """初始化 Agent。
 
@@ -255,6 +267,8 @@ class Agent:
             context: 上下文管理器。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
             capabilities: 环境能力；None 时探测 settings.repo_root。
+            permission_mode: run_shell 权限模式（strict / confirm / open）。
+            confirm_command: confirm 模式下询问用户是否允许命令的回调。
         """
         self.llm = llm
         self.trace = trace
@@ -263,6 +277,13 @@ class Agent:
             capabilities if capabilities is not None else detect(settings.repo_root)
         )
         self.tool_names = _enabled_tool_names(self.capabilities)
+        mode = (permission_mode or settings.shell_permission).lower()
+        if mode not in PERMISSION_MODES:
+            raise ValueError(
+                f"Invalid permission mode: {mode}. Choose from {', '.join(PERMISSION_MODES)}."
+            )
+        self.permission_mode = mode
+        self.confirm_command = confirm_command
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
         self.max_edit_attempts = (
             max_edit_attempts if max_edit_attempts is not None else settings.agent_max_edit_attempts
@@ -556,7 +577,10 @@ class Agent:
 
         start = time.perf_counter()
         try:
-            result = registry.execute(tc.name, arguments)
+            if tc.name == "run_shell":
+                result = self._execute_shell(arguments, step)
+            else:
+                result = registry.execute(tc.name, arguments)
             error = None
         except Exception as exc:
             result = f"Tool execution failed: {exc}"
@@ -586,6 +610,49 @@ class Agent:
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         return None if error is not None else result
+
+    def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
+        """按权限模式执行 run_shell。
+
+        strict 保持原白名单校验；confirm 在命令不合规时询问用户；
+        open 跳过白名单直接执行。三种模式都保留 cwd 边界、超时与输出上限。
+        """
+        if self.permission_mode == "strict":
+            return registry.execute("run_shell", arguments)
+
+        command = arguments.get("command")
+        if not isinstance(command, str):
+            return registry.execute("run_shell", arguments)
+
+        cwd = arguments.get("cwd")
+        cwd_value = cwd if isinstance(cwd, str) else "."
+        limits = _shell_limits(arguments)
+
+        try:
+            shell.check_command(command, cwd_value)
+            return registry.execute("run_shell", arguments)
+        except ValueError as exc:
+            if self.permission_mode == "open":
+                self.trace.log_permission(step, command, "allowed", "open")
+                return shell.run_unlisted(command, cwd_value, **limits)
+
+            if self.confirm_command is None:
+                self.trace.log_permission(step, command, "denied", "confirm")
+                raise ValueError(
+                    "Command requires confirmation, but no interactive user is "
+                    f"available: {exc}"
+                ) from exc
+
+            try:
+                approved = bool(self.confirm_command(command))
+            except (EOFError, KeyboardInterrupt):
+                approved = False
+            self.trace.log_permission(
+                step, command, "allowed" if approved else "denied", "confirm"
+            )
+            if not approved:
+                raise ValueError(f"Command denied by user: {command}") from exc
+            return shell.run_unlisted(command, cwd_value, **limits)
 
 
 def _convert_tool_calls(tool_calls: list[Any]) -> list[_ToolCall]:
