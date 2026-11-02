@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -704,7 +705,7 @@ def test_run_tests_pattern_passed(python_repo: Path, fake_pytest: dict[str, Any]
 
     registry.execute("run_tests", {"pattern": "tests/test_fs.py"})
 
-    assert fake_pytest["tokens"] == ["pytest", "-q", "tests/test_fs.py"]
+    assert fake_pytest["tokens"] == [sys.executable, "-m", "pytest", "-q", "tests/test_fs.py"]
 
 
 def test_run_tests_node_id_pattern(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
@@ -727,8 +728,69 @@ def test_run_tests_empty_pattern_runs_all(python_repo: Path, fake_pytest: dict[s
 
     assert "exit_code=0" in out
     assert "148 passed" in out
-    # tokens 只含 pytest 和 -q，没有空字符串
-    assert fake_pytest["tokens"] == ["pytest", "-q"]
+    # tokens 只含解释器、-m pytest 和 -q，没有空字符串
+    assert fake_pytest["tokens"] == [sys.executable, "-m", "pytest", "-q"]
+
+
+def test_run_tests_prefers_repo_venv(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
+    """仓库内存在虚拟环境时优先使用它，避免依赖 PATH。"""
+    scripts = python_repo / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    scripts.mkdir(parents=True)
+    python = scripts / ("python.exe" if os.name == "nt" else "python")
+    python.write_text("", encoding="utf-8")
+    fake_pytest["stdout"] = "1 passed in 0.1s\n"
+
+    registry.execute("run_tests", {})
+
+    assert fake_pytest["tokens"][:3] == [str(python), "-m", "pytest"]
+
+
+def test_run_tests_falls_back_to_path_pytest(
+    python_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """当前解释器缺少 pytest 时，退回 PATH 上的 pytest。"""
+    calls: list[list[str]] = []
+    results = iter(
+        [
+            (1, "", "No module named pytest"),
+            (0, "3 passed in 0.2s\n", ""),
+        ]
+    )
+
+    def _fake(tokens: list[str], _cwd: Path, timeout: int = 10) -> tuple[int, str, str]:
+        calls.append(tokens)
+        return next(results)
+
+    monkeypatch.setattr("breeze.tools.edit.run_command", _fake)
+
+    out = registry.execute("run_tests", {})
+
+    assert "exit_code=0" in out
+    assert calls[0][:3] == [sys.executable, "-m", "pytest"]
+    assert calls[1] == ["pytest", "-q"]
+
+
+def test_run_tests_missing_pytest_reports_error(
+    python_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """解释器与 PATH 都没有 pytest 时给出明确指引。"""
+    results = iter(
+        [
+            (1, "", "No module named pytest"),
+            (-1, "", "Command not found: pytest"),
+        ]
+    )
+
+    def _fake(_tokens: list[str], _cwd: Path, timeout: int = 10) -> tuple[int, str, str]:
+        return next(results)
+
+    monkeypatch.setattr("breeze.tools.edit.run_command", _fake)
+
+    out = registry.execute("run_tests", {})
+
+    assert out.startswith("Error:")
+    assert "pytest is not available" in out
+    assert sys.executable in out
 
 
 def test_run_tests_whitespace_pattern_rejected(python_repo: Path, fake_pytest: dict[str, Any]) -> None:
