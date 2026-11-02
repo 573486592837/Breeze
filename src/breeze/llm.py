@@ -16,7 +16,64 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_hit_tokens: int | None = None
+    cache_miss_tokens: int | None = None
+    cost_usd: float | None = None
     raw: Any = None
+
+
+def _usage_field(usage: Any, name: str) -> Any:
+    """读取 usage 字段，兼容对象与 dict。"""
+    if usage is None:
+        return None
+    if isinstance(usage, dict):
+        return usage.get(name)
+    return getattr(usage, name, None)
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_cache_tokens(usage: Any, prompt_tokens: int) -> tuple[int | None, int | None]:
+    """提取缓存命中/未命中的输入 Token。
+
+    DeepSeek 原生接口用 ``prompt_cache_hit_tokens``，OpenAI 兼容接口
+    用 ``prompt_tokens_details.cached_tokens``，Anthropic 用
+    ``cache_read_input_tokens``。多数聚合服务不返回这些字段。
+    """
+    hit = _int_or_none(_usage_field(usage, "prompt_cache_hit_tokens"))
+    miss = _int_or_none(_usage_field(usage, "prompt_cache_miss_tokens"))
+    if hit is None:
+        hit = _int_or_none(_usage_field(usage, "cache_read_input_tokens"))
+
+    details = _usage_field(usage, "prompt_tokens_details")
+    cached = _int_or_none(_usage_field(details, "cached_tokens"))
+    if cached is not None:
+        hit = cached
+
+    if hit is None and miss is not None and prompt_tokens > 0:
+        hit = max(prompt_tokens - miss, 0)
+    if miss is None and hit is not None and prompt_tokens > 0:
+        miss = max(prompt_tokens - hit, 0)
+    return hit, miss
+
+
+def _extract_cost(resp: Any) -> float | None:
+    """读取 LiteLLM 为本次调用估算的费用（美元）。"""
+    hidden = getattr(resp, "_hidden_params", None)
+    value = hidden.get("response_cost") if isinstance(hidden, dict) else None
+    if value is None:
+        value = getattr(resp, "response_cost", None)
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class LLMClient:
@@ -91,12 +148,17 @@ class LLMClient:
 
         choice = resp.choices[0]
         usage = resp.usage
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        cache_hit_tokens, cache_miss_tokens = _extract_cache_tokens(usage, prompt_tokens)
 
         return LLMResponse(
             content=choice.message.content,
             tool_calls=getattr(choice.message, "tool_calls", None) or [],
-            prompt_tokens=usage.prompt_tokens if usage else 0,
+            prompt_tokens=prompt_tokens,
             completion_tokens=usage.completion_tokens if usage else 0,
             total_tokens=usage.total_tokens if usage else 0,
+            cache_hit_tokens=cache_hit_tokens,
+            cache_miss_tokens=cache_miss_tokens,
+            cost_usd=_extract_cost(resp),
             raw=resp,
         )

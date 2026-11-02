@@ -349,3 +349,62 @@ def test_archive_counted_in_budget() -> None:
     result = with_archive.build(messages, archive=archive)
     tool_msg = next(m for m in result if m["role"] == "tool")
     assert tool_msg["content"].startswith("[read_file compressed]")
+
+
+# ─── 组成与前缀复用统计 ───
+
+
+def test_stats_breakdown_covers_each_injection_slot() -> None:
+    """stats 按 system/plan/archive/user/state/body 分类且总和一致。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+    _, stats = cm.build_with_stats(
+        messages,
+        state=_state({"target": "a.py:1"}),
+        archive="Turn 1 A: done",
+        plan="1. edit a.py",
+    )
+
+    assert stats.system_tokens > 0
+    assert stats.plan_tokens > 0
+    assert stats.archive_tokens > 0
+    assert stats.user_tokens > 0
+    assert stats.state_tokens > 0
+    assert stats.body_tokens > 0
+    assert stats.total_tokens == sum(stats.breakdown().values())
+    assert stats.cacheable_prefix_tokens == 0
+
+
+def test_stats_prefix_reuse_for_append_only_turn() -> None:
+    """回合内追加工具结果时，上一次调用的全部消息都可复用。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    base = [_system(), _user("q")]
+    _, first = cm.build_with_stats(base)
+
+    messages = [*base, *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+    _, second = cm.build_with_stats(messages)
+
+    assert second.cacheable_prefix_tokens == first.total_tokens
+    assert second.total_tokens > first.total_tokens
+
+
+def test_stats_prefix_reuse_stops_at_changed_plan() -> None:
+    """计划块变化后，前缀只剩 system，后续注入与消息都不可复用。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    base = [_system(), _user("q")]
+    _, first = cm.build_with_stats(base, plan="1. step A")
+    _, second = cm.build_with_stats(base, plan="1. step B")
+
+    assert second.cacheable_prefix_tokens == first.system_tokens
+
+
+def test_stats_reset_clears_prefix_baseline() -> None:
+    """reset 后不再把上一次会话的消息算作可复用前缀。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    base = [_system(), _user("q")]
+    cm.build_with_stats(base)
+    cm.reset()
+
+    _, stats = cm.build_with_stats(base)
+
+    assert stats.cacheable_prefix_tokens == 0

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -66,6 +67,12 @@ def _count_text_tokens(text: str) -> int:
     if enc is None:
         return len(text) // 4
     return len(enc.encode(text, disallowed_special=()))
+
+
+def _fingerprint(message: dict[str, Any]) -> str:
+    """计算一条消息的稳定指纹，用于判断相邻调用的前缀是否相同。"""
+    payload = json.dumps(message, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=8).hexdigest()
 
 
 def _parse_arguments(raw: str) -> dict[str, Any]:
@@ -159,6 +166,45 @@ class ContextConfig:
             self.tool_result_tail_bytes = settings.context_tool_result_tail_bytes
 
 
+@dataclass(frozen=True)
+class PromptStats:
+    """一次 build 的提示词组成与缓存可复用前缀。
+
+    ``total_tokens`` 只统计消息本身，不含工具 schema；provider 返回的
+    prompt_tokens 通常更大，两者的差额可用于观察 schema/格式开销。
+
+    Attributes:
+        cacheable_prefix_tokens: 与上一次 build 完全相同的消息前缀
+            Token 数。provider 的缓存按前缀命中，因此这是本次调用
+            “理论上最多可命中”的消息 Token 上界。
+    """
+
+    system_tokens: int = 0
+    plan_tokens: int = 0
+    archive_tokens: int = 0
+    user_tokens: int = 0
+    state_tokens: int = 0
+    body_tokens: int = 0
+    total_tokens: int = 0
+    cacheable_prefix_tokens: int = 0
+
+    def breakdown(self) -> dict[str, int]:
+        """返回按注入位置分类的 Token 组成。"""
+        return {
+            "system": self.system_tokens,
+            "plan": self.plan_tokens,
+            "archive": self.archive_tokens,
+            "user": self.user_tokens,
+            "state": self.state_tokens,
+            "body": self.body_tokens,
+        }
+
+    @property
+    def prefix_reuse_ratio(self) -> float:
+        """可复用前缀占消息 Token 的比例。"""
+        return self.cacheable_prefix_tokens / self.total_tokens if self.total_tokens else 0.0
+
+
 class ContextManager:
     """回合内上下文分级管理器。
 
@@ -173,6 +219,11 @@ class ContextManager:
             config: 上下文配置，None 时使用默认值。
         """
         self.config = config or ContextConfig()
+        self._last_prefix: tuple[tuple[str, int], ...] | None = None
+
+    def reset(self) -> None:
+        """清空前缀复用基线（新会话时调用）。"""
+        self._last_prefix = None
 
     def build(
         self,
@@ -192,8 +243,28 @@ class ContextManager:
         Returns:
             分级处理后的消息列表。原始消息不被修改。
         """
+        result, _ = self.build_with_stats(messages, state=state, archive=archive, plan=plan)
+        return result
+
+    def build_with_stats(
+        self,
+        messages: list[dict[str, Any]],
+        state: Any | None = None,
+        archive: str | None = None,
+        plan: str | None = None,
+    ) -> tuple[list[dict[str, Any]], PromptStats]:
+        """构建消息列表，并返回本次提示词的组成与缓存复用量。
+
+        参数与 ``build`` 相同。
+        """
         if not self.config.enable or len(messages) < 2:
-            return list(messages)
+            result = list(messages)
+            segments: dict[str, list[int]] = {
+                "system": [0] if result else [],
+                "user": [1] if len(result) > 1 else [],
+                "body": list(range(2, len(result))),
+            }
+            return result, self._stats(result, segments)
 
         head = list(messages[:2])
         body = messages[2:]
@@ -228,19 +299,27 @@ class ContextManager:
             )
             demoted = demoted or spilled
 
-        result: list[dict[str, Any]] = [head[0]]
+        result: list[dict[str, Any]] = []
+        segments: dict[str, list[int]] = {}
+
+        def add(msg: dict[str, Any], kind: str) -> None:
+            segments.setdefault(kind, []).append(len(result))
+            result.append(msg)
+
+        add(head[0], "system")
         plan_block = _render_plan(plan)
         if plan_block:
-            result.append({"role": "user", "content": plan_block})
+            add({"role": "user", "content": plan_block}, "plan")
         if archive:
-            result.append({"role": "user", "content": archive})
-        result.append(head[1])
+            add({"role": "user", "content": archive}, "archive")
+        add(head[1], "user")
         if state is not None and (demoted or archive):
             block = state.render()
             if block:
-                result.append({"role": "user", "content": block})
-        result.extend(converted)
-        return result
+                add({"role": "user", "content": block}, "state")
+        for msg in converted:
+            add(msg, "body")
+        return result, self._stats(result, segments)
 
     def _spill(
         self,
@@ -328,19 +407,49 @@ class ContextManager:
                 total += _count_text_tokens(block) + 10
         return total
 
+    def _stats(self, messages: list[dict[str, Any]], segments: dict[str, list[int]]) -> PromptStats:
+        """统计本次消息组成，并与上一次 build 比较可复用前缀。"""
+        counts = [self._count_message(msg) for msg in messages]
+
+        def segment_tokens(kind: str) -> int:
+            return sum(counts[i] for i in segments.get(kind, ()))
+
+        signature = tuple((_fingerprint(msg), count) for msg, count in zip(messages, counts, strict=True))
+        reusable = 0
+        if self._last_prefix is not None:
+            for (prev_hash, prev_count), (cur_hash, _) in zip(self._last_prefix, signature, strict=False):
+                if prev_hash != cur_hash:
+                    break
+                reusable += prev_count
+        self._last_prefix = signature
+
+        return PromptStats(
+            system_tokens=segment_tokens("system"),
+            plan_tokens=segment_tokens("plan"),
+            archive_tokens=segment_tokens("archive"),
+            user_tokens=segment_tokens("user"),
+            state_tokens=segment_tokens("state"),
+            body_tokens=segment_tokens("body"),
+            total_tokens=sum(counts),
+            cacheable_prefix_tokens=reusable,
+        )
+
     @staticmethod
-    def _count_messages(messages: list[dict[str, Any]]) -> int:
-        """统计消息列表 Token（内容+工具调用参数+每条结构开销）。"""
-        total = 0
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, str):
-                total += _count_text_tokens(content)
-            for tc in msg.get("tool_calls") or []:
-                func = tc.get("function", {}) if isinstance(tc, dict) else {}
-                total += _count_text_tokens(str(func.get("arguments", ""))) + 10
-            total += 4
+    def _count_message(msg: dict[str, Any]) -> int:
+        """统计单条消息的 Token（内容+工具调用参数+结构开销）。"""
+        total = 4
+        content = msg.get("content")
+        if isinstance(content, str):
+            total += _count_text_tokens(content)
+        for tc in msg.get("tool_calls") or []:
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            total += _count_text_tokens(str(func.get("arguments", ""))) + 10
         return total
+
+    @classmethod
+    def _count_messages(cls, messages: list[dict[str, Any]]) -> int:
+        """统计消息列表 Token（内容+工具调用参数+每条结构开销）。"""
+        return sum(cls._count_message(msg) for msg in messages)
 
     def _compact_tool_result(self, msg: dict[str, Any]) -> dict[str, Any]:
         """兜底：单条 tool 消息超过字节上限时保留头尾。

@@ -498,9 +498,9 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
     calls: list[int] = []
 
     class RecordingContext(ContextManager):
-        def build(self, messages, state=None, archive=None, plan=None):
+        def build_with_stats(self, messages, state=None, archive=None, plan=None):
             seen_state.append(state is not None)
-            return super().build(messages, state=state, archive=archive, plan=plan)
+            return super().build_with_stats(messages, state=state, archive=archive, plan=plan)
 
     class RecordingLLM:
         model = "recorder"
@@ -520,6 +520,20 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
     # 每轮 build 都传入了 SessionState
     assert seen_state == [True] * 4
     assert len(calls) == 4
+
+
+def test_agent_logs_prompt_breakdown_and_prefix_reuse(trace: RunTrace, fake_tool: None) -> None:
+    """每次 LLM 调用应记录组成，第二次调用能复用第一批消息。"""
+    from breeze.agent import Agent
+
+    responses = [_tool_call("fake_echo", {"text": "x"}, call_id="c1"), _text("done")]
+    agent = Agent(llm=FakeLLMClient(responses), trace=trace, max_steps=4)
+    assert agent.run("go") == "done"
+
+    events = [e for e in _events(trace.path) if e["event"] == "llm_call"]
+    assert events[0]["prompt_breakdown"]["system"] > 0
+    assert events[0]["cacheable_prefix_tokens"] == 0
+    assert events[1]["cacheable_prefix_tokens"] > 0
 
 
 # ─── 编辑能力集成 ───
