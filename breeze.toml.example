@@ -33,6 +33,12 @@ max_edit_failures = 3
 #   open    - execute without the whitelist (high risk)
 permission = "strict"
 
+[tools]
+# Read-only reference repositories. Read tools (read_file/list_files/grep)
+# may access these paths; write tools still operate only inside this repo.
+# Relative paths are resolved against the repository root.
+read_roots = []
+
 [context]
 # Set to false to disable context management entirely.
 enable = true

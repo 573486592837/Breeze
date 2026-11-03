@@ -221,7 +221,7 @@ def test_apply_patch_rejects_git_dir(repo: Path) -> None:
 
 
 def test_apply_patch_rejects_traces(repo: Path) -> None:
-    """保护路径 traces/ 应拒绝。"""
+    """默认 trace 目录 traces/ 应拒绝。"""
     _make_file(repo, "traces/log.jsonl", "x = 1\n")
     out = registry.execute(
         "apply_patch",
@@ -231,15 +231,35 @@ def test_apply_patch_rejects_traces(repo: Path) -> None:
     assert "protected" in out
 
 
-def test_apply_patch_rejects_reports(repo: Path) -> None:
-    """保护路径 reports/ 应拒绝。"""
+def test_apply_patch_protects_configured_trace_dir(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """保护的是配置的 trace 目录，而不是固定名称 traces/。"""
+    monkeypatch.setattr(settings, "trace_dir", "runs")
+    _make_file(repo, "runs/log.jsonl", "x = 1\n")
+    _make_file(repo, "traces/log.jsonl", "x = 1\n")
+
+    protected = registry.execute(
+        "apply_patch",
+        {"path": "runs/log.jsonl", "old": "x = 1", "new": "x = 2"},
+    )
+    allowed = registry.execute(
+        "apply_patch",
+        {"path": "traces/log.jsonl", "old": "x = 1", "new": "x = 2"},
+    )
+
+    assert "protected" in protected
+    assert allowed.startswith("Patched")
+
+
+def test_apply_patch_allows_reports(repo: Path) -> None:
+    """reports 不再是全局保护目录。"""
     _make_file(repo, "reports/x.json", "x = 1\n")
     out = registry.execute(
         "apply_patch",
         {"path": "reports/x.json", "old": "x = 1", "new": "x = 2"},
     )
-    assert out.startswith("Error:")
-    assert "protected" in out
+    assert out.startswith("Patched")
 
 
 def test_apply_patch_rejects_env_file(repo: Path) -> None:
@@ -248,6 +268,17 @@ def test_apply_patch_rejects_env_file(repo: Path) -> None:
     out = registry.execute(
         "apply_patch",
         {"path": ".env", "old": "KEY=1", "new": "KEY=2"},
+    )
+    assert out.startswith("Error:")
+    assert "protected" in out
+
+
+def test_apply_patch_rejects_env_variant(repo: Path) -> None:
+    """.env.local 等派生文件也应拒绝。"""
+    _make_file(repo, ".env.local", "KEY=1\n")
+    out = registry.execute(
+        "apply_patch",
+        {"path": ".env.local", "old": "KEY=1", "new": "KEY=2"},
     )
     assert out.startswith("Error:")
     assert "protected" in out
@@ -359,7 +390,7 @@ def test_create_file_rejects_existing(repo: Path) -> None:
 
 def test_create_file_rejects_protected_paths(repo: Path) -> None:
     """保护路径下的文件应被拒。"""
-    for p in ["traces/x.jsonl", "reports/y.json", ".git/config", ".env"]:
+    for p in ["traces/x.jsonl", ".git/config", ".env", ".env.local"]:
         out = registry.execute("create_file", {"path": p, "content": "x"})
         assert out.startswith("Error:"), p
         assert "protected" in out, p
@@ -557,7 +588,7 @@ def test_git_restore_rejects_protected(repo: Path) -> None:
     """保护路径应拒绝。"""
     _init_git_repo(repo)
 
-    for protected in [".git/config", "traces/log.jsonl", "reports/x.json"]:
+    for protected in [".git/config", "traces/log.jsonl", ".env.local"]:
         out = registry.execute("git_restore", {"path": protected})
         assert out.startswith("Error:")
         assert "protected" in out
@@ -914,7 +945,7 @@ def test_delete_path_non_empty_requires_recursive(repo: Path) -> None:
 
 def test_delete_path_protected(repo: Path) -> None:
     """保护路径拒绝删除。"""
-    for rel in (".env", ".git/config", "traces/run.jsonl", "reports/report.md"):
+    for rel in (".env", ".env.local", ".git/config", "traces/run.jsonl"):
         target = _make_file(repo, rel, "secret")
 
         out = registry.execute("delete_path", {"path": rel})

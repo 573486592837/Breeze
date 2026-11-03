@@ -308,7 +308,7 @@ def test_default_system_prompt_includes_agents_md(tmp_path: Path, monkeypatch: p
 
 def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """缺失的外部命令应在默认提示里点名，并给出替代工具。"""
-    from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
+    from breeze.agent import default_system_prompt
 
     monkeypatch.setattr(
         "breeze.capabilities.shutil.which",
@@ -316,7 +316,7 @@ def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pyte
     )
 
     prompt = default_system_prompt()
-    assert prompt.startswith(DEFAULT_SYSTEM_PROMPT)
+    assert prompt.startswith("你是 Breeze")
     assert "缺失：rg、node" in prompt
     assert "grep 工具" in prompt
 
@@ -439,6 +439,46 @@ def test_default_system_prompt_strict_keeps_whitelist() -> None:
     prompt = default_system_prompt(_caps(), permission_mode="strict")
 
     assert "可执行文件仅限" in prompt
+
+
+def test_default_system_prompt_reflects_edit_failure_limit() -> None:
+    """编辑上限应来自 max_edit_failures，而不是过时的硬编码。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), max_edit_failures=7)
+
+    assert "连续写操作失败 7 次" in prompt
+    assert "默认 5 次" not in prompt
+
+
+def test_default_system_prompt_lists_read_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置只读参考目录后，环境说明应告知模型。"""
+    from breeze.agent import default_system_prompt
+    from breeze.config import settings
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    monkeypatch.setattr(settings, "tools_read_roots", (ref.resolve(),))
+
+    prompt = default_system_prompt(_caps())
+
+    assert "只读参考目录" in prompt
+    assert str(ref.resolve()) in prompt
+
+
+def test_agent_refreshes_edit_limit_prompt(trace: RunTrace) -> None:
+    """修改 max_edit_failures 后，下一回合的 system prompt 应同步。"""
+    llm = FakeLLMClient([_text("one"), _text("two")])
+    agent = Agent(llm=llm, trace=trace, max_edit_failures=3)
+
+    agent.run("first")
+    agent.max_edit_failures = 7
+    agent.run("second")
+
+    assert "连续写操作失败 3 次" in llm.calls[0]["messages"][0]["content"]
+    assert "连续写操作失败 7 次" in llm.calls[1]["messages"][0]["content"]
 
 
 def test_agent_prompt_follows_permission_mode(trace: RunTrace) -> None:

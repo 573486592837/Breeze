@@ -280,6 +280,8 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 - `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
 - `[agent]`：max_steps、max_edit_failures（连续编辑失败上限）
 - `[shell]`：permission（strict / confirm / open，默认 strict）
+- `[tools]`：read_roots（只读参考目录；read_file/list_files/grep 可访问，
+  写工具仍限制在仓库内）
 - `[context]`：enable、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
   state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
