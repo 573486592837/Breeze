@@ -353,6 +353,25 @@ def test_chat_runs_turns_until_exit(repo: Path, tmp_path: Path) -> None:
     assert "bye." in result.stdout
 
 
+def test_chat_reads_questions_via_terminal_input(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """chat 的提问来自 make_chat_input，以便终端下启用多行粘贴。"""
+    prompts: list[str] = []
+
+    def fake_input(prompt: str) -> str:
+        prompts.append(prompt)
+        return "/exit"
+
+    monkeypatch.setattr(cli_module, "make_chat_input", lambda: fake_input)
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(tmp_path / "traces")],
+    )
+
+    assert result.exit_code == 0
+    assert prompts == ["You> "]
+    assert "bye." in result.stdout
+
+
 def test_chat_writes_one_trace_per_turn(repo: Path, tmp_path: Path) -> None:
     """每回合生成独立 trace 文件。"""
     trace_dir = tmp_path / "traces"

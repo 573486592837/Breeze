@@ -930,3 +930,14 @@ packaging 测试同步到 1.5.1。
 - 静态 system prompt 从 2,242 字符 / 1,592 Token 降到 1,980 字符 / 1,386 Token，
   每次调用少约 206 Token；环境说明与 AGENTS.md 不计入此数。
 - 验证：616 passed / 2 skipped，ruff 全绿。
+
+### chat 多行粘贴（未发布）
+
+- `breeze chat` 的输入改用 prompt_toolkit 的 bracketed paste：粘贴的多行文本
+  整块留在缓冲区，按一次回车才作为一个回合提交，不再逐行发送（也不会因为
+  连续自动开回合而只能 Ctrl+C 中断）。
+- 新增运行时依赖 `prompt-toolkit>=3.0`。stdin 不是终端（管道、测试）或依赖
+  缺失时回退到逐行 `input`，`ask`、评估脚本与非交互调用行为不变。
+- 验证：624 passed / 2 skipped，ruff 全绿；另用 prompt_toolkit 的
+  `PipeInput` 模拟 `ESC[200~ ... ESC[201~` 粘贴，确认回车后得到单个
+  `"line1\nline2"` 输入。
