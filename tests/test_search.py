@@ -179,3 +179,36 @@ def test_grep_respects_output_budget(repo: Path) -> None:
 
     assert "output budget" in out
     assert len(out.encode("utf-8")) <= settings.context_tool_result_max_bytes + 128
+
+
+def test_grep_python_fallback_respects_gitignore_from_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """从仓库根搜索时，Python 回退应遵循 .gitignore。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "run.jsonl").write_text("needle\n", encoding="utf-8")
+    (repo / "README.md").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "."})
+
+    assert "README.md" in out
+    assert "run.jsonl" not in out
+
+
+def test_grep_explicit_subdir_bypasses_gitignore(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式指定被忽略的子目录时，应搜索其中的文件。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "run.jsonl").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "traces"})
+
+    assert "run.jsonl" in out
+    assert "needle" in out

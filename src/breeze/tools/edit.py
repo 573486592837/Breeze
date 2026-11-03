@@ -32,8 +32,24 @@ _PASSED_RE = re.compile(r"(\d+) passed")
 _FAILED_RE = re.compile(r"(\d+) failed")
 _ERROR_RE = re.compile(r"(\d+) errors?")
 
-PROTECTED_PREFIXES = (".git/", "traces/", "reports/")
-PROTECTED_FILES = frozenset({".env"})
+PROTECTED_PREFIXES = (".git/",)
+
+
+def _trace_dir_prefix() -> str | None:
+    """返回配置的 trace 目录相对仓库根的路径前缀。
+
+    只保护仓库内的 trace 目录；目录在仓库外或配置为仓库根时返回 None。
+    """
+    try:
+        trace_dir = Path(settings.trace_dir).expanduser()
+        if not trace_dir.is_absolute():
+            trace_dir = settings.repo_root / trace_dir
+        rel = trace_dir.resolve().relative_to(settings.repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    if rel in ("", "."):
+        return None
+    return f"{rel.rstrip('/')}/"
 
 
 def _is_protected(rel_path: str) -> bool:
@@ -46,9 +62,14 @@ def _is_protected(rel_path: str) -> bool:
         若路径被保护则返回 True。
     """
     normalized = rel_path.lstrip("/")
-    if normalized in PROTECTED_FILES:
+    name = normalized.rsplit("/", 1)[-1]
+    if name.startswith(".env") and name not in {".env.example", ".env.sample"}:
         return True
-    return any(normalized.startswith(p) for p in PROTECTED_PREFIXES)
+    prefixes = PROTECTED_PREFIXES
+    trace_prefix = _trace_dir_prefix()
+    if trace_prefix is not None:
+        prefixes = (*prefixes, trace_prefix)
+    return any(normalized.startswith(p) for p in prefixes)
 
 
 @register(
@@ -379,7 +400,7 @@ def create_file(path: str, content: str) -> str:
     name="delete_path",
     description=(
         "删除仓库内的文件或目录。非空目录必须显式传 recursive=true。"
-        ".git、traces、reports 与 .env 受保护，仓库根目录不可删除。"
+        "受保护路径（.git、.env* 与配置的 trace 目录）会被拒绝，仓库根目录不可删除。"
         "符号链接只删除链接本身，不会删除它指向的目标。"
     ),
     parameters={

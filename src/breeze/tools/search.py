@@ -12,9 +12,15 @@ import subprocess
 from pathlib import Path
 
 from breeze.config import settings
-from breeze.tools.fs import IGNORED_DIRS
+from breeze.tools.fs import (
+    IGNORED_DIRS,
+    IGNORED_PATTERNS,
+    is_ignored,
+    is_ignored_dir_name,
+    load_gitignore_patterns,
+)
 from breeze.tools.registry import register
-from breeze.tools.safety import safe_path
+from breeze.tools.safety import safe_read_path
 
 DEFAULT_MAX_RESULTS = 100
 MAX_LINE_CHARS = 200
@@ -47,7 +53,9 @@ def _normalize_rg_line(line: str) -> str:
 @register(
     name="grep",
     description=(
-        "在仓库内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。"
+        "在仓库或只读参考目录内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。"
+        "从仓库根搜索时遵循 .gitignore；显式指定子目录时搜索其全部文件"
+        "（缓存目录仍跳过）。"
         "定位符号的首选工具：先用 grep 得到 文件:行号，再用 read_file 的 "
         "start_line/end_line 精确读取该范围，比通读整个文件更省上下文。"
         "建议用 path='.' 和合适的 glob（如 '*.py'、'*.js'、'*.ts'、'*.go'）"
@@ -62,7 +70,10 @@ def _normalize_rg_line(line: str) -> str:
             },
             "path": {
                 "type": "string",
-                "description": ("搜索起始路径。建议用 '.' 从仓库根搜索，配合 glob 限定范围。"),
+                "description": (
+                    "搜索起始路径，相对于仓库根目录或只读参考目录。"
+                    "建议用 '.' 从仓库根搜索，配合 glob 限定范围。"
+                ),
                 "default": ".",
             },
             "glob": {
@@ -88,7 +99,7 @@ def grep(
 
     Args:
         pattern: 正则表达式。
-        path: 搜索起始路径，相对于仓库根目录。
+        path: 搜索起始路径，相对于仓库根目录或只读参考目录。
         glob: 可选的 glob 过滤，如 ``*.py``。
         max_results: 结果行数上限，至少为 1。
 
@@ -98,7 +109,8 @@ def grep(
     Raises:
         ValueError: 路径越界或正则非法。
     """
-    target = safe_path(path)
+    target = safe_read_path(path)
+    explicit_scope = target != settings.repo_root.resolve()
     max_results = max(1, int(max_results))
 
     try:
@@ -107,9 +119,9 @@ def grep(
         raise ValueError(f"Invalid regex pattern: {pattern}") from exc
 
     if shutil.which("rg"):
-        lines = _grep_with_rg(pattern, target, glob, max_results)
+        lines = _grep_with_rg(pattern, target, glob, max_results, explicit_scope)
     else:
-        lines = _grep_with_python(regex, target, glob, max_results)
+        lines = _grep_with_python(regex, target, glob, max_results, explicit_scope)
 
     if not lines:
         return "No matches found."
@@ -141,6 +153,7 @@ def _grep_with_rg(
     target: Path,
     glob_pattern: str | None,
     max_results: int,
+    explicit_scope: bool,
 ) -> list[str]:
     """使用 ripgrep 搜索。
 
@@ -149,6 +162,7 @@ def _grep_with_rg(
         target: 已校验的绝对路径。
         glob_pattern: 可选的文件名过滤。
         max_results: 结果上限。
+        explicit_scope: 是否由调用方显式指定了子目录或参考目录。
 
     Returns:
         匹配行列表。执行出错时返回单元素列表，内容为错误说明。
@@ -160,7 +174,12 @@ def _grep_with_rg(
         rel_target = target.as_posix()
 
     cmd = ["rg", "--line-number", "--no-heading", "--with-filename", "--color", "never"]
+    if explicit_scope:
+        # rg 默认遵循 .gitignore；显式指定范围时应看到被忽略的文件。
+        cmd.append("--no-ignore")
     for ignored in IGNORED_DIRS:
+        cmd.extend(["--glob", f"!{ignored}/"])
+    for ignored in IGNORED_PATTERNS:
         cmd.extend(["--glob", f"!{ignored}/"])
     if glob_pattern:
         cmd.extend(["--glob", glob_pattern])
@@ -195,6 +214,7 @@ def _grep_with_python(
     target: Path,
     glob_pattern: str | None,
     max_results: int,
+    explicit_scope: bool,
 ) -> list[str]:
     """纯 Python 回退实现。
 
@@ -203,20 +223,30 @@ def _grep_with_python(
         target: 已校验的绝对路径。
         glob_pattern: 可选的文件名过滤。
         max_results: 结果上限。
+        explicit_scope: 是否由调用方显式指定了子目录或参考目录。
 
     Returns:
         匹配行列表。
     """
     root = settings.repo_root.resolve()
+    patterns = [] if explicit_scope else load_gitignore_patterns(root)
 
     if target.is_file():
         files: list[Path] = [target]
     else:
         files = []
         for dirpath, dirnames, filenames in os.walk(target):
-            dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
-            for names in filenames:
-                files.append(Path(dirpath) / names)
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not is_ignored_dir_name(name)
+                and (explicit_scope or not is_ignored(Path(dirpath) / name, root, patterns))
+            ]
+            for name in filenames:
+                fpath = Path(dirpath) / name
+                if not explicit_scope and is_ignored(fpath, root, patterns):
+                    continue
+                files.append(fpath)
 
     results: list[str] = []
     for fpath in files:

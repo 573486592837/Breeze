@@ -857,3 +857,22 @@ packaging 测试同步到 1.5.1。
 - 常规 trace 仍只保留预览，不重复整份 prompt；捕获文件按行写入并随 run 关闭。
 - 文件可能很大且包含代码与工具输出，默认关闭，也不应提交到仓库。
 - CLI 摘要在开启时显示 `messages_path`；`RunTrace(capture_messages=...)` 可显式覆盖。
+
+### 工具访问边界修正（未发布）
+
+真实试跑暴露了两个问题：通用 prompt 写死了 Breeze 自己的 `traces/reports` 目录，
+而在 Breeze-Lens 这类项目中 `traces/` 正是需要读取的输入；同时工具只能访问仓库根，
+无法只读查看另一个目录中的 Breeze 源码。
+
+- 编辑上限提示改为按 `agent.max_edit_failures` 动态生成，并修正为“每次用户回合内
+  连续写操作失败 N 次”，成功一次后清零；`/set max_edit_failures` 后下一回合生效。
+- `traces/reports` 不再是通用忽略/保护名单；写保护改为 `.git/`、`.env*` 与配置的
+  `trace.dir`，`reports` 恢复为普通目录。
+- `list_files` / `grep` 从仓库根递归时仍遵循 `.gitignore`；显式指定子目录时绕过
+  ignore，便于查看 `traces/` 等被忽略的输入。Python 回退的 `grep` 现在也与 rg
+  一样遵循根 `.gitignore`。
+- 新增 `[tools] read_roots`：读工具可访问配置的只读参考目录，写工具仍限制在仓库内；
+  系统提示的环境说明会列出这些目录。
+- 验证：606 passed / 2 skipped，ruff 全绿；在 Breeze-Lens 实测
+  `list_files('traces')`、`read_file('../Breeze/src/breeze/trace.py')`、
+  `grep(..., path='../Breeze/src/breeze')` 均可用，写工具仍拒绝参考目录。

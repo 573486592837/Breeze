@@ -67,6 +67,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "shell": {
         "permission": "strict",
     },
+    "tools": {
+        "read_roots": [],
+    },
     "context": {
         "enable": True,
         "profile": "medium",
@@ -202,6 +205,36 @@ def _apply_env_overrides(cfg: dict[str, Any]) -> None:
             raise ValueError(f"invalid value for {env_key}={raw!r}: {exc}") from exc
 
 
+def _resolve_read_roots(root: Path, raw_roots: Any) -> tuple[Path, ...]:
+    """解析只读参考目录，路径相对于仓库根目录。
+
+    Args:
+        root: 仓库根目录。
+        raw_roots: 配置中的路径列表。
+
+    Returns:
+        解析后的绝对路径元组。
+
+    Raises:
+        ValueError: 配置不是列表，或路径不存在/不是目录。
+    """
+    if not isinstance(raw_roots, list):
+        raise ValueError("tools.read_roots must be a list of paths")
+
+    roots: list[Path] = []
+    for raw in raw_roots:
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        resolved = path.resolve()
+        if not resolved.is_dir():
+            raise ValueError(
+                f"tools.read_roots path does not exist or is not a directory: {raw}"
+            )
+        roots.append(resolved)
+    return tuple(roots)
+
+
 def _profile_preset(profile: str) -> dict[str, dict[str, Any]]:
     """返回档位对应的压缩参数。
 
@@ -334,6 +367,10 @@ class Settings:
 
         self.trace_dir: str = cfg["trace"]["dir"]
         self.trace_capture_messages: bool = bool(cfg["trace"]["capture_messages"])
+
+        self.tools_read_roots: tuple[Path, ...] = _resolve_read_roots(
+            self.repo_root, cfg["tools"]["read_roots"]
+        )
 
         self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
         self.chat_max_records: int = int(cfg["chat"]["max_records"])
