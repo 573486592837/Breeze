@@ -42,6 +42,7 @@ def test_defaults_has_expected_sections() -> None:
         "llm",
         "agent",
         "shell",
+        "tools",
         "context",
         "trace",
         "sessions",
@@ -165,23 +166,47 @@ def test_permission_invalid_raises(tmp_path: Path) -> None:
         Settings(repo_root=tmp_path)
 
 
-def test_context_cross_turn_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BREEZE_CONTEXT_CROSS_TURN 可切到 append 实验模式。"""
-    monkeypatch.setenv("BREEZE_CONTEXT_CROSS_TURN", "append")
+def test_capture_messages_default_off() -> None:
+    """默认不保存完整 prompt。"""
+    assert DEFAULTS["trace"]["capture_messages"] is False
+
+
+def test_capture_messages_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_CAPTURE_MESSAGES 可开启完整 prompt 捕获。"""
+    monkeypatch.setenv("BREEZE_CAPTURE_MESSAGES", "true")
 
     s = Settings(repo_root=tmp_path)
 
-    assert s.context_cross_turn == "append"
+    assert s.trace_capture_messages is True
 
 
-def test_context_cross_turn_invalid_raises(tmp_path: Path) -> None:
-    """非法跨回合策略在加载配置时立即报错。"""
+def test_tools_read_roots_default_empty() -> None:
+    """默认没有只读参考目录。"""
+    assert DEFAULTS["tools"]["read_roots"] == []
+
+
+def test_tools_read_roots_resolve_relative(tmp_path: Path) -> None:
+    """相对路径按仓库根解析。"""
+    ref = tmp_path / "ref"
+    ref.mkdir()
     (tmp_path / "breeze.toml").write_text(
-        '[context]\ncross_turn = "both"\n',
+        '[tools]\nread_roots = ["ref"]\n',
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="Invalid context cross_turn mode"):
+    s = Settings(repo_root=tmp_path)
+
+    assert s.tools_read_roots == (ref.resolve(),)
+
+
+def test_tools_read_roots_missing_dir_raises(tmp_path: Path) -> None:
+    """不存在的参考目录在加载配置时立即报错。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[tools]\nread_roots = ["missing"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="read_roots"):
         Settings(repo_root=tmp_path)
 
 
@@ -688,6 +713,8 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     assert isinstance(s.context_intra_turn_budget, int)
     assert isinstance(s.llm_temperature, float)
     assert isinstance(s.trace_dir, str)
+    assert isinstance(s.trace_capture_messages, bool)
+    assert isinstance(s.tools_read_roots, tuple)
     assert isinstance(s.chat_answer_preview, int)
     assert isinstance(s.sessions_dir, Path)
     assert not hasattr(s, "tools_repo_map")

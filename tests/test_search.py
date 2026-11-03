@@ -179,3 +179,59 @@ def test_grep_respects_output_budget(repo: Path) -> None:
 
     assert "output budget" in out
     assert len(out.encode("utf-8")) <= settings.context_tool_result_max_bytes + 128
+
+
+def test_grep_python_fallback_respects_gitignore_from_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """从仓库根搜索时，Python 回退应遵循 .gitignore。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "run.jsonl").write_text("needle\n", encoding="utf-8")
+    (repo / "README.md").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "."})
+
+    assert "README.md" in out
+    assert "run.jsonl" not in out
+
+
+def test_grep_explicit_subdir_bypasses_gitignore(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式指定被忽略的子目录时，应搜索其中的文件。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "run.jsonl").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "traces"})
+
+    assert "run.jsonl" in out
+    assert "needle" in out
+
+
+def test_grep_skips_env_from_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """即使没有被 gitignore，也不应搜索 .env 内容。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".env").write_text("SECRET_TOKEN=1\n", encoding="utf-8")
+    (repo / "README.md").write_text("SECRET_TOKEN\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "SECRET_TOKEN", "path": "."})
+
+    assert "README.md" in out
+    assert ".env" not in out
+
+
+def test_grep_rejects_env_target(repo: Path) -> None:
+    """显式搜索 .env 也应被拒绝。"""
+    (repo / ".env").write_text("SECRET_TOKEN=1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected"):
+        registry.execute("grep", {"pattern": "SECRET", "path": ".env"})

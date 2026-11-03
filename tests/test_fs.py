@@ -112,6 +112,45 @@ def test_read_file_rejects_escape(repo: Path) -> None:
         registry.execute("read_file", {"path": "../outside.txt"})
 
 
+def test_read_file_rejects_env_files(repo: Path) -> None:
+    """.env 及其派生文件可能含密钥，禁止读取。"""
+    for name in (".env", ".env.local", ".env.production"):
+        (repo / name).write_text("SECRET=1\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="protected"):
+            registry.execute("read_file", {"path": name})
+
+
+def test_read_file_allows_env_template(repo: Path) -> None:
+    """模板文件不含真实密钥，可以读取。"""
+    (repo / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": ".env.example"})
+
+    assert "SECRET=" in out
+
+
+def test_read_file_rejects_git_internals(repo: Path) -> None:
+    """.git 内部数据不应进入 prompt。"""
+    (repo / ".git").mkdir()
+    (repo / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected"):
+        registry.execute("read_file", {"path": ".git/config"})
+
+
+def test_list_files_hides_env_files(repo: Path) -> None:
+    """列目录时也不暴露 .env 文件。"""
+    (repo / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (repo / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+    (repo / "README.md").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+    lines = out.splitlines()
+
+    assert ".env" not in lines
+    assert ".env.example" in lines
+
+
 # ─── safe_path ───
 
 
@@ -130,8 +169,56 @@ def test_safe_path_allows_inside(repo: Path) -> None:
     assert resolved.is_absolute()
 
 
-def test_list_files_ignores_traces_dir(repo: Path) -> None:
-    """traces 目录应被忽略。"""
+@pytest.fixture
+def read_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """构造仓库与仓库外的只读参考目录。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    (ref / "note.txt").write_text("hello from reference\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", repo.resolve())
+    monkeypatch.setattr(settings, "tools_read_roots", (ref.resolve(),))
+    return repo, ref
+
+
+def test_read_file_allows_configured_read_root(read_root: tuple[Path, Path]) -> None:
+    """读工具可以访问只读参考目录。"""
+    out = registry.execute("read_file", {"path": "../ref/note.txt"})
+    assert "hello from reference" in out
+
+
+def test_list_files_allows_configured_read_root(read_root: tuple[Path, Path]) -> None:
+    """list_files 可以列出只读参考目录。"""
+    out = registry.execute("list_files", {"path": "../ref", "max_depth": 1})
+    assert "note.txt" in out
+
+
+def test_grep_allows_configured_read_root(
+    read_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """grep 可以搜索只读参考目录。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+
+    out = registry.execute("grep", {"pattern": "reference", "path": "../ref"})
+    assert "hello from reference" in out
+
+
+def test_write_tools_still_reject_read_root(read_root: tuple[Path, Path]) -> None:
+    """只读参考目录只能读，写工具仍被限制在仓库内。"""
+    repo, ref = read_root
+
+    with pytest.raises(ValueError):
+        safe_path("../ref/note.txt", root=repo)
+
+    out = registry.execute("create_file", {"path": "../ref/new.txt", "content": "x"})
+    assert out.startswith("Error:")
+    assert not (ref / "new.txt").exists()
+
+
+def test_list_files_hides_gitignored_traces_from_root(repo: Path) -> None:
+    """从仓库根列出时，被 gitignore 的 traces 不应淹没有用信息。"""
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
     (repo / "traces").mkdir()
     (repo / "traces" / "20261008.jsonl").write_text("{}", encoding="utf-8")
     (repo / "README.md").write_text("x", encoding="utf-8")
@@ -141,13 +228,33 @@ def test_list_files_ignores_traces_dir(repo: Path) -> None:
     assert "20261008.jsonl" not in out
 
 
-def test_list_files_ignores_reports_dir(repo: Path) -> None:
-    """reports 目录应被忽略。"""
+def test_list_files_explicit_subdir_bypasses_gitignore(repo: Path) -> None:
+    """显式指定子目录时，应能看到被 gitignore 的文件。"""
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "20261008.jsonl").write_text("{}", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": "traces", "max_depth": 2})
+    assert "20261008.jsonl" in out
+
+
+def test_list_files_reports_dir_not_special(repo: Path) -> None:
+    """reports 不再是全局忽略目录。"""
     (repo / "reports").mkdir()
     (repo / "reports" / "baseline.json").write_text("{}", encoding="utf-8")
 
     out = registry.execute("list_files", {"path": ".", "max_depth": 2})
-    assert "reports" not in out
+    assert "reports/" in out
+    assert "baseline.json" in out
+
+
+def test_list_files_ignores_egg_info_pattern(repo: Path) -> None:
+    """*.egg-info 应作为 glob 模式匹配。"""
+    (repo / "demo.egg-info").mkdir()
+    (repo / "demo.egg-info" / "PKG-INFO").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+    assert "demo.egg-info" not in out
 
 
 def test_list_files_respects_gitignore(repo: Path) -> None:

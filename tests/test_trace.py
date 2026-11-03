@@ -305,3 +305,62 @@ def test_trace_log_permission_does_not_count_as_error(trace_dir: Path) -> None:
     assert event["decision"] == "denied"
     assert event["mode"] == "confirm"
     assert summary["errors"] == 0
+
+
+# ─── 完整 prompt 捕获 ───
+
+
+def test_capture_messages_off_by_default(trace_dir: Path) -> None:
+    """未开启捕获时不创建 messages 文件。"""
+    with RunTrace(trace_dir=trace_dir, run_id="cap0") as trace:
+        assert trace.messages_path is None
+        trace.log_llm(0, "m", 1, 1, 2, 1.0, messages=[{"role": "user", "content": "hi"}])
+
+    assert not list(trace_dir.glob("*.messages.jsonl"))
+    assert trace.summary()["messages_path"] is None
+
+
+def test_capture_messages_writes_full_prompt(trace_dir: Path) -> None:
+    """开启捕获后，完整 messages/tools/tool_choice 写入独立文件。"""
+    messages = [{"role": "system", "content": "SYS"}, {"role": "user", "content": "q"}]
+    tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
+
+    with RunTrace(trace_dir=trace_dir, run_id="cap1", capture_messages=True) as trace:
+        assert trace.messages_path is not None
+        trace.log_llm(
+            0,
+            "m",
+            10,
+            2,
+            12,
+            1.0,
+            content="y" * 1000,
+            messages=messages,
+            tools=tools,
+            tool_choice="none",
+        )
+        summary = trace.summary()
+
+    records = _read_events(trace.messages_path)
+    assert len(records) == 1
+    record = records[0]
+    assert record["event"] == "llm_messages"
+    assert record["run_id"] == "cap1"
+    assert record["step"] == 0
+    assert record["messages"] == messages
+    assert record["tools"] == tools
+    assert record["tool_choice"] == "none"
+
+    assert summary["messages_path"] == str(trace.messages_path)
+    # 常规 trace 仍只存预览，不重复整份 prompt
+    llm_event = next(e for e in _read_events(trace.path) if e["event"] == "llm_call")
+    assert "messages" not in llm_event
+
+
+def test_capture_messages_skips_calls_without_payload(trace_dir: Path) -> None:
+    """捕获开启但调用方未传 messages 时，不写空记录。"""
+    with RunTrace(trace_dir=trace_dir, run_id="cap2", capture_messages=True) as trace:
+        trace.log_llm(0, "m", 1, 1, 2, 1.0)
+
+    assert trace.messages_path is not None
+    assert trace.messages_path.read_text(encoding="utf-8") == ""

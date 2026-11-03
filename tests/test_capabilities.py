@@ -26,6 +26,34 @@ def test_is_python_project_by_tests_dir(tmp_path: Path) -> None:
     assert is_python_project(tmp_path)
 
 
+def test_is_python_project_by_dependency_file(tmp_path: Path) -> None:
+    """requirements.txt / Pipfile 等依赖文件也是 Python 项目标记。"""
+    (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
+
+    assert is_python_project(tmp_path)
+
+
+def test_is_python_project_by_python_files(tmp_path: Path) -> None:
+    """根目录或 src/ 下的 .py 文件足以判定为 Python 项目。"""
+    (tmp_path / "main.py").write_text("", encoding="utf-8")
+    assert is_python_project(tmp_path)
+
+    (tmp_path / "main.py").unlink()
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    (src / "cli.py").write_text("", encoding="utf-8")
+    assert is_python_project(tmp_path)
+
+
+def test_is_python_project_by_venv(tmp_path: Path) -> None:
+    """已有虚拟环境解释器时也视为 Python 项目。"""
+    interpreter = tmp_path / ".venv" / "Scripts" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("", encoding="utf-8")
+
+    assert is_python_project(tmp_path)
+
+
 def test_is_git_repo_uses_rev_parse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

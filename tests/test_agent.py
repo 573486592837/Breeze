@@ -308,7 +308,7 @@ def test_default_system_prompt_includes_agents_md(tmp_path: Path, monkeypatch: p
 
 def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     """缺失的外部命令应在默认提示里点名，并给出替代工具。"""
-    from breeze.agent import DEFAULT_SYSTEM_PROMPT, default_system_prompt
+    from breeze.agent import default_system_prompt
 
     monkeypatch.setattr(
         "breeze.capabilities.shutil.which",
@@ -316,7 +316,7 @@ def test_default_system_prompt_lists_missing_external_commands(monkeypatch: pyte
     )
 
     prompt = default_system_prompt()
-    assert prompt.startswith(DEFAULT_SYSTEM_PROMPT)
+    assert prompt.startswith("你是 Breeze")
     assert "缺失：rg、node" in prompt
     assert "grep 工具" in prompt
 
@@ -404,12 +404,14 @@ def test_default_system_prompt_adapts_git_rules() -> None:
 
 
 def test_default_system_prompt_marks_run_tests_unavailable() -> None:
-    """非 Python 项目在环境说明里指出 run_tests 不可用。"""
+    """非 Python 项目应改写依赖 run_tests 的规则。"""
     from breeze.agent import default_system_prompt
 
     prompt = default_system_prompt(_caps(python_project=False))
 
     assert "run_tests 不可用" in prompt
+    assert "优先使用 run_tests" not in prompt
+    assert "项目自带的测试命令" in prompt
 
 
 def test_default_system_prompt_reflects_confirm_mode() -> None:
@@ -441,6 +443,46 @@ def test_default_system_prompt_strict_keeps_whitelist() -> None:
     assert "可执行文件仅限" in prompt
 
 
+def test_default_system_prompt_reflects_edit_failure_limit() -> None:
+    """编辑上限应来自 max_edit_failures，而不是过时的硬编码。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), max_edit_failures=7)
+
+    assert "连续写操作失败 7 次" in prompt
+    assert "默认 5 次" not in prompt
+
+
+def test_default_system_prompt_lists_read_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """配置只读参考目录后，环境说明应告知模型。"""
+    from breeze.agent import default_system_prompt
+    from breeze.config import settings
+
+    ref = tmp_path / "ref"
+    ref.mkdir()
+    monkeypatch.setattr(settings, "tools_read_roots", (ref.resolve(),))
+
+    prompt = default_system_prompt(_caps())
+
+    assert "只读参考目录" in prompt
+    assert str(ref.resolve()) in prompt
+
+
+def test_agent_refreshes_edit_limit_prompt(trace: RunTrace) -> None:
+    """修改 max_edit_failures 后，下一回合的 system prompt 应同步。"""
+    llm = FakeLLMClient([_text("one"), _text("two")])
+    agent = Agent(llm=llm, trace=trace, max_edit_failures=3)
+
+    agent.run("first")
+    agent.max_edit_failures = 7
+    agent.run("second")
+
+    assert "连续写操作失败 3 次" in llm.calls[0]["messages"][0]["content"]
+    assert "连续写操作失败 7 次" in llm.calls[1]["messages"][0]["content"]
+
+
 def test_agent_prompt_follows_permission_mode(trace: RunTrace) -> None:
     """Agent 构造的系统提示应包含当前权限模式。"""
     llm = FakeLLMClient([_text("ok")])
@@ -455,6 +497,49 @@ def test_agent_prompt_follows_permission_mode(trace: RunTrace) -> None:
 
     system = llm.calls[0]["messages"][0]["content"]
     assert "open 模式" in system
+
+
+def test_agent_refreshes_capabilities_after_creating_pyproject(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """创建 Python 项目标记后，下一步即可看到 run_tests。"""
+    from breeze.agent import Agent
+    from breeze.config import settings
+    from breeze.tools import registry
+
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    state = {"caps": _caps(python_project=False, git_repo=False)}
+
+    monkeypatch.setattr("breeze.agent.detect", lambda _root: state["caps"])
+
+    def fake_execute(name, _arguments):
+        if name == "create_file":
+            state["caps"] = _caps(python_project=True, git_repo=False)
+            return "Created pyproject.toml"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call(
+                "create_file",
+                {"path": "pyproject.toml", "content": "[project]\nname='demo'\n"},
+                call_id="c1",
+            ),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("init project") == "done"
+
+    first_tools = {tool["function"]["name"] for tool in llm.calls[0]["tools"]}
+    second_tools = {tool["function"]["name"] for tool in llm.calls[1]["tools"]}
+    assert "run_tests" not in first_tools
+    assert "run_tests" in second_tools
+    assert "未检测到 Python 项目" in llm.calls[0]["messages"][0]["content"]
+    assert "未检测到 Python 项目" not in llm.calls[1]["messages"][0]["content"]
 
 
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:
@@ -570,7 +655,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "git_diff" in prompt
     assert "git_restore" in prompt
     assert "run_tests" in prompt
-    assert "不要修改测试文件" in prompt
+    assert "不要删除或弱化测试" in prompt
     assert "不得以方案、计划或建议结尾" in prompt
     assert "先 grep 搜索符号名" in prompt
     assert "禁止凭记忆编写 old" in prompt
@@ -1514,3 +1599,24 @@ def test_agent_rejects_invalid_permission_mode(trace: RunTrace) -> None:
 
     with pytest.raises(ValueError, match="Invalid permission mode"):
         Agent(llm=llm, trace=trace, permission_mode="yolo")
+
+
+def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
+    """开启捕获时，Agent 把实际发送的完整 prompt 与工具 schema 落盘。"""
+    llm = FakeLLMClient([_text("ok")])
+
+    with RunTrace(trace_dir=tmp_path / "traces", run_id="cap", capture_messages=True) as tr:
+        agent = Agent(llm=llm, trace=tr, system_prompt="SYS")
+        assert agent.run("hi") == "ok"
+
+    assert tr.messages_path is not None
+    records = [
+        json.loads(line) for line in tr.messages_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record["messages"][0]["content"] == "SYS"
+    assert record["messages"][-1]["content"] == "hi"
+    assert record["tool_choice"] is None
+    names = {tool["function"]["name"] for tool in record["tools"]}
+    assert "read_file" in names

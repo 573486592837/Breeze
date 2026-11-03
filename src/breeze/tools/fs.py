@@ -8,7 +8,7 @@ from pathlib import Path
 
 from breeze.config import settings
 from breeze.tools.registry import register
-from breeze.tools.safety import safe_path
+from breeze.tools.safety import ensure_readable, is_read_protected, safe_read_path
 
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
@@ -32,16 +32,27 @@ IGNORED_DIRS: frozenset[str] = frozenset(
         "build",
         "dist",
         "node_modules",
-        "*.egg-info",
         # IDE
         ".idea",
         ".vscode",
         ".ipynb_checkpoints",
-        # Breeze 项目产物
-        "traces",
-        "reports",
     }
 )
+
+IGNORED_PATTERNS: frozenset[str] = frozenset({"*.egg-info"})
+
+
+def is_ignored_dir_name(name: str) -> bool:
+    """判断目录名是否属于缓存、构建或版本控制目录。
+
+    Args:
+        name: 目录名，不含路径。
+
+    Returns:
+        命中固定名称或 glob 模式时返回 True。
+    """
+    return name in IGNORED_DIRS or any(fnmatch.fnmatch(name, pat) for pat in IGNORED_PATTERNS)
+
 
 DEFAULT_MAX_ENTRIES = 200
 DEFAULT_MAX_FILES_PER_DIR = 20
@@ -117,17 +128,17 @@ def is_ignored(
 @register(
     name="list_files",
     description=(
-        "列出仓库内的文件和目录。返回相对路径，每行一个。"
-        "自动忽略 .gitignore 中声明的路径和常见缓存、构建目录。"
-        "每个目录下的文件数默认限制为 20 个，避免大目录淹没有用信息。"
-        "可通过 max_files_per_dir 放宽限制。"
+        "列出仓库或只读参考目录内的文件。返回路径，每行一个。"
+        "从仓库根递归时忽略 .gitignore 与常见缓存、构建目录；"
+        "显式指定子目录时完整列出（缓存目录仍跳过）。"
+        "每个目录下的文件数默认限制为 20 个，可通过 max_files_per_dir 放宽。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "起始目录，相对于仓库根目录。默认为 '.'。",
+                "description": "起始目录，相对于仓库根目录或只读参考目录。默认为 '.'。",
                 "default": ".",
             },
             "max_depth": {
@@ -160,19 +171,29 @@ def list_files(
     """列出目录内容。
 
     Args:
-        path: 起始目录，相对于仓库根目录。
+        path: 起始目录，相对于仓库根目录或只读参考目录。
         max_depth: 最大递归深度，至少为 1。
         max_entries: 返回条目数上限，至少为 1。
 
     Returns:
-        每行一个相对路径的字符串。超限时追加截断提示。
+        每行一个路径的字符串。仓库内路径相对于仓库根，只读参考目录内
+        返回绝对路径。超限时追加截断提示。
     """
-    root = safe_path(path)
+    root = safe_read_path(path)
+    ensure_readable(root)
+    repo_root = settings.repo_root.resolve()
+    explicit_scope = root != repo_root
     max_depth = max(1, int(max_depth))
     max_entries = max(1, int(max_entries))
     max_files_per_dir = max(1, int(max_files_per_dir))
 
-    gitignore_patterns = load_gitignore_patterns(settings.repo_root)
+    gitignore_patterns = [] if explicit_scope else load_gitignore_patterns(repo_root)
+
+    def display(item: Path) -> str:
+        try:
+            return item.relative_to(repo_root).as_posix()
+        except ValueError:
+            return item.as_posix()
 
     entries: list[str] = []
     truncated = False
@@ -193,21 +214,22 @@ def list_files(
         for child in dirs:
             if truncated:
                 return
-            if child.name in IGNORED_DIRS:
+            if is_ignored_dir_name(child.name) or is_read_protected(child):
                 continue
-            if is_ignored(child, settings.repo_root, gitignore_patterns):
+            if not explicit_scope and is_ignored(child, repo_root, gitignore_patterns):
                 continue
             if len(entries) >= max_entries:
                 truncated = True
                 return
-            rel = child.relative_to(root).as_posix()
-            entries.append(f"{rel}/")
+            entries.append(f"{display(child)}/")
             walk(child, depth + 1)
 
         shown = 0
         hidden = 0
         for child in files:
-            if is_ignored(child, settings.repo_root, gitignore_patterns):
+            if is_read_protected(child):
+                continue
+            if not explicit_scope and is_ignored(child, repo_root, gitignore_patterns):
                 continue
             if shown >= max_files_per_dir:
                 hidden += 1
@@ -215,12 +237,11 @@ def list_files(
             if len(entries) >= max_entries:
                 truncated = True
                 return
-            rel = child.relative_to(root).as_posix()
-            entries.append(rel)
+            entries.append(display(child))
             shown += 1
 
         if hidden > 0 and not truncated:
-            dir_rel = "." if current == root else current.relative_to(root).as_posix()
+            dir_rel = display(current)
             entries.append(f"(... {hidden} more files in {dir_rel}/, use max_files_per_dir to see more)")
 
     walk(root, 1)
@@ -252,6 +273,7 @@ def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
     name="read_file",
     description=(
         "读取文件内容，带行号。"
+        "路径相对于仓库根目录，或位于 [tools] read_roots 配置的只读参考目录内。"
         "对于已知目标位置的文件，用 start_line/end_line 读取精确范围，"
         "避免将整个文件加载到上下文；目标位置未知时，先用 grep 搜索符号名"
         "获取行号，再按范围读取。"
@@ -263,7 +285,7 @@ def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
         "properties": {
             "path": {
                 "type": "string",
-                "description": "文件路径，相对于仓库根目录。",
+                "description": "文件路径，相对于仓库根目录或只读参考目录。",
             },
             "start_line": {
                 "type": "integer",
@@ -292,7 +314,7 @@ def read_file(
     """读取文件内容，带行号。
 
     Args:
-        path: 文件路径，相对于仓库根目录。
+        path: 文件路径，相对于仓库根目录或只读参考目录。
         start_line: 起始行号，从 1 开始。
         end_line: 结束行号（含），None 表示读到末尾。
         max_bytes: 返回内容的字节上限。
@@ -303,7 +325,8 @@ def read_file(
     Raises:
         ValueError: 路径越界或目标不是文件。
     """
-    target = safe_path(path)
+    target = safe_read_path(path)
+    ensure_readable(target)
     if not target.is_file():
         hint = ""
         if not path.startswith("src/"):

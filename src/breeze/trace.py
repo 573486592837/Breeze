@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from breeze.config import settings
+
 DEFAULT_TRACE_DIR = Path("traces")
 RESULT_PREVIEW_LIMIT = 500
 CONTENT_PREVIEW_LIMIT = 500
@@ -91,6 +93,7 @@ class RunTrace:
         trace_dir: str | Path = DEFAULT_TRACE_DIR,
         run_id: str | None = None,
         name: str | None = None,
+        capture_messages: bool | None = None,
     ) -> None:
         """初始化追踪器并创建 JSONL 文件。
 
@@ -99,6 +102,8 @@ class RunTrace:
             run_id: 可选的自定义 run_id，默认生成 8 位十六进制。
             name: 可选的文件名前缀，便于在 traces/ 里辨认；非法字符
                 会被替换为下划线，完整文件名仍附带时间戳与 run_id。
+            capture_messages: 是否把每次调用的完整 messages/tools 写入
+                独立的 ``*.messages.jsonl``。None 时读取 trace 配置。
         """
         self.run_id = run_id or uuid.uuid4().hex[:8]
         self.name = normalize_trace_name(name) if name else None
@@ -114,6 +119,12 @@ class RunTrace:
         self._file = self.path.open("w", encoding="utf-8")
         self._counters = _Counters()
         self._closed = False
+
+        capture = settings.trace_capture_messages if capture_messages is None else capture_messages
+        self.messages_path = self.path.with_name(f"{self.path.stem}.messages.jsonl") if capture else None
+        self._messages_file = (
+            self.messages_path.open("w", encoding="utf-8") if self.messages_path else None
+        )
 
         self._write(
             {
@@ -138,6 +149,9 @@ class RunTrace:
         cost_usd: float | None = None,
         prompt_breakdown: dict[str, int] | None = None,
         cacheable_prefix_tokens: int | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> None:
         """记录一次 LLM 调用。
 
@@ -156,6 +170,10 @@ class RunTrace:
             cost_usd: LiteLLM 估算的本次调用费用（美元）。
             prompt_breakdown: 按注入位置统计的消息 Token 组成。
             cacheable_prefix_tokens: 与上一次调用相同的消息前缀 Token。
+            messages: 本次实际发送给 LLM 的完整消息列表；仅在开启
+                capture_messages 时写入独立的 ``*.messages.jsonl``。
+            tools: 本次发送的工具 schema 列表。
+            tool_choice: 本次的工具选择策略。
         """
         c = self._counters
         c.llm_calls += 1
@@ -196,6 +214,20 @@ class RunTrace:
                 "tool_calls": tool_calls or [],
             }
         )
+
+        if self._messages_file is not None and messages is not None:
+            self._write_messages(
+                {
+                    "event": "llm_messages",
+                    "run_id": self.run_id,
+                    "step": step,
+                    "ts": _now_iso(),
+                    "model": model,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                }
+            )
 
     def log_tool(
         self,
@@ -315,6 +347,7 @@ class RunTrace:
         return {
             "run_id": self.run_id,
             "trace_path": str(self.path),
+            "messages_path": str(self.messages_path) if self.messages_path else None,
             "llm_calls": c.llm_calls,
             "tool_calls": c.tool_calls,
             "prompt_tokens": c.prompt_tokens,
@@ -345,6 +378,8 @@ class RunTrace:
             }
         )
         self._file.close()
+        if self._messages_file is not None:
+            self._messages_file.close()
         self._closed = True
 
     def __enter__(self) -> "RunTrace":
@@ -359,3 +394,11 @@ class RunTrace:
         line = json.dumps(event, ensure_ascii=False, default=str)
         self._file.write(line + "\n")
         self._file.flush()
+
+    def _write_messages(self, event: dict[str, Any]) -> None:
+        """写入完整 prompt 记录；不做截断，只受 run 时长与磁盘限制。"""
+        if self._closed or self._messages_file is None:
+            return
+        line = json.dumps(event, ensure_ascii=False, default=str)
+        self._messages_file.write(line + "\n")
+        self._messages_file.flush()

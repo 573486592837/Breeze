@@ -280,12 +280,15 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 - `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
 - `[agent]`：max_steps、max_edit_failures（连续编辑失败上限）
 - `[shell]`：permission（strict / confirm / open，默认 strict）
+- `[tools]`：read_roots（只读参考目录；read_file/list_files/grep 可访问，
+  写工具仍限制在仓库内）
 - `[context]`：enable、cross_turn（archive / append，默认 archive；append 保留全部
   历史，用于成本对照）、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
   state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
-- `[trace]`：dir
+- `[trace]`：dir、capture_messages（调试开关，默认 false；开启后把每次发送给 LLM
+  的完整 messages/tools 写入独立的 `<trace>.messages.jsonl`）
 
 ### 上下文档位
 
@@ -307,11 +310,14 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 ### 不可配置项
 
 - 安全白名单（`ALLOWED_EXECUTABLES`、`FORBIDDEN_*_OPTIONS`）
-- 保护路径（`PROTECTED_PREFIXES`）
+- 保护路径（`.git/`、`.env*` 与 `[trace] dir`；`.env.example` / `.env.sample`
+  可读可写）
 - 补丁、diff、测试输出的大小限制
 - 工具 JSON schema 里声明的默认值
 
 这些是防御边界。改动会削弱安全模型，或导致模型感知与实际行为不一致。
+`read_file`、`list_files`、`grep` 也会拒绝读取 `.env*` 与 `.git/`，避免密钥
+进入 prompt 或完整 prompt 捕获文件。
 
 API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 `BREEZE_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
