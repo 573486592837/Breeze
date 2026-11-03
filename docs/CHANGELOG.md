@@ -952,3 +952,14 @@ packaging 测试同步到 1.5.1。
   （原始结果 3 行、35 字符，指针 115 字符），最后改用 `run_shell git ls-files`
   才看到文件列表。
 - 验证：626 passed / 2 skipped，ruff 全绿。
+
+### 长行文件与引号内分隔符（未发布）
+
+- `read_file`：单行超过 `max_bytes` 时按 UTF-8 安全截断并保留头部，附
+  `[line truncated: N bytes total]`；不再返回误导性的 `(empty)`。Breeze Lens
+  M1 实测：18KB 单行的 `.messages.jsonl` 在 2K/3K/4K 上限下连续 5 次返回
+  `(empty)`，模型误以为文件为空并反复重试。
+- `run_shell`：分词改为 punctuation-aware，只有未加引号的 `; | & < >` 会被
+  当成操作符；`rg "a;b"` 等引号内符号不再误报为命令串联。`python -c` 本身
+  仍按安全白名单禁用，错误信息改为提示 `read_file` / `grep`。
+- 验证：629 passed / 2 skipped，ruff 全绿。
