@@ -8,7 +8,7 @@ from pathlib import Path
 
 from breeze.config import settings
 from breeze.tools.registry import register
-from breeze.tools.safety import safe_read_path
+from breeze.tools.safety import ensure_readable, is_read_protected, safe_read_path
 
 IGNORED_DIRS: frozenset[str] = frozenset(
     {
@@ -180,6 +180,7 @@ def list_files(
         返回绝对路径。超限时追加截断提示。
     """
     root = safe_read_path(path)
+    ensure_readable(root)
     repo_root = settings.repo_root.resolve()
     explicit_scope = root != repo_root
     max_depth = max(1, int(max_depth))
@@ -213,7 +214,7 @@ def list_files(
         for child in dirs:
             if truncated:
                 return
-            if is_ignored_dir_name(child.name):
+            if is_ignored_dir_name(child.name) or is_read_protected(child):
                 continue
             if not explicit_scope and is_ignored(child, repo_root, gitignore_patterns):
                 continue
@@ -226,6 +227,8 @@ def list_files(
         shown = 0
         hidden = 0
         for child in files:
+            if is_read_protected(child):
+                continue
             if not explicit_scope and is_ignored(child, repo_root, gitignore_patterns):
                 continue
             if shown >= max_files_per_dir:
@@ -323,6 +326,7 @@ def read_file(
         ValueError: 路径越界或目标不是文件。
     """
     target = safe_read_path(path)
+    ensure_readable(target)
     if not target.is_file():
         hint = ""
         if not path.startswith("src/"):

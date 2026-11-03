@@ -112,6 +112,45 @@ def test_read_file_rejects_escape(repo: Path) -> None:
         registry.execute("read_file", {"path": "../outside.txt"})
 
 
+def test_read_file_rejects_env_files(repo: Path) -> None:
+    """.env 及其派生文件可能含密钥，禁止读取。"""
+    for name in (".env", ".env.local", ".env.production"):
+        (repo / name).write_text("SECRET=1\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="protected"):
+            registry.execute("read_file", {"path": name})
+
+
+def test_read_file_allows_env_template(repo: Path) -> None:
+    """模板文件不含真实密钥，可以读取。"""
+    (repo / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": ".env.example"})
+
+    assert "SECRET=" in out
+
+
+def test_read_file_rejects_git_internals(repo: Path) -> None:
+    """.git 内部数据不应进入 prompt。"""
+    (repo / ".git").mkdir()
+    (repo / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected"):
+        registry.execute("read_file", {"path": ".git/config"})
+
+
+def test_list_files_hides_env_files(repo: Path) -> None:
+    """列目录时也不暴露 .env 文件。"""
+    (repo / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (repo / ".env.example").write_text("SECRET=\n", encoding="utf-8")
+    (repo / "README.md").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+    lines = out.splitlines()
+
+    assert ".env" not in lines
+    assert ".env.example" in lines
+
+
 # ─── safe_path ───
 
 

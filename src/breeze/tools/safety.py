@@ -8,6 +8,36 @@ from pathlib import Path
 
 from breeze.config import settings
 
+_ENV_TEMPLATE_FILES = frozenset({".env.example", ".env.sample"})
+
+
+def is_read_protected(path: Path) -> bool:
+    """判断路径是否禁止读取。
+
+    ``.env`` 及其派生文件可能含密钥；``.git`` 内部数据也不应进入
+    prompt。模板文件（``.env.example`` / ``.env.sample``）例外。
+
+    Args:
+        path: 已解析的绝对路径。
+
+    Returns:
+        命中保护规则时返回 True。
+    """
+    name = path.name
+    if name.startswith(".env") and name not in _ENV_TEMPLATE_FILES:
+        return True
+    return ".git" in path.parts
+
+
+def ensure_readable(path: Path) -> None:
+    """读取前置检查。
+
+    Raises:
+        ValueError: 路径属于不可读保护范围。
+    """
+    if is_read_protected(path):
+        raise ValueError(f"Path is protected: {path.name}")
+
 
 def safe_path(path: str | Path, root: Path | None = None) -> Path:
     """解析并校验路径，确保其位于 root 目录内。

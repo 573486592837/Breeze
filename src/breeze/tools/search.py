@@ -20,7 +20,7 @@ from breeze.tools.fs import (
     load_gitignore_patterns,
 )
 from breeze.tools.registry import register
-from breeze.tools.safety import safe_read_path
+from breeze.tools.safety import ensure_readable, is_read_protected, safe_read_path
 
 DEFAULT_MAX_RESULTS = 100
 MAX_LINE_CHARS = 200
@@ -110,6 +110,7 @@ def grep(
         ValueError: 路径越界或正则非法。
     """
     target = safe_read_path(path)
+    ensure_readable(target)
     explicit_scope = target != settings.repo_root.resolve()
     max_results = max(1, int(max_results))
 
@@ -181,6 +182,8 @@ def _grep_with_rg(
         cmd.extend(["--glob", f"!{ignored}/"])
     for ignored in IGNORED_PATTERNS:
         cmd.extend(["--glob", f"!{ignored}/"])
+    if target.is_dir():
+        cmd.extend(["--glob", "!.env", "--glob", "!.env.*"])
     if glob_pattern:
         cmd.extend(["--glob", glob_pattern])
     cmd.extend(["--", pattern, rel_target])
@@ -240,10 +243,15 @@ def _grep_with_python(
                 name
                 for name in dirnames
                 if not is_ignored_dir_name(name)
+                and not is_read_protected(Path(dirpath) / name)
                 and (explicit_scope or not is_ignored(Path(dirpath) / name, root, patterns))
             ]
             for name in filenames:
+                if name.startswith(".env"):
+                    continue
                 fpath = Path(dirpath) / name
+                if is_read_protected(fpath):
+                    continue
                 if not explicit_scope and is_ignored(fpath, root, patterns):
                     continue
                 files.append(fpath)

@@ -59,16 +59,43 @@ def is_git_repo(root: Path) -> bool:
 def is_python_project(root: Path) -> bool:
     """判断目录是否是 Python 项目。
 
+    除了构建配置，也识别常见的依赖文件、根目录/``src`` 下的 Python
+    文件，以及已经创建好的虚拟环境。这样在 M0 刚搭骨架、还没有
+    ``pyproject.toml`` 时也能尽早启用 ``run_tests``。
+
     Args:
         root: 仓库根目录。
 
     Returns:
-        存在 pyproject.toml、setup.py、pytest.ini、tox.ini、setup.cfg，
-        或 tests/ 下存在 .py 文件时返回 True。
+        命中任一 Python 项目标记时返回 True。
     """
-    markers = ("pyproject.toml", "setup.py", "pytest.ini", "tox.ini", "setup.cfg")
+    markers = (
+        "pyproject.toml",
+        "setup.py",
+        "pytest.ini",
+        "tox.ini",
+        "setup.cfg",
+        "requirements.txt",
+        "Pipfile",
+        "poetry.lock",
+        "uv.lock",
+        "pdm.lock",
+        "conftest.py",
+    )
     if any((root / name).is_file() for name in markers):
         return True
+
+    venvs = (root / ".venv", root / "venv")
+    for venv in venvs:
+        if (venv / "Scripts" / "python.exe").is_file() or (venv / "bin" / "python").is_file():
+            return True
+
+    if any(root.glob("*.py")):
+        return True
+    src_dir = root / "src"
+    if src_dir.is_dir() and (any(src_dir.glob("*.py")) or any(src_dir.glob("*/*.py"))):
+        return True
+
     tests_dir = root / "tests"
     return tests_dir.is_dir() and any(tests_dir.glob("*.py"))
 
