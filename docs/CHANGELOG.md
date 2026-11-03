@@ -941,3 +941,14 @@ packaging 测试同步到 1.5.1。
 - 验证：624 passed / 2 skipped，ruff 全绿；另用 prompt_toolkit 的
   `PipeInput` 模拟 `ESC[200~ ... ESC[201~` 粘贴，确认回车后得到单个
   `"line1\nline2"` 输入。
+
+### 定位类工具结果可见性（未发布）
+
+- 修复 `grep` / `list_files` 结果在模型看到之前就被替换成一行指针的问题：
+  ≤ 1,000 字符时原样保留；更大时保留前 1,500 字符预览与总行数，并提示
+  “narrow the pattern or path”。旧指针声称信息在 session state 里，但状态块
+  并不记录目录列表，模型只能反复重跑同一工具。
+- Breeze Lens M0 实测：Agent 连续 3 次调用 `list_files` 都只收到指针
+  （原始结果 3 行、35 字符，指针 115 字符），最后改用 `run_shell git ls-files`
+  才看到文件列表。
+- 验证：626 passed / 2 skipped，ruff 全绿。

@@ -73,7 +73,7 @@ CLI  (breeze ask 单轮 | breeze chat 多回合 / --resume / --list)
 Agent Loop  (ReAct；步数预算、半程收敛提醒、连续编辑失败上限)
   |
   +-- Context Manager  策略 v2：压缩单位是"用户回合"，不是"轮"
-  |     +-- 定位类结果恒降级为一行指针 (grep/list_files)           (已实现)
+  |     +-- 定位类结果小体积透传、大体积保留预览 (grep/list_files)   (已实现)
   |     +-- 内容类回合内保留原文 (read_file)，超 24K 实测预算才降级  (已实现)
   |     +-- 可再生类最后降级 (run_shell/run_tests/git_diff/apply_patch…)  (已实现)
   |     +-- Tool Result Compaction（工具端上限 + 兜底裁剪）        (已实现)

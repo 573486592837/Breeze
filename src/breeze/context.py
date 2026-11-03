@@ -3,8 +3,8 @@
 压缩单位从"轮"改为"用户回合"：在一轮提问到最终答案之间，
 工具结果按类型分级处理——
 
-- 定位类工具（grep、list_files）的信息已被 SessionState
-  提取为符号/范围索引，其结果本体恒降级为一行指针。
+- 定位类工具（grep、list_files）结果较小时原样保留；较大时保留一段
+  有界预览与总行数，避免模型因为看不到结果而反复调用同一工具。
 - 内容类工具（read_file 等）默认原样保留，避免模型在编辑前丢失原文。
 - 仅当回合实际 Token 超过 intra_turn_budget 时，按从旧到新依次把
   read_file 降级为"路径+行范围"指针，再不够降级其他可再生工具。
@@ -37,6 +37,11 @@ DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
 DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
 
 POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
+# 小于该字符数的定位结果直接透传：一行指针往往比结果本身还长，
+# 且状态块并不记录目录列表，模型只能反复重跑同一工具。
+POINTER_KEEP_CHARS = 1_000
+# 大结果保留的预览长度：整块丢弃会让模型失去判断依据，只剩“重跑”一个选择。
+POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
 
@@ -123,9 +128,15 @@ def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
 
     if tool in POINTER_TOOLS:
         arg_bits = " ".join(f"{k}={v}" for k, v in list(arguments.items())[:3] if isinstance(v, (str, int)))
-        return (
-            f"[{tool} compressed] {arg_bits} → {n} lines; locations are in the session state; re-run if details needed."
-        )
+        body = result.strip()
+        truncated = len(body) > POINTER_PREVIEW_CHARS
+        if truncated:
+            body = body[:POINTER_PREVIEW_CHARS].rstrip()
+        header = f"[{tool} compressed] {arg_bits} → {n} lines" if arg_bits else f"[{tool} compressed] → {n} lines"
+        pointer = f"{header}\n{body}"
+        if truncated:
+            pointer += "\n... (truncated; narrow the pattern or path for the rest)"
+        return pointer
 
     detail = result.splitlines()[0][:80] if result.strip() else ""
     return f"[{tool} compressed] {detail} (output dropped by budget; re-run if needed)"
@@ -290,7 +301,7 @@ class ContextManager:
                 continue
             tool = id_to_name.get(msg.get("tool_call_id", ""), "")
             content = msg.get("content")
-            if tool in POINTER_TOOLS and isinstance(content, str):
+            if tool in POINTER_TOOLS and isinstance(content, str) and len(content) > POINTER_KEEP_CHARS:
                 new_msg = dict(msg)
                 new_msg["content"] = _render_pointer(tool, id_to_args.get(msg.get("tool_call_id", ""), {}), content)
                 demoted = True
