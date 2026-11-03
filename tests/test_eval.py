@@ -28,7 +28,7 @@ class FakeLLM:
         self.model = "fake-model"
         self.calls: list[dict[str, Any]] = []
 
-    def chat(self, messages, tools=None, temperature=0.0) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.0, tool_choice=None) -> LLMResponse:
         self.calls.append({"messages": messages, "tools": tools})
         return LLMResponse(
             content="fake answer",
@@ -507,7 +507,7 @@ class VariableFakeLLM:
         self.model = "variable"
         self.call_count = 0
 
-    def chat(self, messages, tools=None, temperature=0.0) -> LLMResponse:
+    def chat(self, messages, tools=None, temperature=0.0, tool_choice=None) -> LLMResponse:
         self.call_count += 1
         tokens = 10 * self.call_count
         return LLMResponse(

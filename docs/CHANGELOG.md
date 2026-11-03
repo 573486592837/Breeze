@@ -684,9 +684,60 @@ user 1.5%；再加工具 schema/格式开销 38,019 Token，固定开销约占�
 （system + 工具 schema）与调用次数。结构上 state 块几乎每次调用都变化且位于 body
 之前，是前缀复用的主要破坏点；若改用支持缓存的 provider，应优先把它移到末尾。
 
+### SiliconFlow 对照（2026-11-02，`openai/deepseek-ai/DeepSeek-V4-Flash`）
+
+| 指标 | 交大 deepseek-reasoner | SiliconFlow V4 Flash |
+|---|---|---|
+| 调用 / 工具 | 22 / 24 | 22 / 22 |
+| prompt / completion | 149,690 / 6,816 | 122,982 / 3,613 |
+| LLM 延迟 | 208.6s | 54.5s |
+| provider 缓存 | 3/22 次，0 命中 | 22/22 次，62.7% |
+| 本地前缀复用 | 46.3% | 62.8% |
+| 任务结果 | 28 passed | 17 passed |
+| errors | 0 | 1（`ls` 被 strict 拦截） |
+| 费用 | $0.156506 | LiteLLM 无该模型费用映射 |
+
+- 本地前缀复用与 provider 命中率几乎重合（62.8% vs 62.7%），说明该指标可以作为
+  缓存收益的先验。
+- provider 命中包含工具 schema，因此单次命中可高于只统计消息的本地前缀；总量仍
+  对齐。
+- state 块变化仍是最明显的断点：turn 1 step 11 的 state 从 211 增至 252 Token，
+  命中从 5,888 掉到 3,584；把 state 移到 body 之后可让前缀继续复用。
+- 最后一步 `tools=[]` 会移除工具 schema，导致该次调用完全 miss（step 14：5,156
+  prompt，hit=0）；保留 schema 并用 `tool_choice=none` 禁止调用，可保住这次缓存。
+- 质量：两次都实现了 `--sort` / `--reverse`；V4 Flash 回合 1 用满 15 步但未补测试，
+  回合 2 补 4 个用例后 17 passed。单样本不足以判断质量差异。
+- SiliconFlow 的 `api_base` 需要模型名带 `openai/` 前缀；`.env` 里直接写
+  `deepseek-ai/DeepSeek-V4-Flash` 会被 LiteLLM 拒绝（Provider NOT provided）。
+
+### 缓存结构优化（2026-11-03，SiliconFlow V4 Flash）
+
+- SessionState 状态块从 body 之前移到末尾：它几乎每次调用都变化，放在前面会
+  切断整段历史前缀；移到末尾后，变化只影响自身。
+- 最后一步不再传 `tools=[]`，而是保留 schema 并设置 `tool_choice="none"`：
+  避免移除 schema 改变前缀导致整次 miss；若 provider 无视 `tool_choice` 仍返回
+  工具调用，最终步直接忽略并如实返回文本或步数耗尽提示。
+
+同一两回合任务单样本对照：
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| 调用 / 工具 | 22 / 22 | 16 / 17 |
+| prompt / completion | 122,982 / 3,613 | 86,334 / 2,767 |
+| 本地前缀复用 | 62.8% | **79.7%** |
+| provider 命中 | 62.7%（77,056） | 59.3%（51,200） |
+| 未命中 prompt | 45,926 | **35,134** |
+| 最终步缓存 | 0 命中（5,156 prompt） | 6,144 命中 / 681 miss |
+| 任务结果 | 17 passed，1 error | 17 passed，0 errors |
+
+命中率下降是因为总 prompt 和调用次数都变少，且 provider 按 2,048 Token 块计缓存；
+**绝对未命中 prompt 下降 23.5%**，这才是账单侧的直接收益。单样本，调用数也受模型
+行为影响，不能把差异全部归因于布局。plan 块仍在头部，step 6 更新 plan 时前缀仍会
+回落到 system，可作为下一步优化。
+
 ### 验证
 
-578 passed / 2 skipped，ruff check 全绿。
+584 passed / 2 skipped，ruff check 全绿。
 
 ## 默认步数预算上调到 15（未发布）
 

@@ -222,7 +222,7 @@ def test_plan_counts_toward_budget() -> None:
 
 
 def test_state_block_injected_only_with_demotion() -> None:
-    """无降级时不注入状态块；有降级时紧随 head。"""
+    """无降级时不注入状态块；有降级时追加在消息末尾。"""
     state = _state({"target": "a.py:1"})
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     kept = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(10))]
@@ -231,9 +231,9 @@ def test_state_block_injected_only_with_demotion() -> None:
     cm_low = ContextManager(ContextConfig(intra_turn_budget=200))
     spill = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
     result = cm_low.build(spill, state=state)
-    assert result[2]["role"] == "user"
-    assert "[Session state" in result[2]["content"]
-    assert "target: a.py:1" in result[2]["content"]
+    assert result[-1]["role"] == "user"
+    assert "[Session state" in result[-1]["content"]
+    assert "target: a.py:1" in result[-1]["content"]
 
 
 def test_no_state_block_without_state() -> None:
@@ -396,6 +396,20 @@ def test_stats_prefix_reuse_stops_at_changed_plan() -> None:
     _, second = cm.build_with_stats(base, plan="1. step B")
 
     assert second.cacheable_prefix_tokens == first.system_tokens
+
+
+def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:
+    """state 块在末尾时，它变化只让自身不可复用，前面的 body 仍可复用。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    state = _state({"target": "a.py:1"})
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+
+    _, first = cm.build_with_stats(messages, state=state, archive="Turn 1 A: done")
+    state.symbols["other"] = "b.py:2"
+    _, second = cm.build_with_stats(messages, state=state, archive="Turn 1 A: done")
+
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.state_tokens
+    assert second.cacheable_prefix_tokens > first.system_tokens
 
 
 def test_stats_reset_clears_prefix_baseline() -> None:

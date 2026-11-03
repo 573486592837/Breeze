@@ -384,7 +384,8 @@ class Agent:
                     }
                 )
 
-            tools = registry.schemas(self.tool_names) if remaining > 1 else []
+            tools = registry.schemas(self.tool_names)
+            tool_choice = None if remaining > 1 else "none"
             view = [self.messages[0], *self.messages[turn_start:]]
             llm_messages, prompt_stats = self.context.build_with_stats(
                 view,
@@ -396,7 +397,7 @@ class Agent:
             self._emit(AgentEvent("llm_start", step))
 
             try:
-                resp, latency_ms = self._call_llm(llm_messages, tools)
+                resp, latency_ms = self._call_llm(llm_messages, tools, tool_choice)
             except Exception as exc:
                 self.trace.log_error(step, f"LLM call failed: {exc}")
                 self._emit(AgentEvent("llm_end", step, ok=False, detail=str(exc)))
@@ -427,6 +428,18 @@ class Agent:
                     tool_calls=len(tool_calls),
                 )
             )
+
+            if remaining == 1 and tool_calls:
+                names = ", ".join(tc.name for tc in tool_calls)
+                self.trace.log_guard(step, f"tool calls ignored at final step: {names}")
+                answer = (resp.content or "").strip()
+                if answer:
+                    return self._finish_turn(question, answer, turn_start)
+                return self._finish_turn(
+                    question,
+                    f"Reached max steps ({self.max_steps}), task not completed.",
+                    turn_start,
+                )
 
             if not tool_calls:
                 answer = resp.content or ""
@@ -608,18 +621,23 @@ class Agent:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        tool_choice: str | None = None,
     ) -> tuple[LLMResponse, float]:
         """调用 LLM 并计时。
 
         Args:
             messages: 消息列表。
             tools: 工具 schema 列表。
+            tool_choice: 工具选择策略；``"none"`` 用于最后一步。
 
         Returns:
             (LLMResponse, 耗时毫秒)。
         """
         start = time.perf_counter()
-        resp = self.llm.chat(messages, tools=tools)
+        if tool_choice is None:
+            resp = self.llm.chat(messages, tools=tools)
+        else:
+            resp = self.llm.chat(messages, tools=tools, tool_choice=tool_choice)
         latency_ms = (time.perf_counter() - start) * 1000
         return resp, latency_ms
 

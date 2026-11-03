@@ -19,7 +19,7 @@ class FakeLLMClient:
     def __init__(self, *args, **kwargs) -> None:
         self.model = kwargs.get("model") or "fake-model"
 
-    def chat(self, messages, tools=None, temperature=0.0):
+    def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
         return LLMResponse(
             content="fake answer",
             tool_calls=[],
@@ -122,7 +122,7 @@ def test_ask_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.Mo
     """Markdown 答案应渲染，而不是把 ** 等标记原样打到控制台。"""
 
     class MarkdownLLM(FakeLLMClient):
-        def chat(self, messages, tools=None, temperature=0.0):
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
             return LLMResponse(
                 content="**important** answer\n\n```python\nx = 1\n```",
                 tool_calls=[],
@@ -425,7 +425,7 @@ def test_chat_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.M
     """chat 答案同样应渲染 Markdown。"""
 
     class MarkdownLLM(FakeLLMClient):
-        def chat(self, messages, tools=None, temperature=0.0):
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
             return LLMResponse(
                 content="**bold** answer",
                 tool_calls=[],
@@ -705,7 +705,7 @@ def test_chat_resume_injects_archive_into_first_view(
         def __init__(self, *args, **kwargs):
             pass
 
-        def chat(self, messages, tools=None, temperature=0.0):
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
             views.append(list(messages))
             return LLMResponse(
                 content="prior answer",

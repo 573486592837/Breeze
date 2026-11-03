@@ -112,6 +112,7 @@ class LLMClient:
         messages: list[dict],
         tools: list[dict] | None = None,
         temperature: float | None = None,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """发起一次 chat completion 调用。
 
@@ -119,6 +120,8 @@ class LLMClient:
             messages: 消息列表。
             tools: 可选的工具 schema 列表。
             temperature: 温度。None 时使用实例配置。
+            tool_choice: 可选的工具选择策略；最后一步用 ``"none"`` 保留
+                schema 以维持缓存前缀，同时禁止模型调用工具。
 
         Returns:
             LLMResponse。
@@ -133,6 +136,8 @@ class LLMClient:
         }
         if tools:
             kwargs["tools"] = tools
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
 
         use_parallel = self.parallel_tool_calls and bool(tools)
         if use_parallel:
@@ -141,9 +146,15 @@ class LLMClient:
         try:
             resp = litellm.completion(**kwargs)
         except Exception:
-            if not use_parallel:
+            dropped = False
+            if "tool_choice" in kwargs:
+                kwargs.pop("tool_choice")
+                dropped = True
+            if use_parallel and "parallel_tool_calls" in kwargs:
+                kwargs.pop("parallel_tool_calls")
+                dropped = True
+            if not dropped:
                 raise
-            kwargs.pop("parallel_tool_calls")
             resp = litellm.completion(**kwargs)
 
         choice = resp.choices[0]

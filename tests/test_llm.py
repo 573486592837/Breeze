@@ -208,3 +208,51 @@ def test_extracts_response_cost(client: LLMClient, monkeypatch: pytest.MonkeyPat
     resp = client.chat([{"role": "user", "content": "hi"}])
 
     assert resp.cost_usd == pytest.approx(0.00123)
+
+
+def test_tool_choice_sent_with_tools(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """传 tool_choice 时应随 tools 一起发出。"""
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> types.SimpleNamespace:
+        calls.append(kwargs)
+        return _ok_response()
+
+    monkeypatch.setattr("breeze.llm.litellm.completion", fake)
+    client.chat([{"role": "user", "content": "hi"}], tools=[{"type": "function"}], tool_choice="none")
+
+    assert calls[0]["tool_choice"] == "none"
+    assert calls[0]["tools"] == [{"type": "function"}]
+
+
+def test_tool_choice_ignored_without_tools(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """没有 tools 时不发送 tool_choice。"""
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> types.SimpleNamespace:
+        calls.append(kwargs)
+        return _ok_response()
+
+    monkeypatch.setattr("breeze.llm.litellm.completion", fake)
+    client.chat([{"role": "user", "content": "hi"}], tool_choice="none")
+
+    assert "tool_choice" not in calls[0]
+
+
+def test_tool_choice_fallback_retry(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider 拒绝 tool_choice 时去掉该参数重试一次。"""
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> types.SimpleNamespace:
+        calls.append(kwargs)
+        if "tool_choice" in kwargs:
+            raise RuntimeError("unexpected keyword: tool_choice")
+        return _ok_response()
+
+    monkeypatch.setattr("breeze.llm.litellm.completion", fake)
+    resp = client.chat([{"role": "user", "content": "hi"}], tools=[{"type": "function"}], tool_choice="none")
+
+    assert len(calls) == 2
+    assert "tool_choice" not in calls[1]
+    assert "parallel_tool_calls" not in calls[1]
+    assert resp.content == "ok"
