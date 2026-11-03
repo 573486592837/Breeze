@@ -188,7 +188,7 @@ def _check_shell_operators(tokens: list[str]) -> None:
     name="run_shell",
     description=(
         "在仓库内执行受限的 shell 命令。支持 git、rg 等只读命令，以及 node（运行 JS 测试或脚本），"
-        "不支持管道、重定向和任意命令。运行 Python 测试请用 run_tests；"
+        "不支持管道、重定向和任意命令。运行 Python 测试请用 run_tests（若当前环境提供）；"
         "JS 测试用 'node --test'；仅当需要特殊 pytest 参数时用 'python -m pytest'。"
         "返回 exit_code、stdout、stderr。"
     ),

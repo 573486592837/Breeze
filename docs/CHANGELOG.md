@@ -876,3 +876,16 @@ packaging 测试同步到 1.5.1。
 - 验证：606 passed / 2 skipped，ruff 全绿；在 Breeze-Lens 实测
   `list_files('traces')`、`read_file('../Breeze/src/breeze/trace.py')`、
   `grep(..., path='../Breeze/src/breeze')` 均可用，写工具仍拒绝参考目录。
+
+### 能力探测与读保护（未发布）
+
+- Agent 在每个用户回合开始时重新探测环境能力；成功写操作后如果仍缺少
+  Python 项目能力，会立即重探。这样 M0 创建 `pyproject.toml` 后，同一回合
+  的下一步就能看到 `run_tests`，不必等下一条用户消息。
+- `is_python_project` 增加 `requirements.txt`、`Pipfile`、锁文件、`conftest.py`、
+  根目录/`src` 下的 `.py` 文件以及 `.venv`/`venv` 解释器等标记。
+- `read_file`、`list_files`、`grep` 阻止读取 `.env*` 与 `.git/`；`.env.example`
+  和 `.env.sample` 例外。目录搜索也会跳过这些文件。
+- 非 Python 项目不再在规则里推荐 `run_tests`，改写为“使用项目自带的测试命令”；
+  测试文件规则改为“不要删除或弱化测试”，允许新增测试覆盖新行为。
+- 验证：616 passed / 2 skipped，ruff 全绿。

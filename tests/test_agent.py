@@ -404,12 +404,14 @@ def test_default_system_prompt_adapts_git_rules() -> None:
 
 
 def test_default_system_prompt_marks_run_tests_unavailable() -> None:
-    """非 Python 项目在环境说明里指出 run_tests 不可用。"""
+    """非 Python 项目应改写依赖 run_tests 的规则。"""
     from breeze.agent import default_system_prompt
 
     prompt = default_system_prompt(_caps(python_project=False))
 
     assert "run_tests 不可用" in prompt
+    assert "优先使用 run_tests" not in prompt
+    assert "项目自带的测试命令" in prompt
 
 
 def test_default_system_prompt_reflects_confirm_mode() -> None:
@@ -495,6 +497,49 @@ def test_agent_prompt_follows_permission_mode(trace: RunTrace) -> None:
 
     system = llm.calls[0]["messages"][0]["content"]
     assert "open 模式" in system
+
+
+def test_agent_refreshes_capabilities_after_creating_pyproject(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """创建 Python 项目标记后，下一步即可看到 run_tests。"""
+    from breeze.agent import Agent
+    from breeze.config import settings
+    from breeze.tools import registry
+
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    state = {"caps": _caps(python_project=False, git_repo=False)}
+
+    monkeypatch.setattr("breeze.agent.detect", lambda _root: state["caps"])
+
+    def fake_execute(name, _arguments):
+        if name == "create_file":
+            state["caps"] = _caps(python_project=True, git_repo=False)
+            return "Created pyproject.toml"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call(
+                "create_file",
+                {"path": "pyproject.toml", "content": "[project]\nname='demo'\n"},
+                call_id="c1",
+            ),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("init project") == "done"
+
+    first_tools = {tool["function"]["name"] for tool in llm.calls[0]["tools"]}
+    second_tools = {tool["function"]["name"] for tool in llm.calls[1]["tools"]}
+    assert "run_tests" not in first_tools
+    assert "run_tests" in second_tools
+    assert "未检测到 Python 项目" in llm.calls[0]["messages"][0]["content"]
+    assert "未检测到 Python 项目" not in llm.calls[1]["messages"][0]["content"]
 
 
 def test_agent_passes_tool_schemas(trace: RunTrace, fake_tool: None) -> None:
@@ -610,7 +655,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "git_diff" in prompt
     assert "git_restore" in prompt
     assert "run_tests" in prompt
-    assert "不要修改测试文件" in prompt
+    assert "不要删除或弱化测试" in prompt
     assert "不得以方案、计划或建议结尾" in prompt
     assert "先 grep 搜索符号名" in prompt
     assert "禁止凭记忆编写 old" in prompt

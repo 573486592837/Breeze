@@ -158,6 +158,35 @@ _EDIT_LIMIT_RULE = (
     "   超过后会被拒绝，此时应报告失败或回滚。"
 )
 
+_TEST_RULE_PY = (
+    "4. 如果需要运行测试：Python 项目优先使用 run_tests（需要特殊 pytest 参数时\n"
+    "   改用 run_shell 的 'python -m pytest'）；JS 项目用 run_shell 的 'node --test'。\n"
+    "   不要用 npm / npx / yarn 等包管理器。"
+)
+_TEST_RULE_NO_PY = (
+    "4. 当前未检测到 Python 项目，run_tests 不可用。JS 项目用 run_shell 的 'node --test'；\n"
+    "   其他项目使用项目自带的测试命令。不要用 npm / npx / yarn 等包管理器。"
+)
+_TEST_RULE_9_PY = (
+    "9. 修复类任务在最后一次编辑后，必须重新运行此前失败的测试确认通过。\n"
+    "   全量测试用 run_tests（省略 pattern），超时不等于通过；确需特殊 pytest\n"
+    "   参数时再用 run_shell 的 python -m pytest。任务要求全量测试通过时，"
+)
+_TEST_RULE_9_NO_PY = (
+    "9. 修复类任务在最后一次编辑后，必须重新运行此前失败的测试确认通过。\n"
+    "   全量测试使用项目自带的测试命令（JS 项目用 node --test）；超时不等于通过。"
+    "任务要求全量测试通过时，"
+)
+
+
+def _adapt_test_rules(prompt: str, capabilities: Capabilities) -> str:
+    """非 Python 项目时，改写依赖 run_tests 的规则。"""
+    if capabilities.python_project:
+        return prompt
+    return prompt.replace(_TEST_RULE_PY, _TEST_RULE_NO_PY).replace(
+        _TEST_RULE_9_PY, _TEST_RULE_9_NO_PY
+    )
+
 
 def _edit_limit_rule(limit: int) -> str:
     """生成当前 max_edit_failures 对应的提示文本。"""
@@ -184,6 +213,7 @@ def default_system_prompt(
     mode = (permission_mode or settings.shell_permission).lower()
     limit = settings.agent_max_edit_failures if max_edit_failures is None else max_edit_failures
     prompt = _adapt_shell_rule(_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), mode)
+    prompt = _adapt_test_rules(prompt, caps)
     prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
     parts = [prompt, _environment_note(caps)]
     instructions, _ = load_project_instructions()
@@ -221,7 +251,7 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 5. 如果修改有误，用 git_restore 回滚单个文件后重试。
 6. 不要修改 .git 与 .env*；其他受保护路径会在工具层拒绝。删除文件或目录用 delete_path，
    不要用 run_shell 的 rm / del；非空目录必须传 recursive=true。
-7. 不要修改测试文件来让测试通过，只修改被测代码。
+7. 不要删除或弱化测试来让测试通过；新增或更新测试覆盖新行为是允许的。
 8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。
    超过后会被拒绝，此时应报告失败或回滚。
 9. 修复类任务在最后一次编辑后，必须重新运行此前失败的测试确认通过。
@@ -326,6 +356,7 @@ class Agent:
         self.llm = llm
         self.trace = trace
         self.on_event = on_event
+        self._custom_capabilities = capabilities is not None
         self.capabilities = (
             capabilities if capabilities is not None else detect(settings.repo_root)
         )
@@ -369,6 +400,7 @@ class Agent:
         Returns:
             最终答案字符串。达到最大步数或出错时返回提示文本。
         """
+        self._refresh_capabilities()
         self._refresh_default_prompt()
         if not self.messages:
             self.messages = [{"role": "system", "content": self.system_prompt}]
@@ -544,10 +576,39 @@ class Agent:
                 if tc.name in _WRITE_TOOLS:
                     if succeeded:
                         edit_failures = 0
+                        self._refresh_capabilities_after_write()
                     else:
                         edit_failures += 1
 
         return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
+
+    def _refresh_capabilities(self) -> bool:
+        """重新探测环境能力；变化时同步工具集。"""
+        if self._custom_capabilities:
+            return False
+        caps = detect(settings.repo_root)
+        if caps == self.capabilities:
+            return False
+        self.capabilities = caps
+        self.tool_names = _enabled_tool_names(caps)
+        return True
+
+    def _refresh_capabilities_after_write(self) -> None:
+        """写操作可能创建 Python 项目标记，必要时立即刷新工具集。
+
+        只在当前缺少 Python 项目时探测，避免每次编辑都跑
+        ``git rev-parse``。能力变化时同步 system prompt，使下一步的
+        LLM 调用就能看到新工具。
+        """
+        if self.capabilities.python_project:
+            return
+        if not self._refresh_capabilities():
+            return
+        if self._custom_system_prompt is not None:
+            return
+        self._refresh_default_prompt()
+        if self.messages:
+            self.messages[0] = {"role": "system", "content": self.system_prompt}
 
     def _refresh_default_prompt(self) -> None:
         """重建默认 system prompt，使配置变更在下一回合生效。"""

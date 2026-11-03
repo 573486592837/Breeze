@@ -212,3 +212,26 @@ def test_grep_explicit_subdir_bypasses_gitignore(
 
     assert "run.jsonl" in out
     assert "needle" in out
+
+
+def test_grep_skips_env_from_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """即使没有被 gitignore，也不应搜索 .env 内容。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".env").write_text("SECRET_TOKEN=1\n", encoding="utf-8")
+    (repo / "README.md").write_text("SECRET_TOKEN\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "SECRET_TOKEN", "path": "."})
+
+    assert "README.md" in out
+    assert ".env" not in out
+
+
+def test_grep_rejects_env_target(repo: Path) -> None:
+    """显式搜索 .env 也应被拒绝。"""
+    (repo / ".env").write_text("SECRET_TOKEN=1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected"):
+        registry.execute("grep", {"pattern": "SECRET", "path": ".env"})
