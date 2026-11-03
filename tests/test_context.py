@@ -69,6 +69,18 @@ def test_disabled_returns_original() -> None:
     assert result == messages
 
 
+def test_cross_turn_defaults_to_archive() -> None:
+    """默认跨回合策略是 archive。"""
+    assert ContextConfig().cross_turn == "archive"
+    assert ContextConfig(cross_turn="append").cross_turn == "append"
+
+
+def test_cross_turn_invalid_raises() -> None:
+    """非法跨回合策略立即报错。"""
+    with pytest.raises(ValueError, match="Invalid cross_turn mode"):
+        ContextConfig(cross_turn="both")
+
+
 def test_head_only_returns_original() -> None:
     """只有 system+user 时原样返回。"""
     cm = ContextManager()

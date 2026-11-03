@@ -751,13 +751,41 @@ state。直接证据：plan 首次出现的步骤，前缀从“只剩 system（
 | main 对照（plan 在头部） | 26 | 163,438 | 84.8% | 32.0% | 18 passed |
 
 按回合拆开：plan 尾置两组的 turn 1 命中为 70.1% / 66.5%，同时段对照为
-57.0%；但三组的 turn 2 命中分别只有 5.5% / 2.0% / 6.3%。对照同样接近 0，
-说明 turn 2 的 miss 是 provider 侧的时段性行为（或跨回合缓存失效），不能归因
-于 plan 位置。三组任务均完成，功能 smoke 正常。
+57.0%；三组的 turn 2 命中分别只有 5.5% / 2.0% / 6.3%。三组任务均完成，
+功能 smoke 正常。后续 append-only 对照的 turn 2 命中为 82.9%，说明这里的
+turn 2 miss 来自 archive 模式丢弃历史、重写前缀，而不是 provider 本身。
+
+### append-only 对照（2026-11-03）
+
+新增实验配置 `context.cross_turn = "archive" | "append"`（默认 archive，
+可用 `BREEZE_CONTEXT_CROSS_TURN` 覆盖）。`append` 保留全部历史消息、跳过回合
+归档；配合 `context.enable=false` 可得到“只累计不压缩”的原始对照。
+
+同一两回合任务，按 50× 命中价差把成本折算成未命中等价量
+（`miss + hit/50`）：
+
+| 方案 | 调用 | prompt | 本地复用 | provider 命中 | 未命中等价 | 结果 |
+|---|---|---|---|---|---|---|
+| append-only | 18 | 125,526 | 91.8% | **78.3%** | **29.2k** | 18 passed |
+| archive（plan 尾置 #1） | 23 | 139,192 | 84.4% | 42.1% | 81.7k | 18 passed |
+| archive（plan 尾置 #2） | 21 | 135,512 | 81.9% | 35.7% | 88.1k | 19 passed |
+| archive（main 对照） | 26 | 163,438 | 84.8% | 32.0% | 112.3k | 18 passed |
+
+- append 的 turn 1 / turn 2 命中为 71.2% / 82.9%；archive 两组的 turn 2 只有
+  5.5% / 2.0%，main 对照 6.3%，而 append 跨回合仍能命中。**低命中主要来自
+  客户端重写前缀，不是 provider 故障。**
+- provider 命中率低于本地消息复用的剩余差距来自口径：provider 统计完整
+  prompt（本轮 append 中工具 schema/格式占 27%），本地只统计消息；provider
+  按 2,048 Token 块计缓存；每回合首次调用无前缀可命中。append 的 provider
+  绝对命中 98,304 Token，实际高于本地消息前缀 84,219，说明工具 schema 也被
+  命中，并非 provider 少算。
+- 在这个短任务上，上一回合独有内容只有约 5k Token，archive 省下的 token 很小，
+  却牺牲了跨回合缓存，因此 append-only 更便宜。压缩的收益应在“上一回合工具
+  输出很大”或“接近窗口需要总结”时才会出现；需要更长、更大输出的任务验证。
 
 ### 验证
 
-584 passed / 2 skipped，ruff check 全绿。
+589 passed / 2 skipped，ruff check 全绿。
 
 ## 默认步数预算上调到 15（未发布）
 

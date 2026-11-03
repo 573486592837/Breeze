@@ -36,6 +36,10 @@ permission = "strict"
 [context]
 # Set to false to disable context management entirely.
 enable = true
+# Cross-turn strategy: "archive" keeps only the current turn and injects a
+# compact turn archive; "append" keeps all prior messages (experiment /
+# cost comparison against accumulate-only agents).
+cross_turn = "archive"
 # Compression preset: short | medium | long | custom.
 # A preset supplies intra_turn_budget and the [chat] archive knobs
 # (answer_preview/max_records/max_chars); explicit values below still win.

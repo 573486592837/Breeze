@@ -165,12 +165,33 @@ def test_permission_invalid_raises(tmp_path: Path) -> None:
         Settings(repo_root=tmp_path)
 
 
+def test_context_cross_turn_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_CONTEXT_CROSS_TURN 可切到 append 实验模式。"""
+    monkeypatch.setenv("BREEZE_CONTEXT_CROSS_TURN", "append")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.context_cross_turn == "append"
+
+
+def test_context_cross_turn_invalid_raises(tmp_path: Path) -> None:
+    """非法跨回合策略在加载配置时立即报错。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[context]\ncross_turn = "both"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid context cross_turn mode"):
+        Settings(repo_root=tmp_path)
+
+
 def test_defaults_context_fields() -> None:
     """context section 的字段齐全。"""
     ctx = DEFAULTS["context"]
     for key in (
         "enable",
         "profile",
+        "cross_turn",
         "intra_turn_budget",
         "state_max_entries",
         "tool_result_max_bytes",
@@ -179,6 +200,7 @@ def test_defaults_context_fields() -> None:
     ):
         assert key in ctx, key
     assert isinstance(ctx["enable"], bool)
+    assert ctx["cross_turn"] == "archive"
 
 
 def test_defaults_context_v2_values() -> None:
