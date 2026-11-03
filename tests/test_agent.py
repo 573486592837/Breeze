@@ -582,8 +582,8 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
     assert "update_plan" in prompt
 
 
-def test_agent_injects_session_plan_before_question(trace: RunTrace) -> None:
-    """已有计划时，第一次调用就把它放在 system 之后。"""
+def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
+    """已有计划时，第一次调用就把它追加在问题之后。"""
     llm = FakeLLMClient([_text("ok")])
     agent = Agent(llm=llm, trace=trace, system_prompt="SYS")
     agent.state.plan = "1. inspect\n2. patch"
@@ -592,13 +592,13 @@ def test_agent_injects_session_plan_before_question(trace: RunTrace) -> None:
 
     messages = llm.calls[0]["messages"]
     assert messages[0]["content"] == "SYS"
-    assert messages[1]["content"].startswith("[Current plan")
-    assert "2. patch" in messages[1]["content"]
-    assert messages[-1]["content"] == "hi"
+    assert messages[1]["content"] == "hi"
+    assert messages[-1]["content"].startswith("[Current plan")
+    assert "2. patch" in messages[-1]["content"]
 
 
 def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
-    """update_plan 写入状态，并在下一次 LLM 调用时固定注入。"""
+    """update_plan 写入状态，并在下一次 LLM 调用时追加注入。"""
     llm = FakeLLMClient(
         [
             _tool_call("update_plan", {"content": "1. inspect\n2. patch"}, call_id="p1"),

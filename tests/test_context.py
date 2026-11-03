@@ -167,18 +167,18 @@ def test_extreme_overflow_demotes_spill_tools_too() -> None:
 # ─── 计划注入 ───
 
 
-def test_plan_injected_after_system_without_demotion() -> None:
-    """计划固定在 system 之后注入，无需等待降级。"""
+def test_plan_appended_after_content_without_demotion() -> None:
+    """计划追加在消息末尾，无需等待降级，也不改变前面历史的缓存前缀。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     messages = [_system("SYS"), _user("q")]
 
     result = cm.build(messages, plan="1. 读代码\n2. 改代码")
 
     assert result[0]["content"] == "SYS"
-    assert result[1]["role"] == "user"
-    assert result[1]["content"].startswith("[Current plan")
-    assert "2. 改代码" in result[1]["content"]
-    assert result[-1]["content"] == "q"
+    assert result[1]["content"] == "q"
+    assert result[-1]["role"] == "user"
+    assert result[-1]["content"].startswith("[Current plan")
+    assert "2. 改代码" in result[-1]["content"]
 
 
 def test_empty_plan_not_injected() -> None:
@@ -190,8 +190,8 @@ def test_empty_plan_not_injected() -> None:
     assert cm.build(messages, plan=None) == messages
 
 
-def test_plan_precedes_archive_and_question() -> None:
-    """注入顺序为 system、计划、回合归档、当前问题。"""
+def test_plan_appended_after_archive_and_question() -> None:
+    """注入顺序为 system、回合归档、当前问题、计划。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     messages = [_system("SYS"), _user("q")]
 
@@ -199,9 +199,9 @@ def test_plan_precedes_archive_and_question() -> None:
 
     contents = [m["content"] for m in result]
     assert contents[0] == "SYS"
-    assert contents[1].startswith("[Current plan")
-    assert contents[2].startswith("[Completed turns")
-    assert contents[3] == "q"
+    assert contents[1].startswith("[Completed turns")
+    assert contents[2] == "q"
+    assert contents[3].startswith("[Current plan")
 
 
 def test_plan_counts_toward_budget() -> None:
@@ -388,14 +388,15 @@ def test_stats_prefix_reuse_for_append_only_turn() -> None:
     assert second.total_tokens > first.total_tokens
 
 
-def test_stats_prefix_reuse_stops_at_changed_plan() -> None:
-    """计划块变化后，前缀只剩 system，后续注入与消息都不可复用。"""
+def test_stats_prefix_reuse_keeps_content_when_plan_changes() -> None:
+    """计划在末尾时，它变化不会再切断 system、user 等前面消息。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     base = [_system(), _user("q")]
     _, first = cm.build_with_stats(base, plan="1. step A")
     _, second = cm.build_with_stats(base, plan="1. step B")
 
-    assert second.cacheable_prefix_tokens == first.system_tokens
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.plan_tokens
+    assert second.cacheable_prefix_tokens > first.system_tokens
 
 
 def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:

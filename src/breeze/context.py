@@ -239,7 +239,8 @@ class ContextManager:
             messages: 当前回合的完整历史（system、user、若干轮）。
             state: SessionState 实例；发生降级或存在回合归档时注入。
             archive: TurnLedger 渲染的已完成回合文本；注入在 system 之后。
-            plan: Agent 维护的短期计划；非空时固定在 system 之后注入。
+            plan: Agent 维护的短期计划；非空时追加在 body 之后、state 之前，
+                避免计划更新切断历史缓存前缀。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
@@ -308,14 +309,14 @@ class ContextManager:
             result.append(msg)
 
         add(head[0], "system")
-        plan_block = _render_plan(plan)
-        if plan_block:
-            add({"role": "user", "content": plan_block}, "plan")
         if archive:
             add({"role": "user", "content": archive}, "archive")
         add(head[1], "user")
         for msg in converted:
             add(msg, "body")
+        plan_block = _render_plan(plan)
+        if plan_block:
+            add({"role": "user", "content": plan_block}, "plan")
         if state is not None and (demoted or archive):
             block = state.render()
             if block:
