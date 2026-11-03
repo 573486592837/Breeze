@@ -195,6 +195,10 @@ LITELLM_LOCAL_MODEL_COST_MAP=True
 Trace Summary（回合数、调用次数、Token 与耗时合计）。`--quiet` 仍输出
 纯文本答案，便于脚本消费。
 
+`breeze chat` 的输入支持多行粘贴：整块文本先留在输入缓冲区，按一次回车
+才作为一个问题提交，不会逐行拆成多个回合。stdin 不是终端时（管道、评估
+脚本）仍按行读取。
+
 ### 使用
 
 ```bash

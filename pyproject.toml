@@ -18,6 +18,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "tiktoken>=0.7",
+    # chat 的 bracketed paste：多行粘贴一次提交，而不是被逐行当成新回合。
+    "prompt-toolkit>=3.0",
 ]
 
 [project.optional-dependencies]

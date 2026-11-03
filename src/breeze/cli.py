@@ -19,6 +19,7 @@ from breeze import __version__
 from breeze.agent import Agent, AgentEvent
 from breeze.chat import run_chat
 from breeze.chat_commands import ChatController
+from breeze.chat_input import make_chat_input
 from breeze.config import PERMISSION_MODES, settings
 from breeze.llm import LLMClient
 from breeze.session import SessionStore
@@ -350,7 +351,7 @@ def chat(
                 confirm_command=confirm_command,
             ),
             trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=controller.trace_prefix),
-            input_fn=input,
+            input_fn=make_chat_input(),
             print_fn=lambda text: console.print(text, markup=False),
             session=session,
             answer_fn=lambda answer: console.print(_answer_panel(answer)),
