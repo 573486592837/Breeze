@@ -78,6 +78,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "trace": {
         "dir": "traces",
+        "capture_messages": False,
     },
     "sessions": {
         "dir": "~/.breeze/sessions",
@@ -104,6 +105,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
     "BREEZE_CHAT_MAX_CHARS": ("chat", "max_chars"),
     "BREEZE_TRACE_DIR": ("trace", "dir"),
+    "BREEZE_CAPTURE_MESSAGES": ("trace", "capture_messages"),
 }
 
 # 压缩档位：一次设定同时覆盖回合预算与会话归档预算。
@@ -331,6 +333,7 @@ class Settings:
         self.context_tool_result_tail_bytes: int = int(cfg["context"]["tool_result_tail_bytes"])
 
         self.trace_dir: str = cfg["trace"]["dir"]
+        self.trace_capture_messages: bool = bool(cfg["trace"]["capture_messages"])
 
         self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
         self.chat_max_records: int = int(cfg["chat"]["max_records"])

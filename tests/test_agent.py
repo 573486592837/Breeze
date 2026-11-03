@@ -1487,3 +1487,24 @@ def test_agent_rejects_invalid_permission_mode(trace: RunTrace) -> None:
 
     with pytest.raises(ValueError, match="Invalid permission mode"):
         Agent(llm=llm, trace=trace, permission_mode="yolo")
+
+
+def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
+    """开启捕获时，Agent 把实际发送的完整 prompt 与工具 schema 落盘。"""
+    llm = FakeLLMClient([_text("ok")])
+
+    with RunTrace(trace_dir=tmp_path / "traces", run_id="cap", capture_messages=True) as tr:
+        agent = Agent(llm=llm, trace=tr, system_prompt="SYS")
+        assert agent.run("hi") == "ok"
+
+    assert tr.messages_path is not None
+    records = [
+        json.loads(line) for line in tr.messages_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record["messages"][0]["content"] == "SYS"
+    assert record["messages"][-1]["content"] == "hi"
+    assert record["tool_choice"] is None
+    names = {tool["function"]["name"] for tool in record["tools"]}
+    assert "read_file" in names

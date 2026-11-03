@@ -846,3 +846,14 @@ packaging 测试同步到 1.5.1。
 
 
 
+
+### 完整 prompt 捕获（2026-11-03）
+
+缓存命中率与本地前缀估算仍有差距，只看 trace 的预览无法还原 provider 实际收到的
+前缀。新增临时调试开关 `trace.capture_messages`（`BREEZE_CAPTURE_MESSAGES=true`，
+默认关闭）：每次 LLM 调用把实际发送的完整 `messages`、工具 schema 与 `tool_choice`
+写入与 trace 同目录的 `<trace>.messages.jsonl`。
+
+- 常规 trace 仍只保留预览，不重复整份 prompt；捕获文件按行写入并随 run 关闭。
+- 文件可能很大且包含代码与工具输出，默认关闭，也不应提交到仓库。
+- CLI 摘要在开启时显示 `messages_path`；`RunTrace(capture_messages=...)` 可显式覆盖。

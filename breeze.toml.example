@@ -56,6 +56,9 @@ tool_result_tail_bytes = 8000
 [trace]
 # Directory for JSONL trace files.
 dir = "traces"
+# Debug only: also save the full messages/tools sent to the LLM in
+# <trace>.messages.jsonl. Off by default; files can be large and contain code.
+capture_messages = false
 
 [sessions]
 # Directory for `breeze chat` session files (JSONL, resumable conversations).

@@ -493,6 +493,8 @@ def _print_summary(summary: dict, title: str = "Trace Summary") -> None:
 
     table.add_row("run_id", summary["run_id"])
     table.add_row("trace_path", summary["trace_path"])
+    if summary.get("messages_path"):
+        table.add_row("messages_path", summary["messages_path"])
     table.add_row("llm_calls", str(summary["llm_calls"]))
     table.add_row("tool_calls", str(summary["tool_calls"]))
     table.add_row("prompt_tokens", str(summary["prompt_tokens"]))
@@ -538,6 +540,13 @@ def _print_chat_summary(summaries: list[dict]) -> None:
     )
     for key in ("llm_latency_ms", "tool_latency_ms"):
         table.add_row(key, f"{sum(float(s.get(key, 0.0) or 0.0) for s in summaries):.1f}")
+
+    captured = [s["messages_path"] for s in summaries if s.get("messages_path")]
+    if captured:
+        table.add_row(
+            "messages_path",
+            captured[0] if len(captured) == 1 else f"{len(captured)} files (one per turn)",
+        )
 
     console.print()
     console.print(table)

@@ -165,6 +165,20 @@ def test_permission_invalid_raises(tmp_path: Path) -> None:
         Settings(repo_root=tmp_path)
 
 
+def test_capture_messages_default_off() -> None:
+    """默认不保存完整 prompt。"""
+    assert DEFAULTS["trace"]["capture_messages"] is False
+
+
+def test_capture_messages_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BREEZE_CAPTURE_MESSAGES 可开启完整 prompt 捕获。"""
+    monkeypatch.setenv("BREEZE_CAPTURE_MESSAGES", "true")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.trace_capture_messages is True
+
+
 def test_defaults_context_fields() -> None:
     """context section 的字段齐全。"""
     ctx = DEFAULTS["context"]
@@ -666,6 +680,7 @@ def test_settings_type_coercion(tmp_path: Path) -> None:
     assert isinstance(s.context_intra_turn_budget, int)
     assert isinstance(s.llm_temperature, float)
     assert isinstance(s.trace_dir, str)
+    assert isinstance(s.trace_capture_messages, bool)
     assert isinstance(s.chat_answer_preview, int)
     assert isinstance(s.sessions_dir, Path)
     assert not hasattr(s, "tools_repo_map")

@@ -284,7 +284,8 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
   state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
-- `[trace]`：dir
+- `[trace]`：dir、capture_messages（调试开关，默认 false；开启后把每次发送给 LLM
+  的完整 messages/tools 写入独立的 `<trace>.messages.jsonl`）
 
 ### 上下文档位
 

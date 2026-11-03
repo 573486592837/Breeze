@@ -419,6 +419,9 @@ class Agent:
                 cost_usd=resp.cost_usd,
                 prompt_breakdown=prompt_stats.breakdown(),
                 cacheable_prefix_tokens=prompt_stats.cacheable_prefix_tokens,
+                messages=llm_messages,
+                tools=tools,
+                tool_choice=tool_choice,
             )
             self._emit(
                 AgentEvent(
@@ -576,6 +579,8 @@ class Agent:
             cost_usd=resp.cost_usd,
             prompt_breakdown=prompt_stats.breakdown(),
             cacheable_prefix_tokens=prompt_stats.cacheable_prefix_tokens,
+            messages=llm_messages,
+            tools=[],
         )
         self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
         return (resp.content or "").strip() or "(empty response)"
