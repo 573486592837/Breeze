@@ -88,19 +88,48 @@ def test_head_only_returns_original() -> None:
     assert cm.build(messages) == messages
 
 
-# ─── 定位类恒降级 ───
+# ─── 定位类结果 ───
 
 
-def test_pointer_tools_always_demoted() -> None:
-    """grep/list_files 结果应始终替换为一行指针。"""
+def test_small_pointer_results_kept() -> None:
+    """小体积的 grep/list_files 结果原样保留，模型不必重跑同一工具。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    body = ".gitignore\nAgents.md\nREADME.md"
     for tool, args in (("grep", '{"pattern": "def f"}'), ("list_files", '{"path": "."}')):
-        messages = [_system(), _user("q"), *_round("c1", tool, args, _code_lines(50))]
+        messages = [_system(), _user("q"), *_round("c1", tool, args, body)]
         result = cm.build(messages)
 
         tool_msg = next(m for m in result if m["role"] == "tool")
-        assert tool_msg["content"].startswith(f"[{tool} compressed]")
-        assert "session state" in tool_msg["content"]
+        assert tool_msg["content"] == body
+
+
+def test_large_pointer_results_keep_bounded_preview() -> None:
+    """大结果保留预览与总行数，不再声称信息在 session state 里。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    body = "\n".join(f"src/f{i}.py:{i}:match line" for i in range(1, 301))
+    messages = [_system(), _user("q"), *_round("c1", "grep", '{"pattern": "match"}', body)]
+    result = cm.build(messages)
+
+    content = next(m for m in result if m["role"] == "tool")["content"]
+    assert content.startswith("[grep compressed]")
+    assert "300 lines" in content
+    assert "src/f1.py:1:match line" in content
+    assert "truncated" in content
+    assert "session state" not in content
+
+
+def test_large_list_files_preview() -> None:
+    """大目录列表同样保留头部条目，而不是整块丢弃。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    body = "\n".join(f"src/pkg/module_{i}.py" for i in range(200))
+    messages = [_system(), _user("q"), *_round("c1", "list_files", '{"path": "src"}', body)]
+    result = cm.build(messages)
+
+    content = next(m for m in result if m["role"] == "tool")["content"]
+    assert content.startswith("[list_files compressed]")
+    assert "200 lines" in content
+    assert "src/pkg/module_0.py" in content
+    assert "truncated" in content
 
 
 def test_content_tools_kept_within_budget() -> None:
