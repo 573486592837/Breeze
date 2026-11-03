@@ -141,6 +141,8 @@ class ContextConfig:
 
     Attributes:
         enable: 是否启用上下文管理（False 时原样透传）。
+        cross_turn: 跨回合策略；``archive`` 只发当前回合并以归档注入历史，
+            ``append`` 保留全部历史消息（实验对照用）。
         intra_turn_budget: 单回合发送给 LLM 的实际 Token 上限。
         tool_result_max_bytes: 单条工具结果的字节上限（兜底）。
         tool_result_head_bytes: 兜底压缩保留的头部字节数。
@@ -148,6 +150,7 @@ class ContextConfig:
     """
 
     enable: bool | None = None
+    cross_turn: str | None = None
     intra_turn_budget: int | None = None
     tool_result_max_bytes: int | None = None
     tool_result_head_bytes: int | None = None
@@ -157,6 +160,12 @@ class ContextConfig:
         """Fill unset fields from settings."""
         if self.enable is None:
             self.enable = settings.context_enable
+        if self.cross_turn is None:
+            self.cross_turn = settings.context_cross_turn
+        if self.cross_turn not in ("archive", "append"):
+            raise ValueError(
+                f"Invalid cross_turn mode: {self.cross_turn}. Choose from archive, append."
+            )
         if self.intra_turn_budget is None:
             self.intra_turn_budget = settings.context_intra_turn_budget
         if self.tool_result_max_bytes is None:

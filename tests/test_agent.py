@@ -597,6 +597,33 @@ def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
     assert "2. patch" in messages[-1]["content"]
 
 
+def test_agent_append_mode_keeps_previous_turn_messages(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """append 模式保留上一回合的完整消息，不注入回合归档。"""
+    from breeze.context import ContextConfig, ContextManager
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "one"}, call_id="t1c1"),
+            _text("first answer"),
+            _text("second answer"),
+        ]
+    )
+    context = ContextManager(ContextConfig(enable=False, cross_turn="append"))
+    agent = Agent(llm=llm, trace=trace, context=context)
+    agent.run("q1")
+    agent.run("q2")
+
+    messages = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in messages)
+    assert "q1" in joined
+    assert "echo: one" in joined
+    assert "first answer" in joined
+    assert "q2" in joined
+    assert not any("Completed turns" in str(m.get("content", "")) for m in messages)
+
+
 def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
     """update_plan 写入状态，并在下一次 LLM 调用时追加注入。"""
     llm = FakeLLMClient(

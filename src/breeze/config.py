@@ -52,6 +52,7 @@ if _dotenv_path is not None:
 DEFAULT_API_KEY_ENV = "BREEZE_API_KEY"
 LEGACY_API_KEY_ENV = "SILICONFLOW_API_KEY"
 PERMISSION_MODES = ("strict", "confirm", "open")
+CROSS_TURN_MODES = ("archive", "append")
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
@@ -70,6 +71,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "context": {
         "enable": True,
         "profile": "medium",
+        "cross_turn": "archive",
         "intra_turn_budget": 24000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
@@ -99,6 +101,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_PERMISSION": ("shell", "permission"),
     "BREEZE_CONTEXT_ENABLE": ("context", "enable"),
     "BREEZE_CONTEXT_PROFILE": ("context", "profile"),
+    "BREEZE_CONTEXT_CROSS_TURN": ("context", "cross_turn"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
     "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
@@ -324,6 +327,13 @@ class Settings:
 
         self.context_enable: bool = bool(cfg["context"]["enable"])
         self.context_profile: str = str(cfg["context"]["profile"])
+        cross_turn = str(cfg["context"]["cross_turn"]).lower()
+        if cross_turn not in CROSS_TURN_MODES:
+            raise ValueError(
+                f"Invalid context cross_turn mode: {cross_turn}. "
+                f"Choose from {', '.join(CROSS_TURN_MODES)}."
+            )
+        self.context_cross_turn: str = cross_turn
         self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
         self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])
