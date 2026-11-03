@@ -252,6 +252,24 @@ def list_files(
     return result
 
 
+def _clip_utf8(text: str, limit: int) -> str:
+    """按 UTF-8 字节数截断文本，避免切断多字节字符。
+
+    Args:
+        text: 任意文本。
+        limit: 字节上限，小于等于 0 时返回空串。
+
+    Returns:
+        截断后的文本。
+    """
+    if limit <= 0:
+        return ""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
 def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
     """查找 start_index（0-based）之后第一个顶层 def/class 的行号（1-based）。
 
@@ -279,6 +297,7 @@ def _next_symbol_line(lines: list[str], start_index: int) -> int | None:
         "获取行号，再按范围读取。"
         "例如：read_file('src/foo.py', start_line=237, end_line=300)。"
         "不传 start_line/end_line 时读取全文件。"
+        "单行超过 max_bytes 时会保留头部并标注原始字节数，不会返回空结果。"
     ),
     parameters={
         "type": "object",
@@ -359,13 +378,28 @@ def read_file(
 
     for offset, line in enumerate(selected):
         line_no = start_line + offset
-        rendered = f"{line_no:>{width}} | {line}"
-        rendered_bytes = len(rendered.encode("utf-8"))
-        if current_bytes + rendered_bytes > max_bytes:
+        prefix = f"{line_no:>{width}} | "
+        prefix_bytes = len(prefix.encode("utf-8"))
+        remaining = max_bytes - current_bytes
+        line_bytes = len(line.encode("utf-8"))
+
+        if remaining <= prefix_bytes:
             truncated = True
             break
+
+        if prefix_bytes + line_bytes <= remaining:
+            rendered_lines.append(prefix + line)
+            current_bytes += prefix_bytes + line_bytes
+            continue
+
+        # 单行超出剩余预算：保留头部并标注原始大小，避免整行丢弃后返回 (empty)。
+        marker = f" ... [line truncated: {line_bytes} bytes total]"
+        budget = remaining - prefix_bytes - len(marker.encode("utf-8"))
+        rendered = prefix + _clip_utf8(line, budget) + marker
         rendered_lines.append(rendered)
-        current_bytes += rendered_bytes
+        current_bytes += len(rendered.encode("utf-8"))
+        truncated = True
+        break
 
     if not rendered_lines:
         return "(empty)"

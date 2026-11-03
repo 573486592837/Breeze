@@ -142,7 +142,12 @@ def _split_command(command: str) -> list[str]:
     """
     posix = os.name != "nt"
     try:
-        raw = shlex.split(command, posix=posix)
+        # punctuation_chars 让未加引号的 ; | & < > 成为独立 token，
+        # 引号内的同名符号则保留在参数里，不会被误判为命令串联。
+        lexer = shlex.shlex(command, posix=posix, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        raw = list(lexer)
     except ValueError as exc:
         raise ValueError(
             f"Unable to parse command: {exc}. "
@@ -154,7 +159,7 @@ def _split_command(command: str) -> list[str]:
 
 
 SHELL_OPERATORS: frozenset[str] = frozenset(
-    {"&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>>", "2>&1", "&>"}
+    {"&&", "||", ";", "|", "&", ">", ">>", "<", "<<", "2>", "2>>", "2>&1", ">&", "&>"}
 )
 
 
@@ -162,8 +167,9 @@ def _check_shell_operators(tokens: list[str]) -> None:
     """拒绝命令串联、管道与重定向。
 
     命令以 shell=False 执行，这些符号不会被解释，而是作为参数传给可执行
-    文件，产生 exit 129 一类误导性错误（试跑中模型因此浪费了数步）。正则
-    里的 ``|`` 只要还在引号内就不会被当作独立 token，不受影响。
+    文件，产生 exit 129 一类误导性错误（试跑中模型因此浪费了数步）。正则或
+    Python 代码里的 ``|``、``;`` 只要还在引号内，就会作为一个参数保留，
+    不会被误拒。
 
     Args:
         tokens: 拆分后的命令参数。
@@ -177,10 +183,6 @@ def _check_shell_operators(tokens: list[str]) -> None:
                 f"Shell operators are not supported: {token!r}. "
                 "Run one command per call, e.g. 'git status --short' then "
                 "'git log --oneline -5'."
-            )
-        if ";" in token:
-            raise ValueError(
-                "Shell command separators are not supported. Run one command per call."
             )
 
 
@@ -441,7 +443,8 @@ def _check_allowed(tokens: list[str]) -> None:
     if exe in {"python", "python3"}:
         if len(tokens) < 3 or tokens[1] != "-m":
             raise ValueError(
-                "Python command must use '-m <module>'. To verify behavior, use run_tests with a specific test. "
+                "Python command must use '-m <module>'; inline '-c' is disabled for safety. "
+                "For file inspection use read_file or grep; to verify behavior use run_tests."
             )
         module = tokens[2].strip("\"'").lower()
         if module not in ALLOWED_PYTHON_MODULES:

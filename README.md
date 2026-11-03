@@ -324,6 +324,10 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 `read_file`、`list_files`、`grep` 也会拒绝读取 `.env*` 与 `.git/`，避免密钥
 进入 prompt 或完整 prompt 捕获文件。
 
+`read_file` 遇到超过 `max_bytes` 的单行时会保留头部并标注原始字节数；
+`run_shell` 只拒绝未加引号的 `; | & < >`，引号内的同名符号按普通参数处理。
+`python -c` 仍被禁用，文件检查请用 `read_file` / `grep`。
+
 API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 `BREEZE_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
 改成其他服务商的变量名（如 `OPENAI_API_KEY`），同时用 `model` 与

@@ -62,6 +62,7 @@ def test_run_shell_rejects_shell_operators(repo: Path) -> None:
         "git status --short && git log --oneline -5",
         "git status || git log",
         "git status; git log",
+        "git status;rm",
         "git log | more",
         "git status > out.txt",
         "git log 2>&1",
@@ -77,6 +78,14 @@ def test_run_shell_allows_quoted_regex_alternation(
     out = registry.execute("run_shell", {"command": 'rg "foo|bar"'})
     assert "exit_code: 0" in out
     assert fake_run["cmd"] == ["rg", "foo|bar"]
+
+
+def test_run_shell_allows_quoted_semicolon(repo: Path, fake_run: dict[str, Any]) -> None:
+    """引号内的分号是普通参数，不应被当成命令串联。"""
+    out = registry.execute("run_shell", {"command": 'rg "foo;bar"'})
+
+    assert "exit_code: 0" in out
+    assert fake_run["cmd"] == ["rg", "foo;bar"]
 
 
 # ─── 权限预检与开放执行 ───

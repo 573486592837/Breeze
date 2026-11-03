@@ -98,6 +98,27 @@ def test_read_file_byte_truncation(repo: Path) -> None:
     assert "truncated" in out or "..." in out
 
 
+def test_read_file_truncates_single_long_line(repo: Path) -> None:
+    """单行超过 max_bytes 时保留头部与原始大小，而不是返回 (empty)。"""
+    (repo / "long.jsonl").write_text("x" * 5000 + "\n", encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "long.jsonl", "max_bytes": 300})
+
+    assert out.startswith("1 | ")
+    assert "line truncated: 5000 bytes total" in out
+    assert "(empty)" not in out
+
+
+def test_read_file_long_line_preserves_utf8(repo: Path) -> None:
+    """按字节截断长行时不能切断多字节字符。"""
+    (repo / "zh.txt").write_text("中" * 1000 + "\n", encoding="utf-8")
+
+    out = registry.execute("read_file", {"path": "zh.txt", "max_bytes": 101})
+
+    assert "中" in out
+    assert "\ufffd" not in out
+
+
 def test_read_file_rejects_dir(repo: Path) -> None:
     """对目录调用 read_file 应抛 ValueError，并指向 list_files。"""
     (repo / "src").mkdir()
