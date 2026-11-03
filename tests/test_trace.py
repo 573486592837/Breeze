@@ -57,6 +57,7 @@ def test_trace_log_llm(trace_dir: Path) -> None:
     assert e["completion_tokens"] == 20
     assert e["total_tokens"] == 120
     assert e["latency_ms"] == 850.5
+    assert e["temperature"] is None
     assert e["tool_calls"][0]["name"] == "list_files"
 
 
@@ -335,9 +336,11 @@ def test_capture_messages_writes_full_prompt(trace_dir: Path) -> None:
             12,
             1.0,
             content="y" * 1000,
+            tool_calls=[{"name": "read_file", "arguments": {"path": "a.py"}}],
             messages=messages,
             tools=tools,
             tool_choice="none",
+            temperature=0.2,
         )
         summary = trace.summary()
 
@@ -350,11 +353,15 @@ def test_capture_messages_writes_full_prompt(trace_dir: Path) -> None:
     assert record["messages"] == messages
     assert record["tools"] == tools
     assert record["tool_choice"] == "none"
+    assert record["temperature"] == 0.2
+    assert record["response"]["content"] == "y" * 1000
+    assert record["response"]["tool_calls"][0]["name"] == "read_file"
 
     assert summary["messages_path"] == str(trace.messages_path)
     # 常规 trace 仍只存预览，不重复整份 prompt
     llm_event = next(e for e in _read_events(trace.path) if e["event"] == "llm_call")
     assert "messages" not in llm_event
+    assert llm_event["temperature"] == 0.2
 
 
 def test_capture_messages_skips_calls_without_payload(trace_dir: Path) -> None:

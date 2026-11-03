@@ -1618,5 +1618,8 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
     assert record["messages"][0]["content"] == "SYS"
     assert record["messages"][-1]["content"] == "hi"
     assert record["tool_choice"] is None
+    assert isinstance(record["temperature"], float)
+    assert record["response"]["content"] == "ok"
+    assert record["response"]["tool_calls"] == []
     names = {tool["function"]["name"] for tool in record["tools"]}
     assert "read_file" in names
