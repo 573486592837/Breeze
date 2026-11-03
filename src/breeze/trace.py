@@ -152,6 +152,7 @@ class RunTrace:
         messages: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
+        temperature: float | None = None,
     ) -> None:
         """记录一次 LLM 调用。
 
@@ -174,6 +175,7 @@ class RunTrace:
                 capture_messages 时写入独立的 ``*.messages.jsonl``。
             tools: 本次发送的工具 schema 列表。
             tool_choice: 本次的工具选择策略。
+            temperature: 本次请求的温度；None 表示未知。
         """
         c = self._counters
         c.llm_calls += 1
@@ -201,6 +203,7 @@ class RunTrace:
                 "step": step,
                 "ts": _now_iso(),
                 "model": model,
+                "temperature": temperature,
                 "latency_ms": round(latency_ms, 2),
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
@@ -226,6 +229,11 @@ class RunTrace:
                     "messages": messages,
                     "tools": tools,
                     "tool_choice": tool_choice,
+                    "temperature": temperature,
+                    "response": {
+                        "content": content,
+                        "tool_calls": tool_calls or [],
+                    },
                 }
             )
 

@@ -889,3 +889,16 @@ packaging 测试同步到 1.5.1。
 - 非 Python 项目不再在规则里推荐 `run_tests`，改写为“使用项目自带的测试命令”；
   测试文件规则改为“不要删除或弱化测试”，允许新增测试覆盖新行为。
 - 验证：616 passed / 2 skipped，ruff 全绿。
+
+### capture 元数据与提示词去重（未发布）
+
+- `*.messages.jsonl` 的每条记录新增 `temperature` 与完整 `response`
+  （`content` + `tool_calls`）；常规 trace 的 `llm_call` 事件也记录 temperature。
+  这样复盘时不必同时对照被截断的 `content_preview`。
+- 合并重复的工作规则：把“先判断信息是否足够 / 能回答就停 / 只读一个文件”并为一条；
+  `apply_patch` 的 old 约束合并进编辑规则 2，删除重复的第 12 条。
+- 压缩测试与 shell 规则中重复的措辞，保留关键行为约束（退出码 0、
+  不得以“与本次任务无关”跳过、不要用 run_shell 调 grep、cwd 参数等）。
+- 静态 system prompt 从 2,242 字符 / 1,592 Token 降到 1,980 字符 / 1,386 Token，
+  每次调用少约 206 Token；环境说明与 AGENTS.md 不计入此数。
+- 验证：616 passed / 2 skipped，ruff 全绿。

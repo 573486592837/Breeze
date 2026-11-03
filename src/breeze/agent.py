@@ -113,13 +113,13 @@ def _adapt_git_rules(prompt: str, capabilities: Capabilities) -> str:
     )
 
 
-_SHELL_RULE_STRICT = "13. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。"
+_SHELL_RULE_STRICT = "12. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。"
 _SHELL_RULE_CONFIRM = (
-    "13. run_shell 默认只允许 git / node / python / python3 / rg / where；"
+    "12. run_shell 默认只允许 git / node / python / python3 / rg / where；"
     "其他命令会先询问用户是否执行，用户拒绝后不要反复尝试。"
 )
 _SHELL_RULE_OPEN = (
-    "13. run_shell 当前为 open 模式，可执行任意命令；命令仍以 shell=False "
+    "12. run_shell 当前为 open 模式，可执行任意命令；命令仍以 shell=False "
     "直接执行，一次只跑一条命令。"
 )
 
@@ -234,16 +234,16 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
    直接整文件读取，不要再用 grep + 分段读取反复试探。
 3. 互不依赖的工具调用应在同一轮一次性发起（例如同时 grep 定位多个符号、
    并行读取多个已定位的文件）；只有后一个调用需要前一个调用的结果时才分轮。
-4. 在调用工具前，先判断是否已有足够信息回答用户问题。
-5. 一旦能回答问题，立即停止调用工具并给出答案。
-6. 如果只需读取一个文件就能回答，就不要读取更多文件。
-7. 遇到工具错误时，简要说明原因，不要反复重试同一工具。
-8. 最终答案应简洁、直接，引用关键文件路径和函数名。
+4. 调用工具前先判断是否已有足够信息；只需读取一个文件就能回答时，不要扩大范围；
+   一旦能回答就停止调用工具并给出答案。
+5. 遇到工具错误时，简要说明原因，不要反复重试同一工具。
+6. 最终答案应简洁、直接，引用关键文件路径和函数名。
 
 编辑代码时：
 1. 修改前用 read_file 确认目标位置和上下文。
-2. 修改已存在的文件用 apply_patch 提交，old 必须唯一匹配文件中的原文。
-   创建新文件用 create_file。
+2. 修改已存在的文件用 apply_patch，old 必须逐字来自最近一次 read_file 的输出
+   并唯一匹配文件中的原文；目标区域已不在上下文或不确定时先重新读取，
+   禁止凭记忆编写 old。创建新文件用 create_file。
 3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。
 4. 如果需要运行测试：Python 项目优先使用 run_tests（需要特殊 pytest 参数时
    改用 run_shell 的 'python -m pytest'）；JS 项目用 run_shell 的 'node --test'。
@@ -255,31 +255,24 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。
    超过后会被拒绝，此时应报告失败或回滚。
 9. 修复类任务在最后一次编辑后，必须重新运行此前失败的测试确认通过。
-   全量测试用 run_tests（省略 pattern），超时不等于通过；确需特殊 pytest
-   参数时再用 run_shell 的 python -m pytest。任务要求全量测试通过时，
-   最后一条测试命令必须退出码为 0；只要还有任何用例失败，就必须继续修复，
-   或在答案中明确报告"未完成及原因"，不得以"与本次任务无关"为由跳过。
-   最终答案只能陈述已执行的操作与观察，不得把未执行的编辑写成已完成。
+   全量测试用 run_tests（省略 pattern），超时不等于通过；特殊 pytest 参数
+   改用 run_shell 的 python -m pytest。任务要求全量测试通过时，最后一条
+   测试命令必须退出码为 0；仍有失败就继续修复，或在答案中明确报告
+   "未完成及原因"，不得以"与本次任务无关"为由跳过。
 10. 任务包含互斥的条件分支时，先判断命中哪个分支，只执行该分支的工作。
 11. 要求修改代码的任务，必须在本次任务内用 apply_patch 或 create_file 实际完成
    全部编辑并运行验证，不得以方案、计划或建议结尾。确实无法完成时，
    明确说明哪些编辑未执行以及原因。最终答案里的“已修改 / 已修复 / 已创建”
    只能对应本轮成功的编辑工具调用；只读文件不算完成，不得粘贴未写入文件的代码。
-12. apply_patch 的 old 必须逐字来自最近一次 read_file 的输出。若目标区域已不在
-   上下文（历史被压缩为摘要）或对原文不确定，先重新读取该区域再编辑，
-   禁止凭记忆编写 old。
-13. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。
-    一次 run_shell 只跑一条命令，不要用 && / || / ; / 管道 / 重定向串联，
-    需要多个结果时分别调用（互不依赖的可并行）。列目录用 list_files，不要
-    用 ls / dir；确认仓库结构时列一次即可，不要重复列举同一目录。
-    代码搜索一律用 grep 工具，不要用 run_shell 调 grep / rg / find；不要用
-    cd 切换目录，需要时传 cwd 参数；内联 Python 用 `python -m <module>`，
-    不要用 `python -c`。node 只用于 `node --test` 或 `node <脚本路径>`，
-    不要用 `node -e` / `--eval` / `-p` 或包管理器；测试用 `node --test`
-    （传目录在部分 Node 版本上会失败，可改为指定具体测试文件）。
-14. 多步任务开始时用 update_plan 写一份 3-7 步计划；每完成一步或方向发生
-   变化后，用完整的新计划覆盖更新。计划保持简短，不要粘贴工具输出。
-   计划会自动注入上下文，回答中不必重复。
+12. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。
+    一次只跑一条命令，不用 && / || / ; / 管道 / 重定向串联；列目录用
+    list_files，不要用 ls / dir；搜索用 grep，不要用 run_shell 调 grep / rg / find；
+    不要用 cd 切换目录，需要时传 cwd 参数；内联 Python 用 `python -m <module>`，
+    不要用 `python -c`；node 只用 `node --test` 或 `node <脚本路径>`，
+    不用 `node -e` / `--eval` / `-p` 或包管理器。
+13. 多步任务开始时用 update_plan 写一份 3-7 步计划；每完成一步或方向发生
+    变化后用完整的新计划覆盖更新。计划保持简短，不要粘贴工具输出，
+    回答中不必重复。
 """
 
 
@@ -483,6 +476,7 @@ class Agent:
                 messages=llm_messages,
                 tools=tools,
                 tool_choice=tool_choice,
+                temperature=getattr(self.llm, "temperature", settings.llm_temperature),
             )
             self._emit(
                 AgentEvent(
@@ -680,6 +674,7 @@ class Agent:
             cacheable_prefix_tokens=prompt_stats.cacheable_prefix_tokens,
             messages=llm_messages,
             tools=[],
+            temperature=getattr(self.llm, "temperature", settings.llm_temperature),
         )
         self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
         return (resp.content or "").strip() or "(empty response)"
