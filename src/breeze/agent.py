@@ -447,11 +447,11 @@ class Agent:
 
             tools = registry.schemas(self.tool_names)
             tool_choice = None if remaining > 1 else "none"
-            view = [self.messages[0], *self.messages[turn_start:]]
+            view = self._llm_view(turn_start)
             llm_messages, prompt_stats = self.context.build_with_stats(
                 view,
                 state=self.state,
-                archive=self.ledger.render(),
+                archive=self._turn_archive(),
                 plan=self.state.plan,
             )
 
@@ -648,11 +648,11 @@ class Agent:
         self.messages.append({"role": "user", "content": _EMPTY_ANSWER_NUDGE})
         self.trace.log_guard(step, "empty final answer; asking for a summary once")
 
-        view = [self.messages[0], *self.messages[turn_start:]]
+        view = self._llm_view(turn_start)
         llm_messages, prompt_stats = self.context.build_with_stats(
             view,
             state=self.state,
-            archive=self.ledger.render(),
+            archive=self._turn_archive(),
             plan=self.state.plan,
         )
 
@@ -713,6 +713,22 @@ class Agent:
 
         self.ledger.record(question, answer, touched)
         return answer
+
+    def _llm_view(self, turn_start: int) -> list[dict[str, Any]]:
+        """选择发给上下文管理器的消息视图。
+
+        ``archive`` 模式只发当前回合；``append`` 模式保留全部历史，
+        用于和“只累计不压缩”的方案做对照。
+        """
+        if self.context.config.cross_turn == "append":
+            return list(self.messages)
+        return [self.messages[0], *self.messages[turn_start:]]
+
+    def _turn_archive(self) -> str | None:
+        """append 模式下历史已完整保留，不再重复注入回合归档。"""
+        if self.context.config.cross_turn == "append":
+            return None
+        return self.ledger.render()
 
     def _emit(self, event: AgentEvent) -> None:
         """触发进度回调。回调异常不得影响任务执行。"""

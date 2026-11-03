@@ -216,6 +216,7 @@ def test_defaults_context_fields() -> None:
     for key in (
         "enable",
         "profile",
+        "cross_turn",
         "intra_turn_budget",
         "state_max_entries",
         "tool_result_max_bytes",
@@ -224,6 +225,7 @@ def test_defaults_context_fields() -> None:
     ):
         assert key in ctx, key
     assert isinstance(ctx["enable"], bool)
+    assert ctx["cross_turn"] == "archive"
 
 
 def test_defaults_context_v2_values() -> None:
