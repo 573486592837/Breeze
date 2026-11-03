@@ -710,9 +710,34 @@ user 1.5%；再加工具 schema/格式开销 38,019 Token，固定开销约占�
 - SiliconFlow 的 `api_base` 需要模型名带 `openai/` 前缀；`.env` 里直接写
   `deepseek-ai/DeepSeek-V4-Flash` 会被 LiteLLM 拒绝（Provider NOT provided）。
 
+### 缓存结构优化（2026-11-03，SiliconFlow V4 Flash）
+
+- SessionState 状态块从 body 之前移到末尾：它几乎每次调用都变化，放在前面会
+  切断整段历史前缀；移到末尾后，变化只影响自身。
+- 最后一步不再传 `tools=[]`，而是保留 schema 并设置 `tool_choice="none"`：
+  避免移除 schema 改变前缀导致整次 miss；若 provider 无视 `tool_choice` 仍返回
+  工具调用，最终步直接忽略并如实返回文本或步数耗尽提示。
+
+同一两回合任务单样本对照：
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| 调用 / 工具 | 22 / 22 | 16 / 17 |
+| prompt / completion | 122,982 / 3,613 | 86,334 / 2,767 |
+| 本地前缀复用 | 62.8% | **79.7%** |
+| provider 命中 | 62.7%（77,056） | 59.3%（51,200） |
+| 未命中 prompt | 45,926 | **35,134** |
+| 最终步缓存 | 0 命中（5,156 prompt） | 6,144 命中 / 681 miss |
+| 任务结果 | 17 passed，1 error | 17 passed，0 errors |
+
+命中率下降是因为总 prompt 和调用次数都变少，且 provider 按 2,048 Token 块计缓存；
+**绝对未命中 prompt 下降 23.5%**，这才是账单侧的直接收益。单样本，调用数也受模型
+行为影响，不能把差异全部归因于布局。plan 块仍在头部，step 6 更新 plan 时前缀仍会
+回落到 system，可作为下一步优化。
+
 ### 验证
 
-579 passed / 2 skipped，ruff check 全绿。
+584 passed / 2 skipped，ruff check 全绿。
 
 ## 默认步数预算上调到 15（未发布）
 

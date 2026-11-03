@@ -9,8 +9,9 @@
 - 仅当回合实际 Token 超过 intra_turn_budget 时，按从旧到新依次把
   read_file 降级为"路径+行范围"指针，再不够降级其他可再生工具。
 
-任何降级发生时，把 SessionState 状态块注入消息头部之后，让模型基于
-索引（而不是被丢弃的原文）定点重读并立即编辑。
+任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基于
+索引（而不是被丢弃的原文）定点重读并立即编辑；放在末尾也避免状态每次变化时
+切断前面历史的缓存前缀。
 原始消息列表保持不变，仅供 trace 和调试使用。
 """
 
@@ -313,12 +314,12 @@ class ContextManager:
         if archive:
             add({"role": "user", "content": archive}, "archive")
         add(head[1], "user")
+        for msg in converted:
+            add(msg, "body")
         if state is not None and (demoted or archive):
             block = state.render()
             if block:
                 add({"role": "user", "content": block}, "state")
-        for msg in converted:
-            add(msg, "body")
         return result, self._stats(result, segments)
 
     def _spill(

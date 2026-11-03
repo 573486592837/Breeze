@@ -34,8 +34,9 @@ class FakeLLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
-        self.calls.append({"messages": list(messages), "tools": tools})
+        self.calls.append({"messages": list(messages), "tools": tools, "tool_choice": tool_choice})
         if not self.responses:
             raise RuntimeError("FakeLLMClient: no more responses")
         return self.responses.pop(0)
@@ -224,7 +225,7 @@ def test_agent_llm_exception(trace: RunTrace, fake_tool: None) -> None:
     class FailingLLM:
         model = "failing"
 
-        def chat(self, messages, tools=None, temperature=0.0):
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
             raise RuntimeError("network down")
 
     agent = Agent(llm=FailingLLM(), trace=trace)
@@ -479,15 +480,36 @@ def test_agent_injects_closing_hint_near_max_steps(trace: RunTrace, fake_tool: N
     assert len(hints) == 1
 
 
-def test_agent_disables_tools_on_last_step(trace: RunTrace, fake_tool: None) -> None:
-    """最后一步不应再传工具 schema。"""
+def test_agent_keeps_tools_but_forbids_calls_on_last_step(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """最后一步保留工具 schema 以维持缓存，但要求模型不要调用。"""
     responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(5)]
     llm = FakeLLMClient(responses)
     agent = Agent(llm=llm, trace=trace, max_steps=3)
     agent.run("go")
 
-    last_tools = llm.calls[-1]["tools"]
-    assert last_tools == []
+    last = llm.calls[-1]
+    assert last["tools"] != []
+    assert last["tool_choice"] == "none"
+    assert llm.calls[0]["tool_choice"] is None
+
+
+def test_agent_ignores_tool_calls_on_last_step(trace: RunTrace, fake_tool: None) -> None:
+    """provider 无视 tool_choice 时，最终步的工具调用不执行。"""
+    responses = [
+        _tool_call("fake_echo", {"text": "one"}, call_id="c1"),
+        _tool_call("fake_echo", {"text": "two"}, call_id="c2"),
+        _tool_call("fake_echo", {"text": "three"}, call_id="c3", content="final answer"),
+    ]
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=3)
+    assert agent.run("go") == "final answer"
+
+    tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    assert len(tool_events) == 2
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("ignored at final step" in e["message"] for e in guards)
 
 
 def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
@@ -510,7 +532,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
                 _text("done")
             ]
 
-        def chat(self, messages, tools=None, temperature=0.0):
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
             calls.append(len(messages))
             return self.responses.pop(0)
 
