@@ -294,6 +294,68 @@ def test_trace_without_name_keeps_default_format(trace_dir: Path) -> None:
         assert trace.path.name.count("_") == 1
 
 
+# ─── 固定文件名（多轮追加） ───
+
+
+def test_fixed_name_appends_multiple_runs(trace_dir: Path) -> None:
+    """fixed_name 使用精确文件名，多次创建追加到同一文件。"""
+    messages = [{"role": "user", "content": "hi"}]
+    with RunTrace(trace_dir=trace_dir, run_id="fixed1", fixed_name="dev", capture_messages=True) as first:
+        first.log_llm(
+            step=0,
+            model="m",
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+            latency_ms=1,
+            messages=messages,
+            tools=[],
+        )
+    with RunTrace(trace_dir=trace_dir, run_id="fixed2", fixed_name="dev", capture_messages=True) as second:
+        second.log_llm(
+            step=0,
+            model="m",
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+            latency_ms=1,
+            messages=messages,
+            tools=[],
+        )
+
+    assert first.path == second.path == trace_dir / "dev.jsonl"
+    assert first.messages_path == trace_dir / "dev.messages.jsonl"
+
+    events = _read_events(first.path)
+    starts = [e for e in events if e["event"] == "run_start"]
+    summaries = [e for e in events if e["event"] == "run_summary"]
+    assert [e["run_id"] for e in starts] == ["fixed1", "fixed2"]
+    assert len(summaries) == 2
+
+    records = _read_events(first.messages_path)
+    assert len(records) == 2
+    assert all(e["event"] == "llm_messages" for e in records)
+
+
+def test_fixed_name_repairs_missing_trailing_newline(trace_dir: Path) -> None:
+    """上次异常退出留下半行时，先补换行再追加，避免记录粘连。"""
+    target = trace_dir / "dev.jsonl"
+    target.write_text("partial", encoding="utf-8")
+
+    with RunTrace(trace_dir=trace_dir, run_id="fixed3", fixed_name="dev"):
+        pass
+
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "partial"
+    assert json.loads(lines[1])["event"] == "run_start"
+
+
+def test_name_and_fixed_name_are_mutually_exclusive(trace_dir: Path) -> None:
+    """前缀模式与固定文件名不能同时使用。"""
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RunTrace(trace_dir=trace_dir, name="a", fixed_name="b")
+
+
 def test_trace_log_permission_does_not_count_as_error(trace_dir: Path) -> None:
     """权限判定事件独立记录，不计入 errors。"""
     with RunTrace(trace_dir=trace_dir, run_id="perm1") as trace:

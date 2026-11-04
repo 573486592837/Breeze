@@ -1,5 +1,6 @@
 """breeze chat 运行时命令的单元测试。"""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from breeze.chat_commands import ChatController
@@ -119,6 +120,69 @@ def test_trace_name_is_normalized() -> None:
     assert controller.trace_prefix == "my_run_2026"
 
 
+def test_trace_pins_exact_file(tmp_path: Path) -> None:
+    """ /trace <name> 固定为 dev.jsonl，并把状态写入会话。"""
+    session = StubSession()
+    controller = _controller(session=session, trace_dir=tmp_path)
+
+    response = controller.handle("/trace dev.jsonl", None)
+
+    assert controller.trace_pinned is True
+    assert controller.trace_prefix == "dev"
+    assert str(tmp_path / "dev.jsonl") in response
+    assert session.changes[-1] == {"trace_prefix": "dev", "trace_pinned": True}
+
+
+def test_trace_rejects_existing_trace_or_messages(tmp_path: Path) -> None:
+    """目标 trace 或 messages 文件已存在时拒绝固定，保持原模式。"""
+    for filename in ("dev.jsonl", "dev.messages.jsonl"):
+        (tmp_path / filename).write_text("old\n", encoding="utf-8")
+        controller = _controller(trace_prefix="first", trace_dir=tmp_path)
+
+        response = controller.handle("/trace dev", None)
+
+        assert "已存在" in response
+        assert controller.trace_pinned is False
+        assert controller.trace_prefix == "first"
+        (tmp_path / filename).unlink()
+
+
+def test_trace_auto_restores_per_turn_files(tmp_path: Path) -> None:
+    """ /trace auto 取消固定，恢复每回合独立文件。"""
+    session = StubSession()
+    controller = _controller(session=session, trace_dir=tmp_path)
+    controller.handle("/trace dev", None)
+
+    response = controller.handle("/trace auto", None)
+
+    assert controller.trace_pinned is False
+    assert "每回合" in response
+    assert session.changes[-1] == {"trace_pinned": False}
+
+
+def test_trace_show_pinned_path(tmp_path: Path) -> None:
+    """固定模式下列出实际目标文件。"""
+    controller = _controller(trace_dir=tmp_path)
+    controller.handle("/trace dev", None)
+
+    response = controller.handle("/trace", None)
+
+    assert "固定" in response
+    assert str(tmp_path / "dev.jsonl") in response
+
+
+def test_trace_repin_same_name_is_noop(tmp_path: Path) -> None:
+    """已在固定同一文件时再次设置，不重复记录配置。"""
+    session = StubSession()
+    controller = _controller(session=session, trace_dir=tmp_path)
+    controller.handle("/trace dev", None)
+
+    response = controller.handle("/trace dev", None)
+
+    assert "已在追加" in response
+    assert len(session.changes) == 1
+
+
 # ─── /profile ───
 
 
@@ -140,13 +204,16 @@ def test_profile_switch_updates_budgets_and_agent() -> None:
 
     assert "压缩档位已切换：short" in response
     assert controller.intra_turn_budget == 12000
+    assert controller.hard_budget == 32000
     assert controller.answer_preview == 800
     assert controller.max_records == 4
     assert controller.max_chars == 3000
     assert agent.context.config.intra_turn_budget == 12000
+    assert agent.context.config.hard_budget == 32000
     assert agent.ledger.max_records == 4
     assert session.changes[-1]["profile"] == "short"
     assert session.changes[-1]["intra_turn_budget"] == 12000
+    assert session.changes[-1]["hard_budget"] == 32000
 
 
 def test_custom_profile_freezes_current_budget() -> None:
@@ -290,3 +357,4 @@ def test_config_lists_runtime_values() -> None:
     assert "session: 20260101T000000_abc" in response
     assert "trace 前缀: run-a" in response
     assert "profile: short (intra_turn_budget=12000)" in response
+    assert "context: hard_budget=32000" in response

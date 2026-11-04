@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from breeze.config import (
@@ -61,7 +62,10 @@ class ChatController:
         temperature: float | None = None,
         profile: str | None = None,
         trace_prefix: str = "trace",
+        trace_pinned: bool = False,
+        trace_dir: str | Path | None = None,
         intra_turn_budget: int | None = None,
+        hard_budget: int | None = None,
         answer_preview: int | None = None,
         max_records: int | None = None,
         max_chars: int | None = None,
@@ -78,8 +82,11 @@ class ChatController:
             max_edit_failures: 连续编辑失败上限，None 时使用配置值。
             temperature: 采样温度，None 时使用配置值。
             profile: 压缩档位，None 时使用配置值。
-            trace_prefix: trace 文件名前缀。
-            intra_turn_budget: 回合预算，None 时按档位或配置取默认。
+            trace_prefix: trace 文件名前缀；固定模式下作为固定文件名。
+            trace_pinned: 是否把后续回合追加到同一个 trace 文件。
+            trace_dir: trace 目录，用于固定文件的存在性检查；None 时跳过检查。
+            intra_turn_budget: 回合软预算，None 时按档位或配置取默认。
+            hard_budget: 回合硬上限，None 时按档位或配置取默认；低于软预算时按软预算处理。
             answer_preview: 归档答案字符上限，None 时按档位或配置取默认。
             max_records: 归档回合数上限，None 时按档位或配置取默认。
             max_chars: 归档字符上限，None 时按档位或配置取默认。
@@ -103,11 +110,14 @@ class ChatController:
         self.intra_turn_budget = _pick(
             intra_turn_budget, preset, "intra_turn_budget", settings.context_intra_turn_budget
         )
+        self.hard_budget = _pick(hard_budget, preset, "hard_budget", settings.context_hard_budget)
         self.answer_preview = _pick(answer_preview, preset, "answer_preview", settings.chat_answer_preview)
         self.max_records = _pick(max_records, preset, "max_records", settings.chat_max_records)
         self.max_chars = _pick(max_chars, preset, "max_chars", settings.chat_max_chars)
 
         self.trace_prefix = normalize_trace_name(trace_prefix)
+        self.trace_pinned = bool(trace_pinned)
+        self.trace_dir = Path(trace_dir) if trace_dir is not None else None
 
     def handle(self, line: str, agent: Any | None) -> str | None:
         """解释一条以 / 开头的命令。
@@ -142,7 +152,12 @@ class ChatController:
 
     def build_context(self) -> ContextManager:
         """按当前回合预算构造 ContextManager。"""
-        return ContextManager(ContextConfig(intra_turn_budget=self.intra_turn_budget))
+        return ContextManager(
+            ContextConfig(
+                intra_turn_budget=self.intra_turn_budget,
+                hard_budget=self.hard_budget,
+            )
+        )
 
     def apply_to_agent(self, agent: Any) -> None:
         """把控制器状态应用到刚创建或恢复的 Agent。"""
@@ -173,21 +188,53 @@ class ChatController:
         return f"模型已切换：{previous} → {new_llm.model}"
 
     def _trace(self, argument: str) -> str:
-        """查看或设置 trace 前缀。"""
+        """查看、固定或恢复 trace 文件模式。"""
         if not argument:
-            return f"当前 trace 前缀：{self.trace_prefix}"
+            if self.trace_pinned:
+                return (
+                    f"当前固定 trace：{self._trace_target()}"
+                    "（后续回合追加；/trace auto 恢复每回合文件）"
+                )
+            return f"当前 trace 前缀：{self.trace_prefix}（每回合一文件）"
 
-        prefix = normalize_trace_name(argument)
-        self.trace_prefix = prefix
-        self._record(trace_prefix=prefix)
-        return f"trace 前缀已设为：{prefix}（从下一回合起生效）"
+        if argument.lower() == "auto":
+            if not self.trace_pinned:
+                return f"当前已是每回合独立 trace 文件（前缀：{self.trace_prefix}）"
+            self.trace_pinned = False
+            self._record(trace_pinned=False)
+            return f"已恢复每回合 trace 文件（前缀：{self.trace_prefix}）"
+
+        name = normalize_trace_name(argument)
+        if self.trace_pinned and name == self.trace_prefix:
+            return f"当前已在追加到 {self._trace_target()}"
+
+        if self.trace_dir is not None:
+            target = self.trace_dir / f"{name}.jsonl"
+            messages = self.trace_dir / f"{name}.messages.jsonl"
+            if target.exists() or messages.exists():
+                return (
+                    f"trace 文件已存在：{target}（或 {messages.name}）；"
+                    "请换一个名字，避免把新会话混入旧 trace。"
+                )
+
+        self.trace_prefix = name
+        self.trace_pinned = True
+        self._record(trace_prefix=name, trace_pinned=True)
+        return f"trace 已固定为：{self._trace_target()}（后续回合追加到同一文件）"
+
+    def _trace_target(self) -> Path:
+        """返回当前固定 trace 的路径，供展示与存在性检查。"""
+        if self.trace_dir is not None:
+            return self.trace_dir / f"{self.trace_prefix}.jsonl"
+        return Path(f"{self.trace_prefix}.jsonl")
 
     def _profile(self, argument: str, agent: Any | None) -> str:
         """查看或切换压缩档位。"""
         if not argument:
             return (
                 f"当前压缩档位：{self.profile} "
-                f"(intra_turn_budget={self.intra_turn_budget}, max_records={self.max_records})"
+                f"(intra_turn_budget={self.intra_turn_budget}, "
+                f"hard_budget={self.hard_budget}, max_records={self.max_records})"
             )
 
         profile = argument.lower()
@@ -198,6 +245,7 @@ class ChatController:
         if profile != CUSTOM_PROFILE:
             values = context_profile_values(profile)
             self.intra_turn_budget = values["intra_turn_budget"]
+            self.hard_budget = values["hard_budget"]
             self.answer_preview = values["answer_preview"]
             self.max_records = values["max_records"]
             self.max_chars = values["max_chars"]
@@ -205,11 +253,16 @@ class ChatController:
         self._record(
             profile=profile,
             intra_turn_budget=self.intra_turn_budget,
+            hard_budget=self.hard_budget,
             answer_preview=self.answer_preview,
             max_records=self.max_records,
             max_chars=self.max_chars,
         )
-        return f"压缩档位已切换：{profile} (intra_turn_budget={self.intra_turn_budget}, max_records={self.max_records})"
+        return (
+            f"压缩档位已切换：{profile} "
+            f"(intra_turn_budget={self.intra_turn_budget}, "
+            f"hard_budget={self.hard_budget}, max_records={self.max_records})"
+        )
 
     def _set(self, argument: str, agent: Any | None) -> str:
         """调整单个运行时参数。"""
@@ -277,18 +330,24 @@ class ChatController:
     def _config(self) -> str:
         """返回当前运行时配置。"""
         session_id = getattr(self.session, "session_id", "") or "-"
+        trace_line = (
+            f"  trace: {self.trace_prefix} (pinned → {self._trace_target()})"
+            if self.trace_pinned
+            else f"  trace 前缀: {self.trace_prefix}"
+        )
         return "\n".join(
             [
                 "运行配置：",
                 f"  repo: {self.repo_root}",
                 f"  model: {self.llm.model}",
                 f"  session: {session_id}",
-                f"  trace 前缀: {self.trace_prefix}",
+                trace_line,
                 f"  max_steps: {self.max_steps}",
                 f"  max_edit_failures: {self.max_edit_failures}",
                 f"  permission: {self.permission}",
                 f"  temperature: {self.temperature:g}",
                 f"  profile: {self.profile} (intra_turn_budget={self.intra_turn_budget})",
+                f"  context: hard_budget={self.hard_budget}",
             ]
         )
 

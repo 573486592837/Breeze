@@ -963,3 +963,44 @@ packaging 测试同步到 1.5.1。
   当成操作符；`rg "a;b"` 等引号内符号不再误报为命令串联。`python -c` 本身
   仍按安全白名单禁用，错误信息改为提示 `read_file` / `grep`。
 - 验证：629 passed / 2 skipped，ruff 全绿。
+
+### 固定 trace 文件（未发布）
+
+- `/trace <name>` 从“设置每回合文件名前缀”改为“固定文件名”：首个回合创建
+  `traces/<name>.jsonl`（开启捕获时为 `<name>.messages.jsonl`），同一会话的
+  后续回合以追加模式写入同一文件，每个回合仍写独立的 `run_start` /
+  `run_summary`，按 `run_id` 即可切分。Breeze Lens 的摄入逻辑本就按 `run_id`
+  分组，因此无需改动即可读取多回合文件。
+- 固定模式写入前会检查文件是否以换行结尾，异常退出留下的半行先补齐，避免
+  两条 JSON 记录粘连。若目标 `.jsonl` 或 `.messages.jsonl` 已存在，则拒绝切换
+  并提示换名，避免把新会话混进旧 trace。
+- `/trace auto` 恢复每回合独立文件；固定状态记入会话 config 事件，`--resume`
+  自动恢复，命令行显式 `--trace-name` 时以参数为准（仍为每回合前缀语义）。
+- 不带参数的 `/trace` 在固定模式显示目标路径，否则显示当前前缀；`/config`
+  同步显示 `trace: <name> (pinned → <path>)`。
+- 验证：639 passed / 2 skipped，ruff 全绿；CLI 测试覆盖多回合追加、捕获文件
+  配对、`--resume` 恢复与已存在文件拒绝。
+
+### 回合内不再压缩 read_file（未发布）
+
+真实 M2 trace 里出现同文件多轮重复读取：24K 软预算一超限，`_spill` 就把最旧的
+`read_file` 换成“re-read and edit immediately”指针；模型据此重读，新增内容又
+触发下一轮换出，形成读取循环。第 7、9、12 次调用 provider 的 `cache_hit_tokens`
+均为 0，22 次 `read_file` 中有 9 次是重复读取。
+
+- 新增 `[context] hard_budget`（short/medium/long 预设 32000/64000/96000，
+  默认 64000）。软预算 `intra_turn_budget` 现在只降级 `run_shell`、`run_tests`、
+  `git_diff` 等可再生输出，**不再降级 `read_file`**；文件原文保留，模型无需为
+  构造 `apply_patch` 的 `old` 反复重读，回合内消息保持只追加，前缀缓存不再被
+  spill 切断。
+- 只有超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，跳过小于
+  512 字符的结果，并保护每个路径最近一次读取；仍超限时才放开保护。硬上限低于
+  软预算时按软预算处理。
+- read_file 指针改为指引定点重读：带行范围的提示 “re-read this range before
+  editing”，整文件读取提示先用 grep 定位目标范围，不再要求“立即编辑”。
+- 系统提示新增两条纪律：内容未变的同一文件不要重复整文件读取；`apply_patch`
+  成功后先用返回结果和测试验证，需要继续修改时才定点重读。
+- `BREEZE_CONTEXT_HARD_BUDGET`、`/profile` 切换、会话 config 恢复与 eval 配置
+  摘要同步支持 `hard_budget`。
+- 验证：642 passed / 2 skipped，ruff 全绿；新增软预算保留原文、硬上限大结果优先、
+  最近读取保护、软预算前缀可复用与 hard >= soft 的回归测试。

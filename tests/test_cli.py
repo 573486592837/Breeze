@@ -1,5 +1,6 @@
 """CLI 的单元测试。"""
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -397,6 +398,50 @@ def test_chat_traces_use_session_id_prefix(repo: Path, tmp_path: Path) -> None:
 
     assert len(traces) == 2
     assert all(t.name.startswith(f"{session_file.stem}_") for t in traces)
+
+
+def test_chat_trace_pin_accumulates_turns(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/trace dev 把多轮写入同一个 dev.jsonl 与 dev.messages.jsonl。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "trace_capture_messages", True)
+    trace_dir = tmp_path / "traces"
+
+    result = runner.invoke(
+        app,
+        ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir)],
+        input="/trace dev\nhello\nagain\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert sorted(p.name for p in trace_dir.iterdir()) == ["dev.jsonl", "dev.messages.jsonl"]
+
+    events = [json.loads(line) for line in (trace_dir / "dev.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for e in events if e["event"] == "run_start") == 2
+    assert sum(1 for e in events if e["event"] == "run_summary") == 2
+
+    records = [
+        json.loads(line)
+        for line in (trace_dir / "dev.messages.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 2
+    assert all(e["event"] == "llm_messages" for e in records)
+
+
+def test_chat_trace_pin_survives_resume(repo: Path, tmp_path: Path) -> None:
+    """--resume 后继续追加同一个固定 trace 文件。"""
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+    base = ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir), "--session-dir", str(session_dir)]
+
+    runner.invoke(app, base, input="/trace dev\nhello\n/exit\n")
+    result = runner.invoke(app, [*base, "--resume", "latest"], input="again\n/exit\n")
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in (trace_dir / "dev.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for e in events if e["event"] == "run_start") == 2
 
 
 def test_chat_trace_name_override(repo: Path, tmp_path: Path) -> None:
@@ -824,8 +869,8 @@ def test_chat_model_command_switches_model(repo: Path, tmp_path: Path, monkeypat
     assert "fake answer" in result.stdout
 
 
-def test_chat_trace_command_changes_prefix(repo: Path, tmp_path: Path) -> None:
-    """/trace 设置后的回合使用新前缀。"""
+def test_chat_trace_command_pins_exact_file(repo: Path, tmp_path: Path) -> None:
+    """/trace <name> 固定文件名，后续回合追加到同一文件。"""
     trace_dir = tmp_path / "traces"
     result = runner.invoke(
         app,
@@ -834,9 +879,8 @@ def test_chat_trace_command_changes_prefix(repo: Path, tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0
-    traces = list(trace_dir.glob("*.jsonl"))
-    assert len(traces) == 1
-    assert traces[0].name.startswith("my-run_")
+    assert (trace_dir / "my-run.jsonl").exists()
+    assert list(trace_dir.glob("my-run_*")) == []
 
 
 def test_chat_profile_command(repo: Path, tmp_path: Path) -> None:
@@ -950,12 +994,12 @@ def test_chat_resume_restores_saved_config(repo: Path, tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "model: resumed-model" in result.stdout
-    assert "trace 前缀: resumed-trace" in result.stdout
+    assert "trace: resumed-trace (pinned" in result.stdout
     assert "max_steps: 3" in result.stdout
     assert "temperature: 0.5" in result.stdout
     traces = list(second_traces.glob("*.jsonl"))
     assert len(traces) == 1
-    assert traces[0].name.startswith("resumed-trace_")
+    assert traces[0].name == "resumed-trace.jsonl"
 
 
 def test_chat_cli_model_overrides_saved(repo: Path, tmp_path: Path) -> None:

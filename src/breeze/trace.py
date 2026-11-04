@@ -57,6 +57,17 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+def _ensure_trailing_newline(path: Path) -> None:
+    """追加写入前保证文件以换行结尾，避免上次异常退出把两条记录粘在一起。"""
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("rb") as fh:
+        fh.seek(-1, 2)
+        if fh.read(1) != b"\n":
+            with path.open("a", encoding="utf-8") as out:
+                out.write("\n")
+
+
 def _preview(text: str | None, limit: int) -> str | None:
     """截断文本时保留头部与尾部。
 
@@ -94,6 +105,7 @@ class RunTrace:
         run_id: str | None = None,
         name: str | None = None,
         capture_messages: bool | None = None,
+        fixed_name: str | None = None,
     ) -> None:
         """初始化追踪器并创建 JSONL 文件。
 
@@ -104,26 +116,41 @@ class RunTrace:
                 会被替换为下划线，完整文件名仍附带时间戳与 run_id。
             capture_messages: 是否把每次调用的完整 messages/tools 写入
                 独立的 ``*.messages.jsonl``。None 时读取 trace 配置。
+            fixed_name: 固定文件名（不含 .jsonl），用于同一会话的多轮
+                追加写入；与 ``name`` 互斥。文件已存在时继续追加。
         """
+        if name and fixed_name:
+            raise ValueError("name and fixed_name are mutually exclusive")
+
         self.run_id = run_id or uuid.uuid4().hex[:8]
         self.name = normalize_trace_name(name) if name else None
+        self.fixed_name = normalize_trace_name(fixed_name) if fixed_name else None
         self.trace_dir = Path(trace_dir)
         self.trace_dir.mkdir(parents=True, exist_ok=True)
 
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-        stem = f"{timestamp}_{self.run_id}"
-        if self.name:
-            stem = f"{self.name}_{stem}"
+        if self.fixed_name:
+            stem = self.fixed_name
+            mode = "a"
+        else:
+            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            stem = f"{timestamp}_{self.run_id}"
+            if self.name:
+                stem = f"{self.name}_{stem}"
+            mode = "w"
         self.path = self.trace_dir / f"{stem}.jsonl"
 
-        self._file = self.path.open("w", encoding="utf-8")
+        if mode == "a":
+            _ensure_trailing_newline(self.path)
+        self._file = self.path.open(mode, encoding="utf-8")
         self._counters = _Counters()
         self._closed = False
 
         capture = settings.trace_capture_messages if capture_messages is None else capture_messages
         self.messages_path = self.path.with_name(f"{self.path.stem}.messages.jsonl") if capture else None
+        if self.messages_path is not None and mode == "a":
+            _ensure_trailing_newline(self.messages_path)
         self._messages_file = (
-            self.messages_path.open("w", encoding="utf-8") if self.messages_path else None
+            self.messages_path.open(mode, encoding="utf-8") if self.messages_path else None
         )
 
         self._write(

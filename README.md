@@ -72,10 +72,11 @@ CLI  (breeze ask 单轮 | breeze chat 多回合 / --resume / --list)
   v
 Agent Loop  (ReAct；步数预算、半程收敛提醒、连续编辑失败上限)
   |
-  +-- Context Manager  策略 v2：压缩单位是"用户回合"，不是"轮"
+  +-- Context Manager  策略 v3：回合内只追加，硬上限兜底
   |     +-- 定位类结果小体积透传、大体积保留预览 (grep/list_files)   (已实现)
-  |     +-- 内容类回合内保留原文 (read_file)，超 24K 实测预算才降级  (已实现)
-  |     +-- 可再生类最后降级 (run_shell/run_tests/git_diff/apply_patch…)  (已实现)
+  |     +-- read_file 原文回合内保留，避免重读并维持前缀缓存          (已实现)
+  |     +-- 软预算只降级可再生输出 (run_shell/run_tests/git_diff…)    (已实现)
+  |     +-- 硬上限才降级 read_file：大结果优先、保护最近读取           (已实现)
   |     +-- Tool Result Compaction（工具端上限 + 兜底裁剪）        (已实现)
   |     +-- Hybrid Retriever                                     (计划中)
   |
@@ -235,10 +236,10 @@ breeze --version
 | 命令 | 作用 |
 |---|---|
 | `/model [name]` | 查看或切换模型 |
-| `/trace [prefix]` | 查看或设置后续回合的 trace 文件名前缀 |
+| `/trace [name\|auto]` | 固定 trace 文件（后续回合追加）或恢复每回合独立文件 |
 | `/profile [name]` | 查看或切换压缩档位（short / medium / long / custom） |
 | `/set <key> <value>` | 调整 max_steps / max_edit_failures / temperature |
-| `/config` | 查看模型、会话、trace 前缀与预算 |
+| `/config` | 查看模型、会话、trace 与实际预算 |
 | `/plan` | 查看 Agent 维护的当前任务计划 |
 | `/new` | 重置对话（运行时配置保留） |
 | `/help` | 显示命令帮助 |
@@ -247,6 +248,12 @@ breeze --version
 配置变更以 config 事件写入当前会话，`--resume` 时自动恢复。优先级为
 CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的配置 >
 配置文件与默认值。只执行命令、没有跑过回合的会话不会留下空文件。
+
+`/trace dev` 把 trace 固定为 `traces/dev.jsonl`（开启完整 prompt 捕获时还有
+`dev.messages.jsonl`），同一会话的后续回合全部追加进去；若目标文件已存在则
+拒绝并提示换名，避免把新会话混进旧记录。`/trace auto` 恢复每回合独立文件。
+固定状态会写入会话，`--resume` 时自动恢复；命令行显式传 `--trace-name`
+时以命令行参数为准。
 
 ### 持久指引
 
@@ -287,8 +294,8 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 - `[tools]`：read_roots（只读参考目录；read_file/list_files/grep 可访问，
   写工具仍限制在仓库内）
 - `[context]`：enable、cross_turn（archive / append，默认 archive；append 保留全部
-  历史，用于成本对照）、profile（压缩档位）、intra_turn_budget（回合实测 Token 预算）、
-  state_max_entries、tool_result_max/head/tail_bytes
+  历史，用于成本对照）、profile（压缩档位）、intra_turn_budget（回合软预算）、
+  hard_budget（回合硬上限）、state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
 - `[trace]`：dir、capture_messages（调试开关，默认 false；开启后把每次发送给 LLM
@@ -299,18 +306,31 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 `[context] profile` 一次设定压缩强度，同时覆盖回合预算与会话归档预算：
 
-| profile | intra_turn_budget | answer_preview | max_records | max_chars |
-|---|---:|---:|---:|---:|
-| `short` | 12000 | 800 | 4 | 3000 |
-| `medium`（默认） | 24000 | 1500 | 8 | 6000 |
-| `long` | 48000 | 3000 | 16 | 12000 |
-| `custom` | 按下方显式配置 | | | |
+| profile | intra_turn_budget | hard_budget | answer_preview | max_records | max_chars |
+|---|---:|---:|---:|---:|---:|
+| `short` | 12000 | 32000 | 800 | 4 | 3000 |
+| `medium`（默认） | 24000 | 64000 | 1500 | 8 | 6000 |
+| `long` | 48000 | 96000 | 3000 | 16 | 12000 |
+| `custom` | 按下方显式配置 | 按下方显式配置 | | | |
 
-档位只是默认值之上的一层：`intra_turn_budget` 与 `[chat]` 下的显式值
-（配置文件或环境变量）仍会覆盖它。设为 `custom` 可完全忽略档位预设，
+档位只是默认值之上的一层：`intra_turn_budget`、`hard_budget` 与 `[chat]` 下的
+显式值（配置文件或环境变量）仍会覆盖它。设为 `custom` 可完全忽略档位预设，
 只用手写的数值。也可以用 `BREEZE_CONTEXT_PROFILE` 临时切换
 （如 `BREEZE_CONTEXT_PROFILE=short`）。long.yaml 实测 short/medium/long
 三档成功率与 Token 差距都在噪声范围内，短档更适合日常。
+
+回合内压缩分两级：
+
+- 超过 `intra_turn_budget` 时只降级 `run_shell`、`run_tests`、`git_diff` 等
+  可再生输出；`read_file` 原文保留，避免模型为了 `apply_patch` 重新读取，
+  同时保持 prompt 前缀稳定、提高缓存命中。
+- 只有超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，并保护
+  每个文件最近一次读取；仍超限时才放开保护。`hard_budget` 低于软预算时按软
+  预算处理。它统计的是消息 Token，不含工具 schema，应配置在模型上下文以内。
+
+跨回合仍由 `cross_turn` 控制：`archive`（默认）在回合边界把已完成回合压成
+归档，适合长时间会话；`append` 只追加历史，前缀缓存最好，但上下文会持续增长。
+两者都会在单个回合内遵守上面的 `read_file` 保留规则。
 
 ### 不可配置项
 

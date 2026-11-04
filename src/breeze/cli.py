@@ -296,7 +296,10 @@ def chat(
             temperature=saved.get("temperature"),
             profile=saved.get("profile"),
             trace_prefix=trace_name or saved.get("trace_prefix") or session.session_id,
+            trace_pinned=bool(saved.get("trace_pinned")) and trace_name is None,
+            trace_dir=trace_dir,
             intra_turn_budget=saved.get("intra_turn_budget"),
+            hard_budget=saved.get("hard_budget"),
             answer_preview=saved.get("answer_preview"),
             max_records=saved.get("max_records"),
             max_chars=saved.get("max_chars"),
@@ -350,7 +353,11 @@ def chat(
                 permission_mode=controller.permission,
                 confirm_command=confirm_command,
             ),
-            trace_factory=lambda: RunTrace(trace_dir=trace_dir, name=controller.trace_prefix),
+            trace_factory=lambda: (
+                RunTrace(trace_dir=trace_dir, fixed_name=controller.trace_prefix)
+                if controller.trace_pinned
+                else RunTrace(trace_dir=trace_dir, name=controller.trace_prefix)
+            ),
             input_fn=make_chat_input(),
             print_fn=lambda text: console.print(text, markup=False),
             session=session,

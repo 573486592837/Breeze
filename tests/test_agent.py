@@ -989,7 +989,11 @@ def test_agent_injects_state_block_on_compression(
             _text("done"),
         ]
     )
-    agent = Agent(llm=llm, trace=trace, context=ContextManager(ContextConfig(intra_turn_budget=1)))
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        context=ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=1)),
+    )
     answer = agent.run("read a.py twice")
 
     assert answer == "done"
