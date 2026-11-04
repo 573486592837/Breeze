@@ -963,3 +963,20 @@ packaging 测试同步到 1.5.1。
   当成操作符；`rg "a;b"` 等引号内符号不再误报为命令串联。`python -c` 本身
   仍按安全白名单禁用，错误信息改为提示 `read_file` / `grep`。
 - 验证：629 passed / 2 skipped，ruff 全绿。
+
+### 固定 trace 文件（未发布）
+
+- `/trace <name>` 从“设置每回合文件名前缀”改为“固定文件名”：首个回合创建
+  `traces/<name>.jsonl`（开启捕获时为 `<name>.messages.jsonl`），同一会话的
+  后续回合以追加模式写入同一文件，每个回合仍写独立的 `run_start` /
+  `run_summary`，按 `run_id` 即可切分。Breeze Lens 的摄入逻辑本就按 `run_id`
+  分组，因此无需改动即可读取多回合文件。
+- 固定模式写入前会检查文件是否以换行结尾，异常退出留下的半行先补齐，避免
+  两条 JSON 记录粘连。若目标 `.jsonl` 或 `.messages.jsonl` 已存在，则拒绝切换
+  并提示换名，避免把新会话混进旧 trace。
+- `/trace auto` 恢复每回合独立文件；固定状态记入会话 config 事件，`--resume`
+  自动恢复，命令行显式 `--trace-name` 时以参数为准（仍为每回合前缀语义）。
+- 不带参数的 `/trace` 在固定模式显示目标路径，否则显示当前前缀；`/config`
+  同步显示 `trace: <name> (pinned → <path>)`。
+- 验证：639 passed / 2 skipped，ruff 全绿；CLI 测试覆盖多回合追加、捕获文件
+  配对、`--resume` 恢复与已存在文件拒绝。

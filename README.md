@@ -235,10 +235,10 @@ breeze --version
 | 命令 | 作用 |
 |---|---|
 | `/model [name]` | 查看或切换模型 |
-| `/trace [prefix]` | 查看或设置后续回合的 trace 文件名前缀 |
+| `/trace [name\|auto]` | 固定 trace 文件（后续回合追加）或恢复每回合独立文件 |
 | `/profile [name]` | 查看或切换压缩档位（short / medium / long / custom） |
 | `/set <key> <value>` | 调整 max_steps / max_edit_failures / temperature |
-| `/config` | 查看模型、会话、trace 前缀与预算 |
+| `/config` | 查看模型、会话、trace 与实际预算 |
 | `/plan` | 查看 Agent 维护的当前任务计划 |
 | `/new` | 重置对话（运行时配置保留） |
 | `/help` | 显示命令帮助 |
@@ -247,6 +247,12 @@ breeze --version
 配置变更以 config 事件写入当前会话，`--resume` 时自动恢复。优先级为
 CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的配置 >
 配置文件与默认值。只执行命令、没有跑过回合的会话不会留下空文件。
+
+`/trace dev` 把 trace 固定为 `traces/dev.jsonl`（开启完整 prompt 捕获时还有
+`dev.messages.jsonl`），同一会话的后续回合全部追加进去；若目标文件已存在则
+拒绝并提示换名，避免把新会话混进旧记录。`/trace auto` 恢复每回合独立文件。
+固定状态会写入会话，`--resume` 时自动恢复；命令行显式传 `--trace-name`
+时以命令行参数为准。
 
 ### 持久指引
 

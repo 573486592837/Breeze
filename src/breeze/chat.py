@@ -16,7 +16,7 @@ from typing import Any
 HELP_TEXT = (
     "commands:\n"
     "  /model [name]       查看或切换模型\n"
-    "  /trace [prefix]     查看或设置 trace 文件名前缀\n"
+    "  /trace [name|auto]  固定 trace 文件名（多轮追加）或恢复每回合文件\n"
     "  /profile [name]     查看或切换压缩档位（short / medium / long / custom）\n"
     "  /set <key> <value>  调整 max_steps / max_edit_failures / temperature / permission\n"
     "  /config             查看当前运行配置\n"
