@@ -234,6 +234,7 @@ def test_agent_llm_exception(trace: RunTrace, fake_tool: None) -> None:
 
     error_events = [e for e in _events(trace.path) if e["event"] == "error"]
     assert len(error_events) == 1
+    assert agent.ledger.records == []
 
 
 # ─── Trace 集成 ───

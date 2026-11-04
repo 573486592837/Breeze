@@ -116,6 +116,8 @@ def run_chat(
                 agent.trace = trace
             if progress is not None:
                 agent.on_event = progress.on_event
+            ledger = getattr(agent, "ledger", None)
+            records_before = len(ledger.records) if ledger is not None else 0
             try:
                 answer = agent.run(question)
             except KeyboardInterrupt:
@@ -125,10 +127,11 @@ def run_chat(
             finally:
                 if progress is not None:
                     progress.stop()
+            turn_aborted = ledger is None or len(ledger.records) == records_before
 
         turns += 1
-        if session is not None and agent.ledger.records:
-            session.record_turn(agent.ledger.records[-1], agent.state, trace.summary())
+        if session is not None and ledger is not None and not turn_aborted:
+            session.record_turn(ledger.records[-1], agent.state, trace.summary())
 
         answer_fn(answer)
         summary_fn(trace.summary(), turns)

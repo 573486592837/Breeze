@@ -57,7 +57,12 @@ def test_defaults_llm_fields() -> None:
     assert "api_base" in llm
     assert "api_key_env" in llm
     assert "temperature" in llm
+    assert "timeout" in llm
+    assert "connect_timeout" in llm
+    assert "max_retries" in llm
     assert isinstance(llm["temperature"], float)
+    assert llm["timeout"] > llm["connect_timeout"] > 0
+    assert llm["max_retries"] >= 0
 
 
 def test_defaults_api_key_env_is_breeze() -> None:
@@ -450,6 +455,19 @@ def test_env_float_conversion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
     assert cfg["llm"]["temperature"] == 0.7
     assert isinstance(cfg["llm"]["temperature"], float)
+
+
+def test_env_llm_timeout_and_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """超时与重试次数支持环境变量覆盖。"""
+    monkeypatch.setenv("BREEZE_LLM_TIMEOUT", "180")
+    monkeypatch.setenv("BREEZE_LLM_CONNECT_TIMEOUT", "10")
+    monkeypatch.setenv("BREEZE_LLM_MAX_RETRIES", "0")
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.llm_timeout == 180.0
+    assert s.llm_connect_timeout == 10.0
+    assert s.llm_max_retries == 0
 
 
 @pytest.mark.parametrize(

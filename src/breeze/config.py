@@ -60,6 +60,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "api_base": "https://api.siliconflow.cn/v1",
         "api_key_env": DEFAULT_API_KEY_ENV,
         "temperature": 0.0,
+        "timeout": 600.0,
+        "connect_timeout": 15.0,
+        "max_retries": 2,
     },
     "agent": {
         "max_steps": 15,
@@ -101,6 +104,9 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_API_BASE": ("llm", "api_base"),
     "BREEZE_API_KEY_ENV": ("llm", "api_key_env"),
     "BREEZE_TEMPERATURE": ("llm", "temperature"),
+    "BREEZE_LLM_TIMEOUT": ("llm", "timeout"),
+    "BREEZE_LLM_CONNECT_TIMEOUT": ("llm", "connect_timeout"),
+    "BREEZE_LLM_MAX_RETRIES": ("llm", "max_retries"),
     "BREEZE_MAX_STEPS": ("agent", "max_steps"),
     "BREEZE_MAX_EDIT_FAILURES": ("agent", "max_edit_failures"),
     "BREEZE_PERMISSION": ("shell", "permission"),
@@ -348,6 +354,9 @@ class Settings:
         self.api_base: str = cfg["llm"]["api_base"]
         self.api_key_env: str = cfg["llm"]["api_key_env"]
         self.llm_temperature: float = float(cfg["llm"]["temperature"])
+        self.llm_timeout: float = float(cfg["llm"]["timeout"])
+        self.llm_connect_timeout: float = float(cfg["llm"]["connect_timeout"])
+        self.llm_max_retries: int = int(cfg["llm"]["max_retries"])
         self.api_key: str = os.getenv(self.api_key_env, "")
         if not self.api_key and self.api_key_env == DEFAULT_API_KEY_ENV:
             # 旧版默认变量名；保留回退，老 .env 无需立即改名。

@@ -1004,3 +1004,22 @@ packaging 测试同步到 1.5.1。
   摘要同步支持 `hard_budget`。
 - 验证：642 passed / 2 skipped，ruff 全绿；新增软预算保留原文、硬上限大结果优先、
   最近读取保护、软预算前缀可复用与 hard >= soft 的回归测试。
+
+### LLM 断网超时与重试（未发布）
+
+M2 试跑中网络中断后 `breeze chat` 停在 `step 9: waiting for model`，因为
+`litellm.completion` 没有超时配置，请求可以无限等待；异常时又会一次性把
+“LLM call failed”写成完成的回合。
+
+- `[llm]` 新增 `timeout`（默认 600 秒）、`connect_timeout`（默认 15 秒）、
+  `max_retries`（默认 2），支持 `BREEZE_LLM_TIMEOUT`、
+  `BREEZE_LLM_CONNECT_TIMEOUT`、`BREEZE_LLM_MAX_RETRIES` 覆盖。请求以
+  `httpx.Timeout(read=timeout, connect=connect_timeout)` 发出，连接断开时快速
+  失败，推理模型仍有足够生成窗口；瞬时错误由 litellm 自动重试。
+- 参数兼容回退只对“provider 不认识 tool_choice/parallel_tool_calls”这类 400
+  错误生效；断网、超时、鉴权失败不再被误判为参数问题而重复请求。
+- LLM 重试耗尽后不再调用 `_finish_turn` 写入失败答案：已完成编辑保留，本回合
+  不并入 TurnLedger，也不写入新的会话记录；`run_chat` 改为按归档条目增量落盘，
+  避免把上一回合重复写入。用户可直接重新发送同一问题。
+- 验证：新增超时/重试参数、网络错误不触发参数回退、失败回合不落盘与不重复
+  写上一回合的测试；全量测试与 ruff 结果见提交。

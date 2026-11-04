@@ -24,6 +24,8 @@ class StubAgent:
         answer = self.answers.pop(0)
         if answer == "INTERRUPT":
             raise KeyboardInterrupt
+        if answer == "ABORT":
+            return "LLM call failed: network down"
         self.ledger.record(question, answer, ["a.py"])
         return answer
 
@@ -337,6 +339,17 @@ def test_interrupted_turn_is_not_recorded() -> None:
     _run(["boom", "next", "/exit"], answers=["INTERRUPT", "ok"], session=session)
 
     assert [r.index for r, _ in session.saved] == [1]
+
+
+def test_aborted_turn_is_not_recorded() -> None:
+    """LLM 失败且未归档的回合不落盘，也不重复写上一回合。"""
+    session = StubSession()
+    ledger = session.restore[0]
+    ledger.record("old", "old answer", [])
+
+    _run(["boom", "next", "/exit"], answers=["ABORT", "ok"], session=session)
+
+    assert [r.index for r, _ in session.saved] == [2]
 
 
 def test_new_writes_reset_event() -> None:
