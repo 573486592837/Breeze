@@ -299,6 +299,7 @@ def chat(
             trace_pinned=bool(saved.get("trace_pinned")) and trace_name is None,
             trace_dir=trace_dir,
             intra_turn_budget=saved.get("intra_turn_budget"),
+            hard_budget=saved.get("hard_budget"),
             answer_preview=saved.get("answer_preview"),
             max_records=saved.get("max_records"),
             max_chars=saved.get("max_chars"),

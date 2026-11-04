@@ -51,9 +51,14 @@ cross_turn = "archive"
 # (answer_preview/max_records/max_chars); explicit values below still win.
 # Use "custom" to ignore the preset entirely.
 profile = "medium"
-# Real-token budget for one user-turn episode (tiktoken). Only when the
-# turn exceeds it are the oldest read_file results demoted to pointers.
+# Real-token soft budget for one user-turn episode (tiktoken). Only
+# reproducible tool output (shell/tests) is demoted at this point; read_file
+# content is kept so edits can use the exact text and the prompt prefix stays
+# cacheable.
 intra_turn_budget = 24000
+# Hard safety limit for one turn. read_file results are demoted only above
+# this limit, largest first and protecting each file's most recent read.
+hard_budget = 64000
 # Maximum entries per section in the structured session-state block
 # (symbols, reads, edits) injected with the summary on compression.
 state_max_entries = 8
