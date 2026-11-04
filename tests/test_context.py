@@ -156,10 +156,10 @@ def test_unknown_tools_kept() -> None:
 # ─── 预算溢出分级 ───
 
 
-def test_overflow_demotes_oldest_read_first() -> None:
-    """溢出时最旧 read_file 先降级为指针，最新的保留原文。"""
+def test_soft_budget_keeps_read_file() -> None:
+    """软预算溢出时 read_file 原文保留，不迫使模型重读。"""
     big = _code_lines(600)
-    cm = ContextManager(ContextConfig(intra_turn_budget=4_500))
+    cm = ContextManager(ContextConfig(intra_turn_budget=4_500, hard_budget=100_000))
     messages = [
         _system(),
         _user("q"),
@@ -169,14 +169,50 @@ def test_overflow_demotes_oldest_read_first() -> None:
     result = cm.build(messages)
 
     contents = [m.get("content", "") for m in result if m["role"] == "tool"]
-    assert any(c.startswith("[read_file compressed] a.py") for c in contents)
-    assert any(c == big for c in contents)
+    assert contents == [big, big]
+
+
+def test_hard_budget_demotes_largest_read_first() -> None:
+    """只有超过硬上限才降级 read_file，并保护最近一次读取。"""
+    big = _code_lines(600)
+    cm = ContextManager(ContextConfig(intra_turn_budget=4_500, hard_budget=4_500))
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "read_file", '{"path": "a.py"}', big),
+        *_round("c2", "read_file", '{"path": "b.py"}', big),
+    ]
+    result = cm.build(messages)
+
+    contents = [m.get("content", "") for m in result if m["role"] == "tool"]
+    assert contents[0].startswith("[read_file compressed] a.py")
+    assert contents[1] == big
+
+
+def test_soft_budget_keeps_prefix_reusable() -> None:
+    """软预算内只追加消息，下一次调用的前缀仍可完整复用。"""
+    big = _code_lines(600)
+    cm = ContextManager(ContextConfig(intra_turn_budget=4_500, hard_budget=100_000))
+    base = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', big)]
+    _, first = cm.build_with_stats(base)
+
+    messages = [*base, *_round("c2", "read_file", '{"path": "b.py"}', big)]
+    result, second = cm.build_with_stats(messages)
+
+    assert [m["content"] for m in result if m["role"] == "tool"] == [big, big]
+    assert second.cacheable_prefix_tokens == first.total_tokens
+
+
+def test_hard_budget_never_below_soft() -> None:
+    """硬上限低于软预算时按软预算处理，避免软阶段反而先降级 read_file。"""
+    config = ContextConfig(intra_turn_budget=100_000, hard_budget=1)
+    assert config.hard_budget == 100_000
 
 
 def test_pointer_after_demotion_carries_range() -> None:
     """read_file 指针应携带路径与行范围，指导定点重读。"""
     big = _code_lines(600)
-    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    cm = ContextManager(ContextConfig(intra_turn_budget=500, hard_budget=500))
     messages = [
         _system(),
         _user("q"),
@@ -191,8 +227,8 @@ def test_pointer_after_demotion_carries_range() -> None:
 
 
 def test_extreme_overflow_demotes_spill_tools_too() -> None:
-    """read_file 降完后仍溢出时，run_tests 等可再生结果也降级。"""
-    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    """软预算先降级可再生结果；硬上限再降级 read_file。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=500, hard_budget=500))
     messages = [
         _system(),
         _user("q"),
@@ -245,17 +281,19 @@ def test_plan_appended_after_archive_and_question() -> None:
     assert contents[3].startswith("[Current plan")
 
 
-def test_plan_counts_toward_budget() -> None:
-    """计划占用预算：同样内容在计划存在时会被降级。"""
+def test_plan_counts_toward_hard_budget() -> None:
+    """计划占用预算：软预算内保留 read_file，超过硬上限才降级。"""
     body = _code_lines(120)
     budget = _count_text_tokens(body) + 50
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
+    plan = "step " * 200
 
-    kept = ContextManager(ContextConfig(intra_turn_budget=budget)).build(messages)
+    soft_cm = ContextManager(ContextConfig(intra_turn_budget=budget, hard_budget=100_000))
+    kept = soft_cm.build(messages, plan=plan)
     assert next(m for m in kept if m["role"] == "tool")["content"] == body
 
-    plan = "step " * 200
-    spilled = ContextManager(ContextConfig(intra_turn_budget=budget)).build(messages, plan=plan)
+    hard_cm = ContextManager(ContextConfig(intra_turn_budget=budget, hard_budget=budget))
+    spilled = hard_cm.build(messages, plan=plan)
     assert next(m for m in spilled if m["role"] == "tool")["content"].startswith("[read_file compressed] a.py")
 
 
@@ -269,7 +307,7 @@ def test_state_block_injected_only_with_demotion() -> None:
     kept = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(10))]
     assert not any("[Session state" in str(m.get("content", "")) for m in cm.build(kept, state=state))
 
-    cm_low = ContextManager(ContextConfig(intra_turn_budget=200))
+    cm_low = ContextManager(ContextConfig(intra_turn_budget=200, hard_budget=200))
     spill = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
     result = cm_low.build(spill, state=state)
     assert result[-1]["role"] == "user"
@@ -279,7 +317,7 @@ def test_state_block_injected_only_with_demotion() -> None:
 
 def test_no_state_block_without_state() -> None:
     """未提供 state 时不注入状态块。"""
-    cm = ContextManager(ContextConfig(intra_turn_budget=200))
+    cm = ContextManager(ContextConfig(intra_turn_budget=200, hard_budget=200))
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
     result = cm.build(messages)
     assert not any("[Session state" in str(m.get("content", "")) for m in result)
@@ -333,7 +371,7 @@ def test_overflow_spill_uses_fallback_when_monkeypatched(tmp_path, monkeypatch) 
     monkeypatch.setattr(ctx, "_encoding_failed", True)
 
     big = _code_lines(600)
-    cm = ContextManager(ContextConfig(intra_turn_budget=500))
+    cm = ContextManager(ContextConfig(intra_turn_budget=500, hard_budget=500))
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', big)]
     result = cm.build(messages)
 
@@ -386,7 +424,7 @@ def test_archive_counted_in_budget() -> None:
     without = ContextManager(ContextConfig(intra_turn_budget=budget))
     assert [m["content"] for m in without.build(messages) if m["role"] == "tool"] == [body]
 
-    with_archive = ContextManager(ContextConfig(intra_turn_budget=budget))
+    with_archive = ContextManager(ContextConfig(intra_turn_budget=budget, hard_budget=budget))
     result = with_archive.build(messages, archive=archive)
     tool_msg = next(m for m in result if m["role"] == "tool")
     assert tool_msg["content"].startswith("[read_file compressed]")

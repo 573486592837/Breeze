@@ -1,17 +1,17 @@
-"""上下文管理（策略 v2：回合内分级保留）。
+"""上下文管理（策略 v3：回合内只追加，硬上限兜底）。
 
-压缩单位从"轮"改为"用户回合"：在一轮提问到最终答案之间，
-工具结果按类型分级处理——
+压缩单位仍是"用户回合"，但降级时机改为两级：
 
-- 定位类工具（grep、list_files）结果较小时原样保留；较大时保留一段
-  有界预览与总行数，避免模型因为看不到结果而反复调用同一工具。
-- 内容类工具（read_file 等）默认原样保留，避免模型在编辑前丢失原文。
-- 仅当回合实际 Token 超过 intra_turn_budget 时，按从旧到新依次把
-  read_file 降级为"路径+行范围"指针，再不够降级其他可再生工具。
+- 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
+  git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
+  模型只能重读；改写历史还会切断前缀缓存。
+- 只有超过 ``hard_budget`` 才动 read_file：优先降级最大的结果，并保护每个
+  路径最近一次读取；仍超限时才放开保护。
+- 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
+  总行数，避免模型因为看不到结果而反复调用同一工具。
 
-任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基于
-索引（而不是被丢弃的原文）定点重读并立即编辑；放在末尾也避免状态每次变化时
-切断前面历史的缓存前缀。
+任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
+于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
 原始消息列表保持不变，仅供 trace 和调试使用。
 """
 
@@ -44,6 +44,8 @@ POINTER_KEEP_CHARS = 1_000
 POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
+# 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
+READ_SPILL_MIN_CHARS = 512
 
 _encoding: tiktoken.Encoding | None = None
 _encoding_failed = False
@@ -121,9 +123,15 @@ def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
     if tool == "read_file":
         path = arguments.get("path", "?")
         start, end = arguments.get("start_line"), arguments.get("end_line")
-        rng = f"lines {start}-{end}" if start and end else "full file"
+        if start and end:
+            rng = f"lines {start}-{end}"
+            return (
+                f"[read_file compressed] {path} ({rng}) dropped by hard limit; "
+                "re-read this range before editing."
+            )
         return (
-            f"[read_file compressed] {path} ({rng}) dropped by budget; re-read this exact range and edit immediately."
+            f"[read_file compressed] {path} (full file) dropped by hard limit; "
+            "use grep to locate the target, then re-read only that range."
         )
 
     if tool in POINTER_TOOLS:
@@ -154,7 +162,8 @@ class ContextConfig:
         enable: 是否启用上下文管理（False 时原样透传）。
         cross_turn: 跨回合策略；``archive`` 只发当前回合并以归档注入历史，
             ``append`` 保留全部历史消息（实验对照用）。
-        intra_turn_budget: 单回合发送给 LLM 的实际 Token 上限。
+        intra_turn_budget: 单回合软预算；只降级可再生工具输出，不降级 read_file。
+        hard_budget: 单回合硬上限；超过后才降级 read_file，低于软预算时按软预算处理。
         tool_result_max_bytes: 单条工具结果的字节上限（兜底）。
         tool_result_head_bytes: 兜底压缩保留的头部字节数。
         tool_result_tail_bytes: 兜底压缩保留的尾部字节数。
@@ -163,6 +172,7 @@ class ContextConfig:
     enable: bool | None = None
     cross_turn: str | None = None
     intra_turn_budget: int | None = None
+    hard_budget: int | None = None
     tool_result_max_bytes: int | None = None
     tool_result_head_bytes: int | None = None
     tool_result_tail_bytes: int | None = None
@@ -179,6 +189,9 @@ class ContextConfig:
             )
         if self.intra_turn_budget is None:
             self.intra_turn_budget = settings.context_intra_turn_budget
+        if self.hard_budget is None:
+            self.hard_budget = settings.context_hard_budget
+        self.hard_budget = max(int(self.hard_budget), int(self.intra_turn_budget))
         if self.tool_result_max_bytes is None:
             self.tool_result_max_bytes = settings.context_tool_result_max_bytes
         if self.tool_result_head_bytes is None:
@@ -309,15 +322,33 @@ class ContextManager:
             else:
                 converted.append(self._compact_tool_result(msg))
 
-        budget = self.config.intra_turn_budget
-        if self._measure(head, converted, state, archive, plan) > budget:
+        soft_budget = self.config.intra_turn_budget
+        if self._measure(head, converted, state, archive, plan) > soft_budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, budget, state, archive, plan, READ_TOOLS
+                head, converted, id_to_name, id_to_args, soft_budget, state, archive, plan, SPILL_TOOLS
             )
             demoted = demoted or spilled
-        if self._measure(head, converted, state, archive, plan) > budget:
+
+        hard_budget = self.config.hard_budget
+        if self._measure(head, converted, state, archive, plan) > hard_budget:
+            protected = self._latest_read_ids(body)
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, budget, state, archive, plan, SPILL_TOOLS
+                head,
+                converted,
+                id_to_name,
+                id_to_args,
+                hard_budget,
+                state,
+                archive,
+                plan,
+                READ_TOOLS,
+                protect=protected,
+                min_chars=READ_SPILL_MIN_CHARS,
+            )
+            demoted = demoted or spilled
+        if self._measure(head, converted, state, archive, plan) > hard_budget:
+            converted, spilled = self._spill(
+                head, converted, id_to_name, id_to_args, hard_budget, state, archive, plan, READ_TOOLS
             )
             demoted = demoted or spilled
 
@@ -354,8 +385,15 @@ class ContextManager:
         archive: str | None,
         plan: str | None,
         classes: frozenset[str],
+        *,
+        protect: frozenset[str] = frozenset(),
+        min_chars: int = 0,
     ) -> tuple[list[dict[str, Any]], bool]:
-        """预算溢出时，从最旧开始把指定类别的工具结果降级为指针。
+        """预算溢出时把指定类别的工具结果降级为指针。
+
+        从最大的结果开始降级：小结果换出省不下多少 Token，却会迫使模型重读。
+        ``protect`` 中的 tool_call_id 先跳过（通常是每个文件最近一次读取），
+        仍超限时再由调用方放开保护重试。
 
         Args:
             head: system+user 头部。
@@ -367,29 +405,62 @@ class ContextManager:
             archive: 回合归档文本，计入 head 开销，可为 None。
             plan: 计划块文本，计入 head 开销，可为 None。
             classes: 本次允许降级的工具类别。
+            protect: 本轮不降级的 tool_call_id 集合。
+            min_chars: 小于该字符数的结果不参与降级。
 
         Returns:
             (新列表, 是否发生降级)。
         """
         out = list(converted)
-        changed = False
+        if self._measure(head, out, state, archive, plan) <= budget:
+            return out, False
+
+        candidates: list[tuple[int, int]] = []
         for i, msg in enumerate(out):
-            if self._measure(head, out, state, archive, plan) <= budget:
-                break
             if msg.get("role") != "tool":
                 continue
             tc_id = msg.get("tool_call_id", "")
             tool = id_to_name.get(tc_id, "")
-            if tool not in classes:
+            if tool not in classes or tc_id in protect:
                 continue
             content = msg.get("content")
             if not isinstance(content, str) or content.startswith(f"[{tool} compressed]"):
                 continue
+            if len(content) < min_chars:
+                continue
+            candidates.append((len(content), i))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+
+        changed = False
+        for _, i in candidates:
+            if self._measure(head, out, state, archive, plan) <= budget:
+                break
+            msg = out[i]
+            tool = id_to_name.get(msg.get("tool_call_id", ""), "")
             new_msg = dict(msg)
-            new_msg["content"] = _render_pointer(tool, id_to_args.get(tc_id, {}), content)
+            new_msg["content"] = _render_pointer(
+                tool, id_to_args.get(msg.get("tool_call_id", ""), {}), msg.get("content", "")
+            )
             out[i] = new_msg
             changed = True
         return out, changed
+
+    @staticmethod
+    def _latest_read_ids(body: list[dict[str, Any]]) -> frozenset[str]:
+        """返回每个文件路径最近一次 read_file 的 tool_call_id。"""
+        latest: dict[str, str] = {}
+        for msg in body:
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                func = tc.get("function", {})
+                if func.get("name") != "read_file":
+                    continue
+                args = _parse_arguments(func.get("arguments", "{}"))
+                path = args.get("path")
+                if isinstance(path, str) and path:
+                    latest[path] = str(tc.get("id", ""))
+        return frozenset(latest.values())
 
     @staticmethod
     def _index_tool_calls(

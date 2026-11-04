@@ -980,3 +980,27 @@ packaging 测试同步到 1.5.1。
   同步显示 `trace: <name> (pinned → <path>)`。
 - 验证：639 passed / 2 skipped，ruff 全绿；CLI 测试覆盖多回合追加、捕获文件
   配对、`--resume` 恢复与已存在文件拒绝。
+
+### 回合内不再压缩 read_file（未发布）
+
+真实 M2 trace 里出现同文件多轮重复读取：24K 软预算一超限，`_spill` 就把最旧的
+`read_file` 换成“re-read and edit immediately”指针；模型据此重读，新增内容又
+触发下一轮换出，形成读取循环。第 7、9、12 次调用 provider 的 `cache_hit_tokens`
+均为 0，22 次 `read_file` 中有 9 次是重复读取。
+
+- 新增 `[context] hard_budget`（short/medium/long 预设 32000/64000/96000，
+  默认 64000）。软预算 `intra_turn_budget` 现在只降级 `run_shell`、`run_tests`、
+  `git_diff` 等可再生输出，**不再降级 `read_file`**；文件原文保留，模型无需为
+  构造 `apply_patch` 的 `old` 反复重读，回合内消息保持只追加，前缀缓存不再被
+  spill 切断。
+- 只有超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，跳过小于
+  512 字符的结果，并保护每个路径最近一次读取；仍超限时才放开保护。硬上限低于
+  软预算时按软预算处理。
+- read_file 指针改为指引定点重读：带行范围的提示 “re-read this range before
+  editing”，整文件读取提示先用 grep 定位目标范围，不再要求“立即编辑”。
+- 系统提示新增两条纪律：内容未变的同一文件不要重复整文件读取；`apply_patch`
+  成功后先用返回结果和测试验证，需要继续修改时才定点重读。
+- `BREEZE_CONTEXT_HARD_BUDGET`、`/profile` 切换、会话 config 恢复与 eval 配置
+  摘要同步支持 `hard_budget`。
+- 验证：642 passed / 2 skipped，ruff 全绿；新增软预算保留原文、硬上限大结果优先、
+  最近读取保护、软预算前缀可复用与 hard >= soft 的回归测试。

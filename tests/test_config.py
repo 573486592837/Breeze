@@ -218,6 +218,7 @@ def test_defaults_context_fields() -> None:
         "profile",
         "cross_turn",
         "intra_turn_budget",
+        "hard_budget",
         "state_max_entries",
         "tool_result_max_bytes",
         "tool_result_head_bytes",
@@ -232,6 +233,7 @@ def test_defaults_context_v2_values() -> None:
     """回合制上下文策略的默认值存在且类型正确。"""
     ctx = DEFAULTS["context"]
     assert ctx["intra_turn_budget"] == 24000
+    assert ctx["hard_budget"] == 64000
     assert ctx["state_max_entries"] == 8
 
 
@@ -240,32 +242,35 @@ def test_default_context_profile_is_medium(tmp_path: Path) -> None:
     assert DEFAULTS["context"]["profile"] == "medium"
     cfg = load_config(tmp_path)
     assert cfg["context"]["intra_turn_budget"] == DEFAULTS["context"]["intra_turn_budget"]
+    assert cfg["context"]["hard_budget"] == DEFAULTS["context"]["hard_budget"]
     assert cfg["chat"] == DEFAULTS["chat"]
 
 
 @pytest.mark.parametrize(
-    "profile, budget, preview, records, chars",
+    "profile, budget, hard, preview, records, chars",
     [
-        ("short", 12000, 800, 4, 3000),
-        ("medium", 24000, 1500, 8, 6000),
-        ("long", 48000, 3000, 16, 12000),
+        ("short", 12000, 32000, 800, 4, 3000),
+        ("medium", 24000, 64000, 1500, 8, 6000),
+        ("long", 48000, 96000, 3000, 16, 12000),
     ],
 )
 def test_context_profile_applies_preset(
     tmp_path: Path,
     profile: str,
     budget: int,
+    hard: int,
     preview: int,
     records: int,
     chars: int,
 ) -> None:
-    """档位同时设定回合预算与会话归档预算。"""
+    """档位同时设定回合软预算、硬上限与会话归档预算。"""
     (tmp_path / "breeze.toml").write_text(f'[context]\nprofile = "{profile}"\n', encoding="utf-8")
 
     cfg = load_config(tmp_path)
 
     assert cfg["context"]["profile"] == profile
     assert cfg["context"]["intra_turn_budget"] == budget
+    assert cfg["context"]["hard_budget"] == hard
     assert cfg["chat"]["answer_preview"] == preview
     assert cfg["chat"]["max_records"] == records
     assert cfg["chat"]["max_chars"] == chars
@@ -330,6 +335,7 @@ def test_settings_reads_profile(tmp_path: Path) -> None:
 
     assert s.context_profile == "short"
     assert s.context_intra_turn_budget == 12000
+    assert s.context_hard_budget == 32000
     assert s.chat_max_records == 4
 
 

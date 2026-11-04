@@ -76,6 +76,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "profile": "medium",
         "cross_turn": "archive",
         "intra_turn_budget": 24000,
+        "hard_budget": 64000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
         "tool_result_head_bytes": 8000,
@@ -107,6 +108,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_CONTEXT_PROFILE": ("context", "profile"),
     "BREEZE_CONTEXT_CROSS_TURN": ("context", "cross_turn"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
+    "BREEZE_CONTEXT_HARD_BUDGET": ("context", "hard_budget"),
     "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
     "BREEZE_CHAT_MAX_CHARS": ("chat", "max_chars"),
@@ -118,15 +120,15 @@ ENV_MAP: dict[str, tuple[str, str]] = {
 # medium 与 DEFAULTS 完全一致，保证不配 profile 时行为不变。
 CONTEXT_PROFILES: dict[str, dict[str, dict[str, Any]]] = {
     "short": {
-        "context": {"intra_turn_budget": 12000},
+        "context": {"intra_turn_budget": 12000, "hard_budget": 32000},
         "chat": {"answer_preview": 800, "max_records": 4, "max_chars": 3000},
     },
     "medium": {
-        "context": {"intra_turn_budget": 24000},
+        "context": {"intra_turn_budget": 24000, "hard_budget": 64000},
         "chat": {"answer_preview": 1500, "max_records": 8, "max_chars": 6000},
     },
     "long": {
-        "context": {"intra_turn_budget": 48000},
+        "context": {"intra_turn_budget": 48000, "hard_budget": 96000},
         "chat": {"answer_preview": 3000, "max_records": 16, "max_chars": 12000},
     },
 }
@@ -270,7 +272,7 @@ def context_profile_values(profile: str) -> dict[str, int]:
         profile: 档位名，大小写不敏感。
 
     Returns:
-        含 intra_turn_budget、answer_preview、max_records、max_chars 的 dict。
+        含 intra_turn_budget、hard_budget、answer_preview、max_records、max_chars 的 dict。
 
     Raises:
         ValueError: profile 不是预设档位也不是 ``custom``。
@@ -279,6 +281,7 @@ def context_profile_values(profile: str) -> dict[str, int]:
     if not preset:
         return {
             "intra_turn_budget": settings.context_intra_turn_budget,
+            "hard_budget": settings.context_hard_budget,
             "answer_preview": settings.chat_answer_preview,
             "max_records": settings.chat_max_records,
             "max_chars": settings.chat_max_chars,
@@ -286,6 +289,7 @@ def context_profile_values(profile: str) -> dict[str, int]:
 
     return {
         "intra_turn_budget": int(preset["context"]["intra_turn_budget"]),
+        "hard_budget": int(preset["context"]["hard_budget"]),
         "answer_preview": int(preset["chat"]["answer_preview"]),
         "max_records": int(preset["chat"]["max_records"]),
         "max_chars": int(preset["chat"]["max_chars"]),
@@ -370,6 +374,7 @@ class Settings:
             )
         self.context_cross_turn: str = cross_turn
         self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
+        self.context_hard_budget: int = int(cfg["context"]["hard_budget"])
         self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])
         self.context_tool_result_head_bytes: int = int(cfg["context"]["tool_result_head_bytes"])
