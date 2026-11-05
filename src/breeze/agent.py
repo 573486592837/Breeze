@@ -460,7 +460,9 @@ class Agent:
             except Exception as exc:
                 self.trace.log_error(step, f"LLM call failed: {exc}")
                 self._emit(AgentEvent("llm_end", step, ok=False, detail=str(exc)))
-                return self._finish_turn(question, f"LLM call failed: {exc}", turn_start)
+                # 断网/超时等不可恢复错误：不把失败答案写成已完成回合，
+                # 已有编辑保留，用户可以重新发送同一问题。
+                return f"LLM call failed: {exc}"
 
             tool_calls = _convert_tool_calls(resp.tool_calls)
 

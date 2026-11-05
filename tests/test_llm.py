@@ -85,6 +85,44 @@ def test_disabled_client_never_sends_flag(client: LLMClient, monkeypatch: pytest
     assert "parallel_tool_calls" not in calls[0]
 
 
+def test_network_error_is_not_treated_as_param_fallback(
+    client: LLMClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """断网/超时类异常不应去掉参数再请求一次。"""
+    calls: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> types.SimpleNamespace:
+        calls.append(kwargs)
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr("breeze.llm.litellm.completion", fake)
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        client.chat([{"role": "user", "content": "hi"}], tools=[{"type": "function"}])
+
+    assert len(calls) == 1
+
+
+def test_client_passes_timeout_and_retries(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """请求携带读取/连接超时与重试次数。"""
+    calls: list[dict[str, Any]] = []
+    client.timeout = 600.0
+    client.connect_timeout = 15.0
+    client.max_retries = 2
+
+    def fake(**kwargs: Any) -> types.SimpleNamespace:
+        calls.append(kwargs)
+        return _ok_response()
+
+    monkeypatch.setattr("breeze.llm.litellm.completion", fake)
+    client.chat([{"role": "user", "content": "hi"}])
+
+    assert calls[0]["num_retries"] == 2
+    timeout = calls[0]["timeout"]
+    assert getattr(timeout, "connect", None) == 15.0
+    assert getattr(timeout, "read", None) == 600.0
+
+
 def test_response_shape_parsed(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """正常响应映射为 LLMResponse。"""
 

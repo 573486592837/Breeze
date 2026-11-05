@@ -8,6 +8,40 @@ import litellm  # noqa: E402
 
 from breeze.config import settings
 
+_PARAM_ERROR_HINTS = (
+    "tool_choice",
+    "parallel_tool_calls",
+    "unexpected keyword",
+    "unsupported parameter",
+    "unknown parameter",
+    "invalid parameter",
+)
+
+
+def _build_timeout(timeout: float, connect_timeout: float) -> Any:
+    """构造 httpx 超时对象；不可用时退回整体超时秒数。"""
+    try:
+        import httpx
+
+        return httpx.Timeout(timeout, connect=connect_timeout)
+    except Exception:
+        return timeout
+
+
+def _is_param_error(exc: Exception) -> bool:
+    """判断异常是否像“provider 不认识某个请求参数”。
+
+    只有这类错误才值得去掉 tool_choice / parallel_tool_calls 重试；
+    断网、超时、鉴权失败等不应触发参数回退，否则会重复请求。
+    """
+    if isinstance(exc, TypeError):
+        return True
+    text = str(exc).lower()
+    if any(hint in text for hint in _PARAM_ERROR_HINTS):
+        return True
+    status = getattr(exc, "status_code", None)
+    return status == 400 and any(hint in text for hint in _PARAM_ERROR_HINTS)
+
 
 @dataclass
 class LLMResponse:
@@ -84,6 +118,9 @@ class LLMClient:
         api_base: str | None = None,
         temperature: float | None = None,
         parallel_tool_calls: bool = True,
+        timeout: float | None = None,
+        connect_timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
         """初始化 LLM 客户端。
 
@@ -93,6 +130,9 @@ class LLMClient:
             api_base: API 基础地址。None 时从配置读取。
             temperature: 温度。None 时从配置读取。
             parallel_tool_calls: 请求模型在同一轮返回多个工具调用。
+            timeout: 单次请求读取超时秒数，None 时从配置读取。
+            connect_timeout: 连接超时秒数，None 时从配置读取。
+            max_retries: 瞬时网络/API 错误重试次数，None 时从配置读取。
 
         Raises:
             ValueError: 未配置 ``[llm] api_key_env`` 指定的环境变量。
@@ -103,6 +143,11 @@ class LLMClient:
         self.api_key_env = settings.api_key_env
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.parallel_tool_calls = parallel_tool_calls
+        self.timeout = settings.llm_timeout if timeout is None else timeout
+        self.connect_timeout = (
+            settings.llm_connect_timeout if connect_timeout is None else connect_timeout
+        )
+        self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
 
         if not self.api_key:
             raise ValueError(f"{self.api_key_env} 未设置，请检查 .env 文件或环境变量")
@@ -133,6 +178,8 @@ class LLMClient:
             "api_key": self.api_key,
             "api_base": self.api_base,
             "temperature": temp,
+            "timeout": _build_timeout(self.timeout, self.connect_timeout),
+            "num_retries": self.max_retries,
         }
         if tools:
             kwargs["tools"] = tools
@@ -145,7 +192,9 @@ class LLMClient:
 
         try:
             resp = litellm.completion(**kwargs)
-        except Exception:
+        except Exception as exc:
+            if not _is_param_error(exc):
+                raise
             dropped = False
             if "tool_choice" in kwargs:
                 kwargs.pop("tool_choice")

@@ -893,6 +893,9 @@ def _effective_config(llm: Any) -> dict[str, Any]:
     """收集影响评估结果的运行参数，写进报告便于跨档比较。"""
     return {
         "model": llm.model,
+        "llm.timeout": settings.llm_timeout,
+        "llm.connect_timeout": settings.llm_connect_timeout,
+        "llm.max_retries": settings.llm_max_retries,
         "context.enable": settings.context_enable,
         "context.profile": settings.context_profile,
         "context.intra_turn_budget": settings.context_intra_turn_budget,
