@@ -5,8 +5,9 @@
 - 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
   git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
   模型只能重读；改写历史还会切断前缀缓存。
-- 只有超过 ``hard_budget`` 才动 read_file：优先降级最大的结果，并保护每个
-  路径最近一次读取；仍超限时才放开保护。
+- 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：优先降级最大
+  的结果，并保护每个路径最近一次读取；仍超限时才放开保护。被降级的范围只剩
+  指针，模型仍可能重读；这是硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
 
@@ -163,7 +164,8 @@ class ContextConfig:
         cross_turn: 跨回合策略；``archive`` 只发当前回合并以归档注入历史，
             ``append`` 保留全部历史消息（实验对照用）。
         intra_turn_budget: 单回合软预算；只降级可再生工具输出，不降级 read_file。
-        hard_budget: 单回合硬上限；超过后才降级 read_file，低于软预算时按软预算处理。
+        hard_budget: 单回合硬上限；超过后才降级 read_file，默认与软预算相同，
+            低于软预算时按软预算处理。
         tool_result_max_bytes: 单条工具结果的字节上限（兜底）。
         tool_result_head_bytes: 兜底压缩保留的头部字节数。
         tool_result_tail_bytes: 兜底压缩保留的尾部字节数。
@@ -322,15 +324,19 @@ class ContextManager:
             else:
                 converted.append(self._compact_tool_result(msg))
 
+        # 状态块只在发生降级时注入；未降级的回合里原始工具结果都还在，
+        # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
         soft_budget = self.config.intra_turn_budget
-        if self._measure(head, converted, state, archive, plan) > soft_budget:
+        counted_state = state if demoted else None
+        if self._measure(head, converted, counted_state, archive, plan) > soft_budget:
             converted, spilled = self._spill(
                 head, converted, id_to_name, id_to_args, soft_budget, state, archive, plan, SPILL_TOOLS
             )
             demoted = demoted or spilled
+            counted_state = state if demoted else None
 
         hard_budget = self.config.hard_budget
-        if self._measure(head, converted, state, archive, plan) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
             protected = self._latest_read_ids(body)
             converted, spilled = self._spill(
                 head,
@@ -346,7 +352,8 @@ class ContextManager:
                 min_chars=READ_SPILL_MIN_CHARS,
             )
             demoted = demoted or spilled
-        if self._measure(head, converted, state, archive, plan) > hard_budget:
+            counted_state = state if demoted else None
+        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
             converted, spilled = self._spill(
                 head, converted, id_to_name, id_to_args, hard_budget, state, archive, plan, READ_TOOLS
             )
@@ -368,7 +375,7 @@ class ContextManager:
         plan_block = _render_plan(plan)
         if plan_block:
             add({"role": "user", "content": plan_block}, "plan")
-        if state is not None and (demoted or archive):
+        if state is not None and demoted:
             block = state.render()
             if block:
                 add({"role": "user", "content": block}, "state")

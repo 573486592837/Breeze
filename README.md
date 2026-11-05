@@ -310,9 +310,9 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 | profile | intra_turn_budget | hard_budget | answer_preview | max_records | max_chars |
 |---|---:|---:|---:|---:|---:|
-| `short` | 12000 | 32000 | 800 | 4 | 3000 |
-| `medium`（默认） | 24000 | 64000 | 1500 | 8 | 6000 |
-| `long` | 48000 | 96000 | 3000 | 16 | 12000 |
+| `short` | 12000 | 12000 | 800 | 4 | 3000 |
+| `medium`（默认） | 24000 | 24000 | 1500 | 8 | 6000 |
+| `long` | 48000 | 48000 | 3000 | 16 | 12000 |
 | `custom` | 按下方显式配置 | 按下方显式配置 | | | |
 
 档位只是默认值之上的一层：`intra_turn_budget`、`hard_budget` 与 `[chat]` 下的
@@ -323,12 +323,19 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 回合内压缩分两级：
 
-- 超过 `intra_turn_budget` 时只降级 `run_shell`、`run_tests`、`git_diff` 等
-  可再生输出；`read_file` 原文保留，避免模型为了 `apply_patch` 重新读取，
-  同时保持 prompt 前缀稳定、提高缓存命中。
-- 只有超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，并保护
-  每个文件最近一次读取；仍超限时才放开保护。`hard_budget` 低于软预算时按软
-  预算处理。它统计的是消息 Token，不含工具 schema，应配置在模型上下文以内。
+- 超过 `intra_turn_budget` 时先降级 `run_shell`、`run_tests`、`git_diff` 等
+  可再生输出；`read_file` 原文尽量保留，避免模型为了 `apply_patch` 重新读取。
+- 若仍超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，并保护
+  每个文件最近一次读取；仍超限时才放开保护。`hard_budget` 默认与软预算相同，
+  低于软预算时按软预算处理。它统计的是消息 Token，不含工具 schema，应配置在
+  模型上下文以内。
+- 调高 `hard_budget` 会给读结果留出不被压缩的余量，但只在 provider 前缀缓存
+  有实际回报时值得。M2 A/B 中 24K 与 64K 的任务完成度相同，64K 多花约 20%
+  token，而该 provider 的 `cache_hit_tokens` 始终为 0。
+- 边界：一旦触发 `hard_budget`，被降级的 `read_file` 只剩指针，模型仍可能重读
+  该范围。M2 A/B 的 control 触发了 3 次读结果降级而没有产生额外的病态重读，
+  但这只是该任务的样本结果，不保证更复杂的回合不会重读。要彻底避免，应调高
+  `hard_budget`（缓存有回报时）或把大任务拆成多个用户回合。
 
 跨回合仍由 `cross_turn` 控制：`archive`（默认）在回合边界把已完成回合压成
 归档，适合长时间会话；`append` 只追加历史，前缀缓存最好，但上下文会持续增长。

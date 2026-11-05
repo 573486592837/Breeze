@@ -82,6 +82,7 @@ def test_round_trip_restores_ledger_and_state(tmp_path: Path) -> None:
     """落盘两回合后恢复，归档与状态逐字段一致。"""
     store = _store(tmp_path)
     state = _state()
+    state.update("read_file", {"path": "a.py"}, "1 | x", 2)
     store.record_turn(_record(1, "为什么失败", "因为 x"), state, _summary("r1"))
     state.update("apply_patch", {"path": "a.py"}, "Patched a.py (1 replacement)", 4)
     store.record_turn(_record(2, "改好了吗", "改好了"), state, _summary("r2"))
@@ -98,7 +99,8 @@ def test_round_trip_restores_ledger_and_state(tmp_path: Path) -> None:
     assert restored_state.edits == state.edits
     assert restored_state.tests == state.tests
     assert restored_state.plan == state.plan
-    assert restored_state.read_counts == state.read_counts
+    assert state.read_counts
+    assert restored_state.read_counts == {}
 
 
 def test_next_record_index_continues(tmp_path: Path) -> None:

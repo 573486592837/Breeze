@@ -238,7 +238,7 @@ def test_defaults_context_v2_values() -> None:
     """回合制上下文策略的默认值存在且类型正确。"""
     ctx = DEFAULTS["context"]
     assert ctx["intra_turn_budget"] == 24000
-    assert ctx["hard_budget"] == 64000
+    assert ctx["hard_budget"] == 24000
     assert ctx["state_max_entries"] == 8
 
 
@@ -254,9 +254,9 @@ def test_default_context_profile_is_medium(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "profile, budget, hard, preview, records, chars",
     [
-        ("short", 12000, 32000, 800, 4, 3000),
-        ("medium", 24000, 64000, 1500, 8, 6000),
-        ("long", 48000, 96000, 3000, 16, 12000),
+        ("short", 12000, 12000, 800, 4, 3000),
+        ("medium", 24000, 24000, 1500, 8, 6000),
+        ("long", 48000, 48000, 3000, 16, 12000),
     ],
 )
 def test_context_profile_applies_preset(
@@ -340,7 +340,7 @@ def test_settings_reads_profile(tmp_path: Path) -> None:
 
     assert s.context_profile == "short"
     assert s.context_intra_turn_budget == 12000
-    assert s.context_hard_budget == 32000
+    assert s.context_hard_budget == 12000
     assert s.chat_max_records == 4
 
 

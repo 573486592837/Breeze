@@ -115,7 +115,7 @@ def test_render_sections_and_footer() -> None:
     assert "[Session state" in block
     assert "Symbols located:" in block
     assert "target: src/a.py:12" in block
-    assert "copy old verbatim" in block
+    assert "otherwise edit from the latest copy" in block
 
 
 def test_render_caps_entries_per_section() -> None:
@@ -151,6 +151,57 @@ def test_single_read_not_flagged() -> None:
     st.update("read_file", {"path": "s.py", "start_line": 1, "end_line": 5}, "1 | x", 0)
 
     assert "Repeated reads" not in st.render()
+
+
+def test_repeated_read_wording_does_not_claim_compression() -> None:
+    """未压缩的回合里，重复读取提示不能声称旧副本已被丢弃。"""
+    st = _state()
+    result = "1 | x"
+    st.update("read_file", {"path": "s.py"}, result, 0)
+    st.update("read_file", {"path": "s.py"}, result, 1)
+
+    block = st.render()
+    assert "compressed away" not in block
+    assert "edit from it instead of reading again" in block
+
+
+def test_reread_moves_entry_to_end() -> None:
+    """重读旧文件后，Latest reads 应把它视为最近读取而非旧条目。"""
+    st = _state(max_entries=2)
+    for i in range(4):
+        st.update("read_file", {"path": f"f{i}.py"}, "1 | x\n--- (file has 1 lines total) ---", i)
+    st.update("read_file", {"path": "f0.py"}, "1 | x\n--- (file has 1 lines total) ---", 9)
+
+    block = st.render()
+    assert "f0.py" in block
+    assert "f3.py" in block
+    assert "f1.py" not in block
+    assert "f2.py" not in block
+
+
+def test_start_turn_clears_read_counts() -> None:
+    """开始新回合后，上一回合的重复读取计数不再影响状态块。"""
+    st = _state()
+    st.update("read_file", {"path": "s.py"}, "1 | x", 0)
+    st.update("read_file", {"path": "s.py"}, "1 | x", 1)
+    assert st.read_counts
+
+    st.start_turn()
+
+    assert st.read_counts == {}
+    assert "Repeated reads" not in st.render()
+
+
+def test_read_counts_not_persisted() -> None:
+    """读取计数只在回合内有效，序列化与恢复都不应保留。"""
+    st = _state()
+    st.update("read_file", {"path": "s.py"}, "1 | x", 0)
+
+    data = st.to_dict()
+    assert "read_counts" not in data
+    restored = SessionState.from_dict({**data, "read_counts": [["s.py", None, None, 5]]})
+    assert restored.read_counts == {}
+    assert restored.reads == st.reads
 
 
 # ─── 符号索引的完整性与用途 ───
@@ -190,7 +241,7 @@ def test_state_block_answers_locate_questions() -> None:
     block = st.render()
     assert "authoritative for locate/list questions" in block
     assert "read_file when a needed fact is missing" in block
-    assert "Before apply_patch" in block
+    assert "otherwise edit from the latest copy" in block
 
 
 # ─── TurnLedger 回合归档 ───

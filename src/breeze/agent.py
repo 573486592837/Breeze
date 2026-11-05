@@ -405,6 +405,7 @@ class Agent:
             self.messages[0] = {"role": "system", "content": self.system_prompt}
         self.messages.append({"role": "user", "content": question})
         turn_start = len(self.messages) - 1
+        self.state.start_turn()
 
         edits_this_turn = 0
         edit_failures = 0
