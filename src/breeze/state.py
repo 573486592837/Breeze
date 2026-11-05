@@ -34,7 +34,8 @@ class SessionState:
 
     Attributes:
         symbols: 符号名 -> "file:line"，来自 grep 命中与 read 内容。
-        reads: 文件路径 -> 最近读取描述，如 "lines 289-312 of 418"。
+        reads: 文件路径 -> 最近读取描述，按最近一次读取排序。
+        read_counts: 本回合内的读取次数，用于重复读取提示，不跨回合持久化。
         edits: 文件路径 -> 最近一次编辑结果描述。
         tests: 最近一次 run_tests 的一行摘要。
         plan: Agent 通过 update_plan 维护的短期计划。
@@ -53,6 +54,14 @@ class SessionState:
         self.edits: dict[str, str] = {}
         self.tests: str = ""
         self.plan: str = ""
+
+    def start_turn(self) -> None:
+        """开始新的用户回合：清空回合内的读取计数。
+
+        重复读取提示只对本回合的上下文有效；跨回合保留会让“已被压缩”
+        的结论错误地延续到没有压缩发生的新回合。
+        """
+        self.read_counts.clear()
 
     def update(self, tool: str, arguments: dict[str, Any], result: str, step: int) -> None:
         """从一次工具执行结果更新状态。
@@ -96,6 +105,7 @@ class SessionState:
             desc = f"lines {start}-{end} of {total} (step {step})"
         else:
             desc = f"full {total} lines (step {step})"
+        self.reads.pop(path, None)
         self.reads[path] = desc
 
         for match in _READ_DEF_RE.finditer(result):
@@ -122,8 +132,11 @@ class SessionState:
     def to_dict(self) -> dict[str, Any]:
         """序列化为 JSON 友好的字典，供会话持久化使用。
 
+        `read_counts` 只服务于本回合的重复读取提示，不落盘：恢复会话
+        时开始的是新回合，历史计数没有意义且会误导模型。
+
         Returns:
-            含 symbols/reads/edits/tests/plan/read_counts 的字典。
+            含 symbols/reads/edits/tests/plan 的字典。
         """
         return {
             "symbols": dict(self.symbols),
@@ -131,7 +144,6 @@ class SessionState:
             "edits": dict(self.edits),
             "tests": self.tests,
             "plan": self.plan,
-            "read_counts": [[path, start, end, count] for (path, start, end), count in self.read_counts.items()],
         }
 
     @classmethod
@@ -150,9 +162,6 @@ class SessionState:
         st.edits.update(data.get("edits") or {})
         st.tests = data.get("tests") or ""
         st.plan = data.get("plan") or ""
-        for entry in data.get("read_counts") or []:
-            path, start, end, count = entry
-            st.read_counts[(path, start, end)] = count
         return st
 
     def render(self) -> str:
@@ -182,10 +191,10 @@ class SessionState:
             for (path, start, end), count in rereads[-self.max_entries :]:
                 rng = f"lines {start}-{end}" if start and end else "full file"
                 body_lines.append(
-                    f"- {path} {rng} read {count} times: earlier copies were "
-                    f"compressed away. Apply the pending edit right after this read."
+                    f"- {path} {rng} read {count} times this turn. "
+                    f"If the latest copy is still in context, edit from it instead of reading again."
                 )
-            sections.append("Repeated reads (context amnesia signal):\n" + "\n".join(body_lines))
+            sections.append("Repeated reads:\n" + "\n".join(body_lines))
 
         if self.tests:
             sections.append(f"Tests: {self.tests}")
@@ -200,7 +209,8 @@ class SessionState:
             "read_file when a needed fact is missing here."
         )
         lines.append(
-            "Before apply_patch, re-read the target range above with read_file and copy old verbatim from that output."
+            "If a needed range is no longer in context or the file changed, re-read only that range with "
+            "read_file; otherwise edit from the latest copy already in context."
         )
         return "\n".join(lines)
 

@@ -76,7 +76,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "profile": "medium",
         "cross_turn": "archive",
         "intra_turn_budget": 24000,
-        "hard_budget": 64000,
+        "hard_budget": 24000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
         "tool_result_head_bytes": 8000,
@@ -118,17 +118,21 @@ ENV_MAP: dict[str, tuple[str, str]] = {
 
 # 压缩档位：一次设定同时覆盖回合预算与会话归档预算。
 # medium 与 DEFAULTS 完全一致，保证不配 profile 时行为不变。
+# 硬上限默认与软预算相同：可再生输出降级后仍超限，就按“大结果优先、
+# 保护最近读取”降级 read_file。给读结果留不被压缩的余量（调高 hard_budget）
+# 只在 provider 前缀缓存有实际回报时值得；M2 A/B 中 24K 与 64K 的任务完成度
+# 相同，64K 多花约 20% token，且该 provider 的 cache_hit 始终为 0。
 CONTEXT_PROFILES: dict[str, dict[str, dict[str, Any]]] = {
     "short": {
-        "context": {"intra_turn_budget": 12000, "hard_budget": 32000},
+        "context": {"intra_turn_budget": 12000, "hard_budget": 12000},
         "chat": {"answer_preview": 800, "max_records": 4, "max_chars": 3000},
     },
     "medium": {
-        "context": {"intra_turn_budget": 24000, "hard_budget": 64000},
+        "context": {"intra_turn_budget": 24000, "hard_budget": 24000},
         "chat": {"answer_preview": 1500, "max_records": 8, "max_chars": 6000},
     },
     "long": {
-        "context": {"intra_turn_budget": 48000, "hard_budget": 96000},
+        "context": {"intra_turn_budget": 48000, "hard_budget": 48000},
         "chat": {"answer_preview": 3000, "max_records": 16, "max_chars": 12000},
     },
 }

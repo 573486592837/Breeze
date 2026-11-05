@@ -393,14 +393,15 @@ def test_archive_injected_between_system_and_question() -> None:
     assert result[2]["content"] == "current question"
 
 
-def test_state_block_injected_when_archive_present() -> None:
-    """有归档时即使未发生降级也注入状态块，让模型看到跨回合索引。"""
+def test_state_block_skipped_with_archive_when_no_demotion() -> None:
+    """有归档但本回合未降级时不注入状态块：原始结果仍在上下文中。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
     result = cm.build(messages, state=_state({"target": "a.py:1"}), archive="Turn 1 A: done")
 
     joined = " ".join(str(m.get("content", "")) for m in result)
-    assert "[Session state" in joined
+    assert "Turn 1 A: done" in joined
+    assert "[Session state" not in joined
 
 
 def test_no_archive_keeps_layout() -> None:
@@ -436,7 +437,8 @@ def test_archive_counted_in_budget() -> None:
 def test_stats_breakdown_covers_each_injection_slot() -> None:
     """stats 按 system/plan/archive/user/state/body 分类且总和一致。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
-    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+    # grep 结果超过指针阈值会降级，状态块随之注入。
+    messages = [_system(), _user("q"), *_round("c1", "grep", '{"pattern": "x"}', _code_lines(200))]
     _, stats = cm.build_with_stats(
         messages,
         state=_state({"target": "a.py:1"}),
@@ -482,7 +484,8 @@ def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:
     """state 块在末尾时，它变化只让自身不可复用，前面的 body 仍可复用。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     state = _state({"target": "a.py:1"})
-    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+    # 需要一次降级才会注入状态块。
+    messages = [_system(), _user("q"), *_round("c1", "grep", '{"pattern": "x"}', _code_lines(200))]
 
     _, first = cm.build_with_stats(messages, state=state, archive="Turn 1 A: done")
     state.symbols["other"] = "b.py:2"

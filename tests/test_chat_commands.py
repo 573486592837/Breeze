@@ -204,16 +204,16 @@ def test_profile_switch_updates_budgets_and_agent() -> None:
 
     assert "压缩档位已切换：short" in response
     assert controller.intra_turn_budget == 12000
-    assert controller.hard_budget == 32000
+    assert controller.hard_budget == 12000
     assert controller.answer_preview == 800
     assert controller.max_records == 4
     assert controller.max_chars == 3000
     assert agent.context.config.intra_turn_budget == 12000
-    assert agent.context.config.hard_budget == 32000
+    assert agent.context.config.hard_budget == 12000
     assert agent.ledger.max_records == 4
     assert session.changes[-1]["profile"] == "short"
     assert session.changes[-1]["intra_turn_budget"] == 12000
-    assert session.changes[-1]["hard_budget"] == 32000
+    assert session.changes[-1]["hard_budget"] == 12000
 
 
 def test_custom_profile_freezes_current_budget() -> None:
@@ -357,4 +357,4 @@ def test_config_lists_runtime_values() -> None:
     assert "session: 20260101T000000_abc" in response
     assert "trace 前缀: run-a" in response
     assert "profile: short (intra_turn_budget=12000)" in response
-    assert "context: hard_budget=32000" in response
+    assert "context: hard_budget=12000" in response

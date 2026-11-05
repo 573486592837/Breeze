@@ -56,9 +56,11 @@ profile = "medium"
 # content is kept so edits can use the exact text and the prompt prefix stays
 # cacheable.
 intra_turn_budget = 24000
-# Hard safety limit for one turn. read_file results are demoted only above
-# this limit, largest first and protecting each file's most recent read.
-hard_budget = 64000
+# Hard limit for one turn. read_file results are demoted only above this
+# limit, largest first and protecting each file's most recent read.
+# Defaults to intra_turn_budget. Raise it only when the provider's prefix
+# cache actually reports hits; otherwise keeping reads intact costs tokens.
+hard_budget = 24000
 # Maximum entries per section in the structured session-state block
 # (symbols, reads, edits) injected with the summary on compression.
 state_max_entries = 8

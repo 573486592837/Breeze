@@ -969,6 +969,35 @@ def test_agent_updates_state_from_real_tool_results(
     assert agent.state.symbols["target"] == "a.py:1"
 
 
+def test_agent_clears_read_counts_between_turns(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """每个用户回合重新计数，上一回合的重复读取不影响新回合。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+    (root / "a.py").write_text("def target():\n    pass\n", encoding="utf-8")
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="c1"),
+            _text("first"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="c2"),
+            _text("second"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("read a.py")
+    assert agent.state.read_counts[("a.py", None, None)] == 1
+
+    agent.run("read a.py again")
+
+    assert agent.state.read_counts[("a.py", None, None)] == 1
+
+
 def test_agent_injects_state_block_on_compression(
     trace: RunTrace,
     tmp_path: Path,
