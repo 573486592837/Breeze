@@ -19,6 +19,12 @@ api_base = "https://api.siliconflow.cn/v1"
 # The key itself is never read from this file.
 api_key_env = "BREEZE_API_KEY"
 temperature = 0.0
+# Request timeout in seconds. Keep it generous for reasoning models; the
+# connect timeout still fails fast when the network is down.
+timeout = 600.0
+connect_timeout = 15.0
+# Retries for transient network/API errors. 0 disables retries.
+max_retries = 2
 
 [agent]
 # Maximum agent loop steps per run.

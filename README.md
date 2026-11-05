@@ -288,7 +288,9 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 ### 可配置项
 
-- `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature
+- `[llm]`：model、api_base、api_key_env（密钥所在环境变量名）、temperature、
+  timeout（读取超时秒数）、connect_timeout（连接超时秒数）、max_retries
+  （瞬时网络错误重试次数）
 - `[agent]`：max_steps、max_edit_failures（连续编辑失败上限）
 - `[shell]`：permission（strict / confirm / open，默认 strict）
 - `[tools]`：read_roots（只读参考目录；read_file/list_files/grep 可访问，
@@ -353,6 +355,15 @@ API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 改成其他服务商的变量名（如 `OPENAI_API_KEY`），同时用 `model` 与
 `api_base` 指向对应服务。旧变量名 `SILICONFLOW_API_KEY` 仍会作为回退
 读取，已有 `.env` 无需立即修改。
+
+### 断网与超时
+
+LLM 请求默认使用 `timeout=600s`、`connect_timeout=15s`、`max_retries=2`。
+断网或连接被重置时，连接超时会快速失败，litellm 自动重试；推理模型单次
+生成较慢时仍有 10 分钟读取窗口。可用 `BREEZE_LLM_TIMEOUT`、
+`BREEZE_LLM_CONNECT_TIMEOUT`、`BREEZE_LLM_MAX_RETRIES` 覆盖。重试耗尽后
+该回合会以明确错误结束，已完成编辑保留；当前回合不会写入新的会话记录，
+可以重新发送同一问题继续。
 
 ### 工具集裁剪
 
