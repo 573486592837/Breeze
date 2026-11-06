@@ -377,6 +377,33 @@ def decode_process_output(data: bytes | str) -> str:
             return data.decode("utf-8", errors="replace")
 
 
+def _repo_venv_python(token: str) -> str | None:
+    """识别仓库内 venv 的 Python 解释器。
+
+    项目文档通常写 ``.venv/Scripts/python.exe -m pytest``；只按 basename
+    比对白名单会把它误判成未知可执行文件。这里解析真实路径，只允许
+    仓库内、实际存在的 venv 解释器，并仍然要求 ``-m`` 白名单模块。
+    """
+    path = Path(token)
+    name = path.name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name not in {"python", "python3"}:
+        return None
+
+    candidate = path if path.is_absolute() else settings.repo_root / path
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(settings.repo_root.resolve())
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file():
+        return None
+    if not ({part.lower() for part in resolved.parts} & {".venv", "venv"}):
+        return None
+    return name
+
+
 def _check_allowed(tokens: list[str]) -> None:
     """校验命令是否在白名单内。
 
@@ -387,11 +414,20 @@ def _check_allowed(tokens: list[str]) -> None:
         ValueError: 可执行文件或子命令不在白名单。
     """
     exe = tokens[0].lower()
+    venv_python = _repo_venv_python(tokens[0])
+    if venv_python is not None:
+        exe = venv_python
 
     if exe not in ALLOWED_EXECUTABLES:
         allowed = ", ".join(sorted(ALLOWED_EXECUTABLES))
         extra = ""
-        if exe == "pytest":
+        base = exe.replace("\\", "/").rsplit("/", 1)[-1]
+        if base in {"python.exe", "python", "python3.exe", "python3"}:
+            extra = (
+                " (use run_tests; path-prefixed interpreters are only allowed"
+                " from the repository's .venv or venv)"
+            )
+        elif exe == "pytest":
             extra = " (use run_tests; for special pytest arguments use 'python -m pytest')"
         elif exe in {"npm", "npx", "yarn", "pnpm", "bun", "deno"}:
             extra = (
@@ -419,7 +455,7 @@ def _check_allowed(tokens: list[str]) -> None:
             extra = " (use the grep tool; it falls back to pure Python when ripgrep is unavailable)"
         raise ValueError(f"Executable not allowed: {exe}{extra}. Allowed commands: {allowed}.")
 
-    if shutil.which(exe) is None:
+    if venv_python is None and shutil.which(exe) is None:
         missing_hint = ""
         if exe == "rg":
             missing_hint = " (ripgrep is not installed here; use the grep tool instead, it needs no external binary)"

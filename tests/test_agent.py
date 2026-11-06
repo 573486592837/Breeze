@@ -1657,3 +1657,87 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
     assert record["response"]["tool_calls"] == []
     names = {tool["function"]["name"] for tool in record["tools"]}
     assert "read_file" in names
+
+
+# ─── 验证结果一致性 ───
+
+
+def test_claims_verification_success_distinguishes_failure() -> None:
+    from breeze.agent import _claims_verification_success
+
+    assert _claims_verification_success("29 passed")
+    assert _claims_verification_success("ruff 全绿，pytest 29 passed")
+    assert not _claims_verification_success("6 failed, 23 passed")
+    assert not _claims_verification_success("测试未通过")
+
+
+def test_verification_status_parses_reports() -> None:
+    from breeze.agent import _verification_status
+
+    ok, summary = _verification_status("run_tests", "exit_code=1\nsummary: 6 failed, 23 passed in 2s\n")
+    assert not ok
+    assert "6 failed" in summary
+
+    ok, summary = _verification_status("run_tests", "exit_code=0\nsummary: 29 passed in 2s\n")
+    assert ok
+    assert "29 passed" in summary
+
+    ok, summary = _verification_status(
+        "run_shell",
+        "exit_code: 1\n--- stdout ---\n...\n--- stderr ---\nE501 line too long\n",
+    )
+    assert not ok
+    assert "E501" in summary
+
+
+def test_agent_flags_false_verification_claim(
+    trace: RunTrace,
+    fake_tool: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """最后一次验证失败时，最终回答不能以“通过”收尾。"""
+    import breeze.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_is_verification_call", lambda name, _args: name == "fake_echo")
+    monkeypatch.setattr(agent_mod, "_verification_status", lambda _name, _result: (False, "summary: 1 failed"))
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "x"}),
+            _text("全部通过，29 passed"),
+            _text("29 passed，全部通过"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    answer = agent.run("verify")
+
+    assert answer.startswith("[验证未通过]")
+    assert "summary: 1 failed" in answer
+    joined = " ".join(str(m.get("content", "")) for m in llm.calls[1]["messages"])
+    assert "验证未通过" in joined
+
+
+def test_agent_honest_failure_report_not_flagged(
+    trace: RunTrace,
+    fake_tool: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """如实报告失败的最终回答保持原样。"""
+    import breeze.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "_is_verification_call", lambda name, _args: name == "fake_echo")
+    monkeypatch.setattr(agent_mod, "_verification_status", lambda _name, _result: (False, "summary: 1 failed"))
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "x"}),
+            _text("验证失败：1 项失败，任务未完成"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    answer = agent.run("verify")
+
+    assert answer == "验证失败：1 项失败，任务未完成"
+    assert not answer.startswith("[验证未通过]")

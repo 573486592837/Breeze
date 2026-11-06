@@ -1004,7 +1004,7 @@ packaging 测试同步到 1.5.1。
   摘要同步支持 `hard_budget`。
 - 验证：642 passed / 2 skipped，ruff 全绿；新增软预算保留原文、硬上限大结果优先、
   最近读取保护、软预算前缀可复用与 hard >= soft 的回归测试。
-  
+
 ### 状态块与硬上限默认值（未发布）
 
 回合内不压缩 read_file 的首轮真实 M2 A/B 暴露了状态块自身的误导：跨回合持久化
@@ -1050,8 +1050,37 @@ M2 试跑中网络中断后 `breeze chat` 停在 `step 9: waiting for model`，�
   失败，推理模型仍有足够生成窗口；瞬时错误由 litellm 自动重试。
 - 参数兼容回退只对“provider 不认识 tool_choice/parallel_tool_calls”这类 400
   错误生效；断网、超时、鉴权失败不再被误判为参数问题而重复请求。
+- 新增 `tenacity>=8.0` 依赖：litellm 1.103.0 的 `completion(num_retries>0)`
+  会惰性导入 tenacity 执行重试，却没有把它列为必需依赖；缺失时首次重试会直接
+  报 “tenacity import failed”，把可恢复的瞬时错误变成整轮失败。
 - LLM 重试耗尽后不再调用 `_finish_turn` 写入失败答案：已完成编辑保留，本回合
   不并入 TurnLedger，也不写入新的会话记录；`run_chat` 改为按归档条目增量落盘，
   避免把上一回合重复写入。用户可直接重新发送同一问题。
 - 验证：新增超时/重试参数、网络错误不触发参数回退、失败回合不落盘与不重复
   写上一回合的测试；全量测试与 ruff 结果见提交。
+
+### 工具结果自描述与验证核对（未发布）
+
+M3 试跑连续失败后回看完整提示词，定位到三类与任务难度无关的损耗：并行工具结果
+缺少工具名/参数、降级只剩 `exit_code`、以及最终回答可以在验证失败时声称通过。
+
+- 降级指针改为自描述：`[run_shell compressed] <command> → exit_code: ...`，
+  并保留该工具的有效摘要（shell 的 stderr 首行与 stdout 首尾、pytest 的
+  summary/failures/status、git diff 的 diffstat）。并行调用结果前加
+  `[call i/n 工具: 参数]` 头，避免多条匿名结果混淆。
+- 工具错误不再被压缩成一行：错误正文最多保留 2000 字符，模型能看到具体的拒绝
+  原因并修正参数，而不是反复重试同一调用。
+- `update_plan` 的调用参数不再重复携带计划全文（正文已由消息末尾的固定块注入），
+  但保留调用与短确认；此前把调用和结果一起删除，模型看不到执行结果，会连续
+  重试 update_plan 直到步数耗尽。
+- 新增验证核对：记录本回合最后一次 `run_tests` / `run_shell` 中的 pytest、ruff
+  结果。验证失败且仍有步数时先提示修复；最终回答若声称通过而检查失败，追加
+  `[验证未通过]` 标注，防止误报完成。
+- `run_shell` 允许使用仓库内 `.venv` / `venv` 的 Python 解释器执行白名单
+  `-m` 模块；仓库外或非虚拟环境的路径前缀解释器给出明确拒绝提示。
+- `breeze chat` 的 trace 命名统一为“会话固定文件”：不传 `--trace-name` 时
+  追加到 `traces/<session_id>.jsonl`，`--resume` 后仍写同一文件；
+  `--trace-name m3-retry` 直接生成 `traces/m3-retry.jsonl`，不再拼接时间戳与
+  session id，并写回会话配置。`/trace auto` 仍可恢复每回合独立文件。
+- 验证：新增指针区分、错误保留、pytest 摘要、update_plan 确认、验证 guard、
+  venv 解释器与 trace 追加的回归测试；669 passed / 2 skipped，ruff 全绿。

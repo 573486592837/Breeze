@@ -626,3 +626,46 @@ def test_run_shell_default_cap_is_half_budget() -> None:
     from breeze.tools.shell import DEFAULT_MAX_BYTES
 
     assert settings.context_tool_result_max_bytes // 2 == DEFAULT_MAX_BYTES
+
+
+# ─── 仓库内 venv 解释器 ───
+
+
+def test_run_shell_allows_repo_venv_python(repo: Path, fake_run: dict[str, Any]) -> None:
+    """仓库 .venv 的 Python 可用于白名单模块，匹配 AGENTS.md 的写法。"""
+    venv = repo / ".venv" / "Scripts" / "python.exe"
+    venv.parent.mkdir(parents=True)
+    venv.write_text("", encoding="utf-8")
+    rel = venv.relative_to(repo).as_posix()
+
+    out = registry.execute("run_shell", {"command": f"{rel} -m pytest -q"})
+
+    assert "exit_code: 0" in out
+    assert fake_run["cmd"] == [rel, "-m", "pytest", "-q"]
+
+
+def test_run_shell_repo_venv_python_keeps_module_whitelist(repo: Path) -> None:
+    """venv 解释器仍只能执行白名单模块。"""
+    venv = repo / ".venv" / "Scripts" / "python.exe"
+    venv.parent.mkdir(parents=True)
+    venv.write_text("", encoding="utf-8")
+    rel = venv.relative_to(repo).as_posix()
+
+    with pytest.raises(ValueError, match="Python module not allowed"):
+        registry.execute("run_shell", {"command": f"{rel} -m http.server"})
+
+
+def test_run_shell_rejects_venv_python_outside_repo(repo: Path) -> None:
+    """仓库外的 venv 解释器仍被拒绝。"""
+    outside = repo.parent / "outside-venv" / "Scripts" / "python.exe"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Executable not allowed"):
+        registry.execute("run_shell", {"command": f"{outside.as_posix()} -m pytest"})
+
+
+def test_run_shell_missing_venv_python_hint(repo: Path) -> None:
+    """路径形式的 python 不存在时，拒绝信息指向 run_tests。"""
+    with pytest.raises(ValueError, match="path-prefixed interpreters"):
+        registry.execute("run_shell", {"command": "missing/.venv/Scripts/python.exe -m pytest"})

@@ -373,19 +373,23 @@ def test_chat_reads_questions_via_terminal_input(repo: Path, tmp_path: Path, mon
     assert "bye." in result.stdout
 
 
-def test_chat_writes_one_trace_per_turn(repo: Path, tmp_path: Path) -> None:
-    """每回合生成独立 trace 文件。"""
+def test_chat_appends_turns_to_one_trace(repo: Path, tmp_path: Path) -> None:
+    """默认把同一会话的多回合追加到一个 trace 文件。"""
     trace_dir = tmp_path / "traces"
     runner.invoke(
         app,
         ["chat", "--repo", str(repo), "--trace-dir", str(trace_dir)],
         input="hello\nagain\n/exit\n",
     )
-    assert len(list(trace_dir.glob("*.jsonl"))) == 2
+    traces = list(trace_dir.glob("*.jsonl"))
+
+    assert len(traces) == 1
+    events = [json.loads(line) for line in traces[0].read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for event in events if event["event"] == "run_start") == 2
 
 
-def test_chat_traces_use_session_id_prefix(repo: Path, tmp_path: Path) -> None:
-    """默认用 session id 做 trace 前缀，便于把 trace 与会话对上。"""
+def test_chat_traces_use_session_id_name(repo: Path, tmp_path: Path) -> None:
+    """默认用 session id 作为精确 trace 文件名，便于把 trace 与会话对上。"""
     session_dir = tmp_path / "sessions"
     trace_dir = tmp_path / "traces"
     runner.invoke(
@@ -396,8 +400,7 @@ def test_chat_traces_use_session_id_prefix(repo: Path, tmp_path: Path) -> None:
     session_file = next(session_dir.glob("*.jsonl"))
     traces = list(trace_dir.glob("*.jsonl"))
 
-    assert len(traces) == 2
-    assert all(t.name.startswith(f"{session_file.stem}_") for t in traces)
+    assert [trace.name for trace in traces] == [f"{session_file.stem}.jsonl"]
 
 
 def test_chat_trace_pin_accumulates_turns(
@@ -445,7 +448,7 @@ def test_chat_trace_pin_survives_resume(repo: Path, tmp_path: Path) -> None:
 
 
 def test_chat_trace_name_override(repo: Path, tmp_path: Path) -> None:
-    """--trace-name 覆盖默认的 session id 前缀。"""
+    """--trace-name 指定精确文件名，不再拼接时间戳与 session id。"""
     trace_dir = tmp_path / "traces"
     runner.invoke(
         app,
@@ -454,8 +457,69 @@ def test_chat_trace_name_override(repo: Path, tmp_path: Path) -> None:
     )
     traces = list(trace_dir.glob("*.jsonl"))
 
+    assert [path.name for path in traces] == ["refactor-run.jsonl"]
+
+
+def test_chat_trace_name_appends_across_turns_and_resume(repo: Path, tmp_path: Path) -> None:
+    """--trace-name 的同一会话多回合追加，--resume 后仍写同一个文件。"""
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+    base = [
+        "chat",
+        "--repo",
+        str(repo),
+        "--trace-dir",
+        str(trace_dir),
+        "--session-dir",
+        str(session_dir),
+        "--trace-name",
+        "m3-retry",
+    ]
+
+    runner.invoke(app, base, input="hello\nagain\n/exit\n")
+    runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(trace_dir),
+            "--session-dir",
+            str(session_dir),
+            "--resume",
+            "latest",
+        ],
+        input="third\n/exit\n",
+    )
+
+    traces = list(trace_dir.glob("*.jsonl"))
+    assert [path.name for path in traces] == ["m3-retry.jsonl"]
+    events = [json.loads(line) for line in traces[0].read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for event in events if event["event"] == "run_start") == 3
+
+
+def test_chat_default_trace_appends_per_session(repo: Path, tmp_path: Path) -> None:
+    """未指定 trace 名时，同一会话（含 --resume）追加到同一个文件。"""
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+    base = [
+        "chat",
+        "--repo",
+        str(repo),
+        "--trace-dir",
+        str(trace_dir),
+        "--session-dir",
+        str(session_dir),
+    ]
+
+    runner.invoke(app, base, input="hello\nagain\n/exit\n")
+    runner.invoke(app, [*base, "--resume", "latest"], input="third\n/exit\n")
+
+    traces = list(trace_dir.glob("*.jsonl"))
     assert len(traces) == 1
-    assert traces[0].name.startswith("refactor-run_")
+    events = [json.loads(line) for line in traces[0].read_text(encoding="utf-8").splitlines()]
+    assert sum(1 for event in events if event["event"] == "run_start") == 3
 
 
 def test_chat_shows_turn_tokens_then_final_summary(repo: Path, tmp_path: Path) -> None:
@@ -907,7 +971,8 @@ def test_chat_config_command(repo: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "运行配置：" in result.stdout
     assert "model: fake-model" in result.stdout
-    assert "trace 前缀:" in result.stdout
+    assert "trace:" in result.stdout
+    assert "(pinned" in result.stdout
     assert "fake answer" not in result.stdout
 
 

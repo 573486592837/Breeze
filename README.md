@@ -249,11 +249,14 @@ breeze --version
 CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的配置 >
 配置文件与默认值。只执行命令、没有跑过回合的会话不会留下空文件。
 
-`/trace dev` 把 trace 固定为 `traces/dev.jsonl`（开启完整 prompt 捕获时还有
-`dev.messages.jsonl`），同一会话的后续回合全部追加进去；若目标文件已存在则
-拒绝并提示换名，避免把新会话混进旧记录。`/trace auto` 恢复每回合独立文件。
-固定状态会写入会话，`--resume` 时自动恢复；命令行显式传 `--trace-name`
-时以命令行参数为准。
+`breeze chat` 默认把同一会话的全部回合追加到 `traces/<session_id>.jsonl`
+（开启完整 prompt 捕获时还有 `<session_id>.messages.jsonl`），`--resume` 后
+继续写同一个文件。`--trace-name m3-retry` 直接把文件名固定为
+`traces/m3-retry.jsonl`，不再拼接时间戳与 session id，并写回会话配置。
+
+`/trace dev` 可在会话中把 trace 固定为 `traces/dev.jsonl`；若目标文件已存在则
+拒绝并提示换名，避免把新会话混进旧记录。`/trace auto` 恢复每回合独立文件
+（`<前缀>_<时间戳>_<run_id>.jsonl`），适合需要按回合切分 trace 的评估。
 
 ### 持久指引
 
@@ -325,6 +328,14 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 - 超过 `intra_turn_budget` 时先降级 `run_shell`、`run_tests`、`git_diff` 等
   可再生输出；`read_file` 原文尽量保留，避免模型为了 `apply_patch` 重新读取。
+- 降级不再只留一行 `exit_code`：每条结果带上工具名与关键参数（如命令、测试
+  范围），并保留该工具的有效摘要——`run_shell` 保留 stderr 首行与 stdout 首尾，
+  `run_tests` 保留 pytest 汇总和失败项，`git_diff` 保留 diffstat。并行调用超过
+  一条时，结果前再加 `[call i/n 工具: 参数]`，避免多条匿名结果互相混淆。
+- 工具错误（`Error`、`Tool execution failed`、拒绝执行等）保留完整错误正文，
+  方便模型改正参数，而不是被压成一行后盲目重试。
+- `update_plan` 的调用与确认不再留在历史中（计划已固定在消息末尾），避免同一
+  份计划重复占预算。
 - 若仍超过 `hard_budget` 才降级 `read_file`：按结果大小从大到小处理，并保护
   每个文件最近一次读取；仍超限时才放开保护。`hard_budget` 默认与软预算相同，
   低于软预算时按软预算处理。它统计的是消息 Token，不含工具 schema，应配置在
@@ -336,6 +347,20 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
   该范围。M2 A/B 的 control 触发了 3 次读结果降级而没有产生额外的病态重读，
   但这只是该任务的样本结果，不保证更复杂的回合不会重读。要彻底避免，应调高
   `hard_budget`（缓存有回报时）或把大任务拆成多个用户回合。
+
+### 验证结果核对
+
+Agent 会记录本回合最后一次 `run_tests` / `run_shell` 中的 pytest、ruff 结果。
+若最终回答声称“通过/全绿”而最后一次验证实际失败，Agent 会先追加一次纠正提示；
+仍无法纠正时在回答前标注 `[验证未通过]` 与失败摘要，避免把失败回合报告成完成。
+
+### 仓库虚拟环境
+
+`run_shell` 默认只允许系统 PATH 上的 `python -m <module>`。若仓库自带
+`.venv` 或 `venv`，可直接写 `.venv\Scripts\python.exe -m pytest` 这类路径；
+解释器必须位于仓库内，模块白名单仍然生效。路径前缀的其它解释器会被拒绝并
+提示改用 `run_tests`。
+
 
 跨回合仍由 `cross_turn` 控制：`archive`（默认）在回合边界把已完成回合压成
 归档，适合长时间会话；`append` 只追加历史，前缀缓存最好，但上下文会持续增长。

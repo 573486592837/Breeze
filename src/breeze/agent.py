@@ -48,6 +48,77 @@ _EMPTY_ANSWER_NUDGE = (
     "准确说明已经完成和尚未完成的部分，不要再调用工具。"
 )
 
+_VERIFICATION_CLAIM_RE = re.compile(
+    r"(全绿|全部通过|测试通过|all checks passed|\b\d+\s+passed\b)",
+    re.IGNORECASE,
+)
+_VERIFICATION_FAILURE_RE = re.compile(r"(未通过|失败|\bfailed\b|\berror\b)", re.IGNORECASE)
+_VERIFICATION_COMMAND_RE = re.compile(r"\b(pytest|ruff)\b", re.IGNORECASE)
+
+_VERIFICATION_FAILED_NUDGE = (
+    "验证未通过：{summary}。请先修复失败项并重新运行测试/检查；"
+    "最终回答必须如实报告验证结果。"
+)
+_VERIFICATION_CLAIM_NUDGE = (
+    "你的回答声称测试或检查已通过，但本回合最后一次验证未通过：{summary}。"
+    "请如实报告失败项；如果还能继续，先修复并重新验证，不要声称任务已完成。"
+)
+
+
+def _claims_verification_success(text: str) -> bool:
+    """判断最终回答是否声称测试/lint 已通过。
+
+    先排除“失败/未通过/failed”字样，避免把“6 failed, 23 passed”当成通过。
+    """
+    if not text or _VERIFICATION_FAILURE_RE.search(text):
+        return False
+    return bool(_VERIFICATION_CLAIM_RE.search(text))
+
+
+def _is_verification_call(name: str, arguments_json: str) -> bool:
+    """判断这次工具调用是否在验证测试或 lint。"""
+    if name == "run_tests":
+        return True
+    if name != "run_shell":
+        return False
+    try:
+        args = json.loads(arguments_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    command = args.get("command")
+    return isinstance(command, str) and bool(_VERIFICATION_COMMAND_RE.search(command))
+
+
+def _verification_status(name: str, result: str) -> tuple[bool, str]:
+    """解析验证调用的真实结果，返回 (是否通过, 摘要)。
+
+    Args:
+        name: 工具名。
+        result: 工具返回的原始文本（不是压缩后的指针）。
+    """
+    first = result.splitlines()[0].strip() if result else ""
+    ok = not result.startswith(("Error", "Tool execution failed", "Failed"))
+
+    if name == "run_tests":
+        ok = ok and first.replace(" ", "").startswith("exit_code=0")
+        summary = next(
+            (line.strip() for line in result.splitlines() if line.strip().startswith("summary:")),
+            first,
+        )
+        return ok, summary or "no summary"
+
+    match = re.match(r"exit_code:\s*(-?\d+)", first)
+    ok = ok and bool(match) and match.group(1) == "0"
+    lines = result.splitlines()
+    stderr_at = next((i for i, line in enumerate(lines) if line.strip() == "--- stderr ---"), None)
+    stderr_first = ""
+    if stderr_at is not None:
+        stderr_first = next((line.strip() for line in lines[stderr_at + 1 :] if line.strip()), "")
+    summary = first
+    if stderr_first:
+        summary = f"{first} | {stderr_first[:160]}"
+    return ok, summary or "no output"
+
 
 def _claims_completed_edit(text: str) -> bool:
     """判断最终回答是否声称本轮完成了代码修改。
@@ -410,6 +481,9 @@ class Agent:
         edits_this_turn = 0
         edit_failures = 0
         edit_claim_nudged = False
+        last_verification: tuple[bool, str] | None = None
+        verification_fix_nudged = False
+        verification_claim_nudged = False
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -499,6 +573,7 @@ class Agent:
                 self.trace.log_guard(step, f"tool calls ignored at final step: {names}")
                 answer = (resp.content or "").strip()
                 if answer:
+                    answer = self._guard_failed_verification(step, answer, last_verification)
                     return self._finish_turn(question, answer, turn_start)
                 return self._finish_turn(
                     question,
@@ -523,6 +598,27 @@ class Agent:
                         "final answer claimed edits but no edit tool succeeded; re-prompting",
                     )
                     continue
+                if (
+                    last_verification is not None
+                    and not last_verification[0]
+                    and _claims_verification_success(answer)
+                    and not verification_claim_nudged
+                    and remaining > 1
+                ):
+                    verification_claim_nudged = True
+                    self.messages.append({"role": "assistant", "content": answer})
+                    self.messages.append(
+                        {
+                            "role": "user",
+                            "content": _VERIFICATION_CLAIM_NUDGE.format(summary=last_verification[1]),
+                        }
+                    )
+                    self.trace.log_guard(
+                        step,
+                        "final answer claimed verification success but last check failed; re-prompting",
+                    )
+                    continue
+                answer = self._guard_failed_verification(step, answer, last_verification)
                 return self._finish_turn(question, answer, turn_start)
 
             self.messages.append(
@@ -572,6 +668,8 @@ class Agent:
                 succeeded = result is not None and not result.startswith(
                     ("Error", "Tool execution failed", "Failed")
                 )
+                if _is_verification_call(tc.name, tc.arguments_json):
+                    last_verification = _verification_status(tc.name, result or "")
                 if tc.name in _EDIT_TOOLS and succeeded:
                     edits_this_turn += 1
                 if tc.name in _WRITE_TOOLS:
@@ -580,6 +678,21 @@ class Agent:
                         self._refresh_capabilities_after_write()
                     else:
                         edit_failures += 1
+
+            if (
+                last_verification is not None
+                and not last_verification[0]
+                and not verification_fix_nudged
+                and remaining > 1
+            ):
+                verification_fix_nudged = True
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": _VERIFICATION_FAILED_NUDGE.format(summary=last_verification[1]),
+                    }
+                )
+                self.trace.log_guard(step, "verification failed; asking to fix before final answer")
 
         return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
 
@@ -631,6 +744,28 @@ class Agent:
         self.state = SessionState()
         self.context.reset()
         self._refresh_default_prompt()
+
+    def _guard_failed_verification(
+        self,
+        step: int,
+        answer: str,
+        last_verification: tuple[bool, str] | None,
+    ) -> str:
+        """最终回答声称通过、但最后一次验证失败时，加上事实标注。
+
+        最后一步无法再追加纠正回合，至少不能把失败结果原样归档成“已完成”。
+        """
+        if (
+            last_verification is not None
+            and not last_verification[0]
+            and _claims_verification_success(answer)
+        ):
+            self.trace.log_guard(
+                step,
+                "final answer claimed verification success but last check failed",
+            )
+            return f"[验证未通过] 最后一次检查：{last_verification[1]}\n\n{answer}"
+        return answer
 
     def _recover_empty_answer(self, step: int, turn_start: int) -> str:
         """最终回答为空时，再请求一次总结。
