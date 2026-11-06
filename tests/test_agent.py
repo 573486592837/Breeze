@@ -1119,6 +1119,22 @@ def test_claims_completed_edit_ignores_non_claims(text: str) -> None:
     assert not _claims_completed_edit(text)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我将按上述方式完成实现。",
+        "我尚未完成实现。",
+        "我无法完成修改。",
+        "下一步我会完成修复。",
+    ],
+)
+def test_claims_completed_edit_ignores_future_and_negative(text: str) -> None:
+    """计划、未来动作与未完成报告不应触发“已完成编辑”提醒。"""
+    from breeze.agent import _claims_completed_edit
+
+    assert not _claims_completed_edit(text)
+
+
 def test_agent_reprompts_when_claiming_edit_without_edits(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1156,10 +1172,46 @@ def test_agent_reprompts_when_claiming_edit_without_edits(
     assert trace.summary()["errors"] == 0
 
 
+def test_agent_keeps_last_answer_at_step_limit(trace: RunTrace, fake_tool: None) -> None:
+    """最后一步的文本答案必须原样返回，不能被 max steps 占位符覆盖。"""
+    from breeze.agent import Agent
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "x"}),
+            _text("我将按上述方式完成实现。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=2)
+
+    assert agent.run("继续") == "我将按上述方式完成实现。"
+
+
+def test_agent_annotates_false_edit_claim_at_step_limit(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """最后一步无法重做时，完成声明前加事实标注而不是丢弃答案。"""
+    from breeze.agent import Agent
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "x"}),
+            _text("我已经完成了实现。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=2)
+
+    answer = agent.run("继续")
+
+    assert answer == "[未检测到成功的编辑] 我已经完成了实现。"
+    guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("no edit tool succeeded" in e["message"] for e in guard_events)
+
+
 def test_agent_nudges_only_once_per_turn(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """重复声称已改时只提醒一次，避免死循环。"""
+    """重复声称已改时只提醒一次，之后保留答案并加事实标注。"""
     from breeze.agent import Agent
 
     monkeypatch.setattr("breeze.agent.registry.execute", lambda _name, _arguments: "ok")
@@ -1167,7 +1219,7 @@ def test_agent_nudges_only_once_per_turn(
     llm = FakeLLMClient([_text("我已经修复了。"), _text("我已经修复了。")])
     agent = Agent(llm=llm, trace=trace, max_steps=10)
 
-    assert agent.run("修复") == "我已经修复了。"
+    assert agent.run("修复") == "[未检测到成功的编辑] 我已经修复了。"
     assert len(llm.calls) == 2
 
 

@@ -193,6 +193,7 @@ def test_apply_patch_line_diff_too_large(repo: Path) -> None:
     )
     assert out.startswith("Error:")
     assert "too large" in out
+    assert "Split it into smaller apply_patch calls" in out
 
 
 # ─── 路径校验 ───

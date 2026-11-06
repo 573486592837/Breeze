@@ -37,6 +37,22 @@ _EDIT_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 匹配窗口里出现这些词时，说明是计划、未来动作或如实报告未完成，
+# 不能当成“已完成编辑”的声明。
+_EDIT_CLAIM_FALSE_MARKERS = (
+    "未",
+    "没有",
+    "无法",
+    "不能",
+    "尚未",
+    "将",
+    "会",
+    "计划",
+    "打算",
+    "下一步",
+    "后续",
+)
+
 _EDIT_CLAIM_NUDGE = (
     "你的回答声称已经完成代码修改，但本轮没有任何成功的 apply_patch / "
     "create_file / git_restore 调用。请现在实际执行编辑；如果确认不需要修改，"
@@ -123,13 +139,21 @@ def _verification_status(name: str, result: str) -> tuple[bool, str]:
 def _claims_completed_edit(text: str) -> bool:
     """判断最终回答是否声称本轮完成了代码修改。
 
+    带“将/会/尚未/无法”等标记的句子是计划或如实报告，不算完成声明；
+    否则“我将按上述方式完成实现”会被误判成“已经实现”。
+
     Args:
         text: 模型给出的最终回答。
 
     Returns:
         若包含第一人称的完成声明则返回 True。
     """
-    return bool(_EDIT_CLAIM_RE.search(text))
+    for match in _EDIT_CLAIM_RE.finditer(text):
+        window = text[max(0, match.start() - 6) : match.end()]
+        if any(marker in window for marker in _EDIT_CLAIM_FALSE_MARKERS):
+            continue
+        return True
+    return False
 
 
 def _environment_note(capabilities: Capabilities) -> str:
@@ -484,6 +508,7 @@ class Agent:
         last_verification: tuple[bool, str] | None = None
         verification_fix_nudged = False
         verification_claim_nudged = False
+        last_final_answer: str | None = None
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -573,6 +598,7 @@ class Agent:
                 self.trace.log_guard(step, f"tool calls ignored at final step: {names}")
                 answer = (resp.content or "").strip()
                 if answer:
+                    answer = self._guard_missing_edits(step, answer, edits_this_turn)
                     answer = self._guard_failed_verification(step, answer, last_verification)
                     return self._finish_turn(question, answer, turn_start)
                 return self._finish_turn(
@@ -589,6 +615,7 @@ class Agent:
                     _claims_completed_edit(answer)
                     and edits_this_turn == 0
                     and not edit_claim_nudged
+                    and remaining > 1
                 ):
                     edit_claim_nudged = True
                     self.messages.append({"role": "assistant", "content": answer})
@@ -618,7 +645,9 @@ class Agent:
                         "final answer claimed verification success but last check failed; re-prompting",
                     )
                     continue
+                answer = self._guard_missing_edits(step, answer, edits_this_turn)
                 answer = self._guard_failed_verification(step, answer, last_verification)
+                last_final_answer = answer
                 return self._finish_turn(question, answer, turn_start)
 
             self.messages.append(
@@ -694,7 +723,8 @@ class Agent:
                 )
                 self.trace.log_guard(step, "verification failed; asking to fix before final answer")
 
-        return self._finish_turn(question, f"Reached max steps ({self.max_steps}), task not completed.", turn_start)
+        answer = last_final_answer or f"Reached max steps ({self.max_steps}), task not completed."
+        return self._finish_turn(question, answer, turn_start)
 
     def _refresh_capabilities(self) -> bool:
         """重新探测环境能力；变化时同步工具集。"""
@@ -744,6 +774,16 @@ class Agent:
         self.state = SessionState()
         self.context.reset()
         self._refresh_default_prompt()
+
+    def _guard_missing_edits(self, step: int, answer: str, edits_this_turn: int) -> str:
+        """最后一步无法再要求重做时，标注“没有成功编辑”。
+
+        与验证 guard 同理：不能把未落盘的修改原样归档成已完成。
+        """
+        if edits_this_turn == 0 and _claims_completed_edit(answer):
+            self.trace.log_guard(step, "final answer claimed edits but no edit tool succeeded")
+            return f"[未检测到成功的编辑] {answer}"
+        return answer
 
     def _guard_failed_verification(
         self,

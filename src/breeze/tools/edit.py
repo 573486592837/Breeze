@@ -261,7 +261,12 @@ def apply_patch(path: str, old: str, new: str) -> str:
     old_lines = len(old.splitlines())
     new_lines = len(new.splitlines())
     if abs(new_lines - old_lines) > MAX_PATCH_LINES:
-        return f"Error: patch is too large (>{MAX_PATCH_LINES} lines diff)"
+        return (
+            f"Error: patch is too large (>{MAX_PATCH_LINES} lines diff). "
+            "Split it into smaller apply_patch calls: replace the placeholder with "
+            "the imports and first section, then patch in the remaining sections. "
+            "Do not paste a whole new file into one call."
+        )
 
     try:
         target = safe_path(path)
