@@ -587,6 +587,80 @@ def test_compressed_shell_results_are_distinguishable() -> None:
     contents = [m["content"] for m in result if m["role"] == "tool"]
     assert "git status" in contents[0] and "git diff --stat" not in contents[0]
     assert "git diff --stat" in contents[1] and "git status" not in contents[1]
+    assert "exit_code: 0" in contents[0]
+    assert "exit_code: 0" in contents[1]
+
+
+def test_compressed_parallel_shell_keeps_error_body() -> None:
+    """并行调用里的 run_shell 错误不能被批次头掩盖后压缩掉。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    error_text = (
+        "Tool execution failed: Shell operators are not supported: '&&'. "
+        "Run one command per call, e.g. 'git status --short'."
+    )
+    messages = [
+        _system(),
+        _user("q"),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "s1",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": '{"command": "git status --short"}'},
+                },
+                {
+                    "id": "s2",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": '{"command": "git status && git log"}'},
+                },
+            ],
+        },
+        _tool("s1", "exit_code: 0\n--- stdout ---\n(no output)\n--- stderr ---\n"),
+        _tool("s2", error_text),
+    ]
+    result = cm.build(messages)
+
+    contents = [m["content"] for m in result if m["role"] == "tool"]
+    assert contents[1].startswith("[run_shell error] git status && git log")
+    assert "Shell operators are not supported" in contents[1]
+    assert "full output dropped" not in contents[1]
+
+
+def test_compressed_ruff_result_keeps_all_error_codes() -> None:
+    """ruff 的多个错误码都要保留，不能只留首尾把 E501 藏掉。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    ruff_text = (
+        "exit_code: 1\n"
+        "--- stdout ---\n"
+        "B905 `zip()` without an explicit `strict=` parameter\n"
+        "  --> src/prefix.py:78:18\n"
+        "   |\n"
+        "78 |     for items in zip(*seqs):\n"
+        "E501 Line too long (132 > 120)\n"
+        "  --> tests/test_prefix.py:134:121\n"
+        "   |\n"
+        "Found 2 errors.\n"
+        "--- stderr ---\n"
+    )
+    messages = [
+        _system(),
+        _user("q"),
+        *_round(
+            "c1",
+            "run_shell",
+            '{"command": "python -m ruff check src tests"}',
+            ruff_text,
+        ),
+    ]
+    result = cm.build(messages)
+
+    content = next(m["content"] for m in result if m["role"] == "tool")
+    assert "exit_code: 1" in content
+    assert "B905" in content
+    assert "E501" in content
+    assert "Found 2 errors" in content
 
 
 def test_compressed_tests_result_keeps_summary_and_failures() -> None:

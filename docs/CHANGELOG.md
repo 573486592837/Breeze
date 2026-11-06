@@ -1068,6 +1068,8 @@ M3 试跑连续失败后回看完整提示词，定位到三类与任务难度�
   并保留该工具的有效摘要（shell 的 stderr 首行与 stdout 首尾、pytest 的
   summary/failures/status、git diff 的 diffstat）。并行调用结果前加
   `[call i/n 工具: 参数]` 头，避免多条匿名结果混淆。
+- 批次头改在降级之后添加，避免压缩摘要把头当成结果首行而丢掉 `exit_code`；
+  ruff 摘要保留每条错误码（B905、E501…）与 `Found N errors`，不再只留首尾。
 - 工具错误不再被压缩成一行：错误正文最多保留 2000 字符，模型能看到具体的拒绝
   原因并修正参数，而不是反复重试同一调用。
 - `update_plan` 的调用参数不再重复携带计划全文（正文已由消息末尾的固定块注入），
@@ -1089,4 +1091,4 @@ M3 试跑连续失败后回看完整提示词，定位到三类与任务难度�
   `--trace-name m3-retry` 直接生成 `traces/m3-retry.jsonl`，不再拼接时间戳与
   session id，并写回会话配置。`/trace auto` 仍可恢复每回合独立文件。
 - 验证：新增指针区分、错误保留、pytest 摘要、update_plan 确认、验证 guard、
-  venv 解释器与 trace 追加的回归测试；675 passed / 2 skipped，ruff 全绿。
+  venv 解释器与 trace 追加的回归测试；677 passed / 2 skipped，ruff 全绿。
