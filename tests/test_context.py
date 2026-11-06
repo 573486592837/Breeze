@@ -505,3 +505,208 @@ def test_stats_reset_clears_prefix_baseline() -> None:
     _, stats = cm.build_with_stats(base)
 
     assert stats.cacheable_prefix_tokens == 0
+
+
+# ─── 降级结果的可读性与关联 ───
+
+
+def test_parallel_results_carry_batch_header() -> None:
+    """同一步并行调用时，每条结果带上序号与工具参数。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [
+        _system(),
+        _user("q"),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "r1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a.py"}'}},
+                {"id": "r2", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "b.py"}'}},
+            ],
+        },
+        _tool("r1", "alpha content"),
+        _tool("r2", "beta content"),
+    ]
+    result = cm.build(messages)
+
+    contents = [m["content"] for m in result if m["role"] == "tool"]
+    assert contents[0] == "[call 1/2 read_file: a.py]\nalpha content"
+    assert contents[1] == "[call 2/2 read_file: b.py]\nbeta content"
+
+
+def test_compressed_shell_result_keeps_command_and_output() -> None:
+    """run_shell 降级后仍保留命令、退出码与有信息量的输出行。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    result_text = (
+        "exit_code: 0\n"
+        "--- stdout ---\n"
+        " src/a.py | 2 +-\n"
+        " 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+        "--- stderr ---\n"
+    )
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "run_shell", '{"command": "git diff --stat"}', result_text),
+    ]
+    result = cm.build(messages)
+
+    content = next(m["content"] for m in result if m["role"] == "tool")
+    assert content.startswith("[run_shell compressed] git diff --stat")
+    assert "exit_code: 0" in content
+    assert "1 file changed" in content
+
+
+def test_compressed_shell_results_are_distinguishable() -> None:
+    """并行 run_shell 使用不同命令时，指针必须能区分调用。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    messages = [
+        _system(),
+        _user("q"),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "s1",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": '{"command": "git status"}'},
+                },
+                {
+                    "id": "s2",
+                    "type": "function",
+                    "function": {"name": "run_shell", "arguments": '{"command": "git diff --stat"}'},
+                },
+            ],
+        },
+        _tool("s1", "exit_code: 0\n--- stdout ---\n M a.py\n--- stderr ---\n"),
+        _tool("s2", "exit_code: 0\n--- stdout ---\n 1 file changed\n--- stderr ---\n"),
+    ]
+    result = cm.build(messages)
+
+    contents = [m["content"] for m in result if m["role"] == "tool"]
+    assert "git status" in contents[0] and "git diff --stat" not in contents[0]
+    assert "git diff --stat" in contents[1] and "git status" not in contents[1]
+
+
+def test_compressed_tests_result_keeps_summary_and_failures() -> None:
+    """run_tests 降级后保留 pytest 汇总与失败项。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    result_text = (
+        "exit_code=1\n"
+        "summary: 6 failed, 23 passed in 2.41s\n"
+        "failures:\n"
+        "- tests/test_prefix.py::test_x — TypeError\n"
+        "status: failed — investigate the failing test, then fix the code.\n"
+    )
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "run_tests", '{"pattern": ""}', result_text),
+    ]
+    result = cm.build(messages)
+
+    content = next(m["content"] for m in result if m["role"] == "tool")
+    assert "6 failed, 23 passed" in content
+    assert "test_prefix.py::test_x" in content
+
+
+def test_error_results_are_not_collapsed() -> None:
+    """工具错误保留原文，不压成只有 exit_code 的一行。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    error_text = (
+        r"Tool execution failed: Executable not allowed: .venv\Scripts\python.exe. "
+        "Allowed commands: git, node, python, python3, rg, where. "
+        "Use run_tests or 'python -m pytest'."
+    )
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "run_shell", '{"command": ".venv\\Scripts\\python.exe -m pytest"}', error_text),
+    ]
+    result = cm.build(messages)
+
+    content = next(m["content"] for m in result if m["role"] == "tool")
+    assert content.startswith("[run_shell error]")
+    assert "Executable not allowed" in content
+    assert "Use run_tests" in content
+    assert "full output dropped" not in content
+
+
+def test_update_plan_call_kept_without_plan_body() -> None:
+    """update_plan 的调用与确认保留，但计划正文只在尾部注入一次。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [
+        _system(),
+        _user("q"),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "p1",
+                    "type": "function",
+                    "function": {"name": "update_plan", "arguments": '{"content": "1. a"}'},
+                },
+                {
+                    "id": "r1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "a.py"}'},
+                },
+            ],
+        },
+        _tool("p1", "Plan updated (3 chars)."),
+        _tool("r1", "alpha"),
+    ]
+    result = cm.build(messages, plan="1. a")
+
+    joined = " ".join(str(m.get("content", "")) for m in result)
+    assert "Plan updated" in joined
+    assert "alpha" in joined
+    assert joined.count("1. a") == 1
+
+    tool_ids = {m.get("tool_call_id") for m in result if m.get("role") == "tool"}
+    assert tool_ids == {"p1", "r1"}
+    assistant = next(m for m in result if m.get("role") == "assistant")
+    plan_call = next(tc for tc in assistant["tool_calls"] if tc["id"] == "p1")
+    assert "omitted" in plan_call["function"]["arguments"]
+    assert "1. a" not in plan_call["function"]["arguments"]
+
+
+def test_update_plan_only_message_kept_as_ack() -> None:
+    """只含 update_plan 的 assistant 消息保留，模型能看到调用已执行。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [
+        _system(),
+        _user("q"),
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "p1",
+                    "type": "function",
+                    "function": {"name": "update_plan", "arguments": '{"content": "1. a"}'},
+                }
+            ],
+        },
+        _tool("p1", "Plan updated (3 chars)."),
+    ]
+    result = cm.build(messages, plan="1. a")
+
+    assert sum(1 for m in result if m.get("role") == "assistant") == 1
+    assert any(m.get("role") == "tool" and m.get("tool_call_id") == "p1" for m in result)
+
+
+def test_update_plan_error_result_is_preserved() -> None:
+    """计划超长的错误必须原样返回，不能被压缩掉。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10, hard_budget=10))
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("p1", "update_plan", '{"content": "1. a"}', "Error: plan is 9000 chars; keep it under 4000."),
+    ]
+    result = cm.build(messages, plan="1. a")
+
+    joined = " ".join(str(m.get("content", "")) for m in result)
+    assert "Error: plan is 9000 chars" in joined

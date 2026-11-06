@@ -108,13 +108,167 @@ def _render_plan(plan: str | None) -> str:
     return "[Current plan — agent-maintained; update with update_plan]\n" + text
 
 
+SPILL_POINTER_MAX_CHARS = 700
+ERROR_KEEP_CHARS = 2_000
+_PLAN_ARGUMENTS_PLACEHOLDER = '{"content": "[omitted; the current plan is injected below]"}'
+_ERROR_PREFIXES = (
+    "Error",
+    "Tool execution failed",
+    "Failed",
+    "Executable not allowed",
+    "Python module not allowed",
+)
+
+
+def _one_line(text: str, limit: int = 120) -> str:
+    """把多行文本压成一行并限制长度。"""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _arg_summary(tool: str, arguments: dict[str, Any]) -> str:
+    """生成工具调用的简短参数说明，用于结果头与压缩指针。
+
+    并行调用的结果只带 ``tool_call_id``；把命令/路径写进结果本身，模型才能
+    把远处的调用与结果对应起来。
+    """
+    if tool == "run_shell":
+        command = arguments.get("command")
+        if isinstance(command, str) and command.strip():
+            return _one_line(command.strip(), 140)
+    if tool == "run_tests":
+        pattern = arguments.get("pattern")
+        if isinstance(pattern, str) and pattern.strip():
+            return f"pattern={pattern.strip()}"
+        return "all tests"
+    if tool == "read_file":
+        path = arguments.get("path", "?")
+        start, end = arguments.get("start_line"), arguments.get("end_line")
+        if start and end:
+            return f"{path} lines {start}-{end}"
+        return str(path)
+    if tool in POINTER_TOOLS:
+        bits = [
+            str(value)
+            for key, value in arguments.items()
+            if key in {"path", "pattern", "glob"} and isinstance(value, str) and value
+        ]
+        return _one_line(" ".join(bits), 100)
+    if tool in {"apply_patch", "create_file", "delete_path", "git_restore"}:
+        path = arguments.get("path")
+        if isinstance(path, str) and path:
+            return f"path={path}"
+    bits = " ".join(
+        f"{key}={value}" for key, value in list(arguments.items())[:2] if isinstance(value, (str, int))
+    )
+    return _one_line(bits, 100)
+
+
+def _looks_like_error(result: str) -> bool:
+    """判断结果是否是工具错误，而不是可重建的正常输出。"""
+    text = result.lstrip()
+    return text.startswith(_ERROR_PREFIXES) or "Traceback (most recent call last)" in text[:200]
+
+
+def _render_error_pointer(tool: str, arg_bits: str, result: str) -> str:
+    """错误结果保留原文与修复提示，不压缩成一行。"""
+    body = result.strip()
+    if len(body) > ERROR_KEEP_CHARS:
+        body = body[:ERROR_KEEP_CHARS].rstrip() + "\n... (error truncated)"
+    header = f"[{tool} error]" + (f" {arg_bits}" if arg_bits else "")
+    return f"{header}\n{body}"
+
+
+def _find_marker(lines: list[str], marker: str) -> int | None:
+    return next((i for i, line in enumerate(lines) if line.strip() == marker), None)
+
+
+def _shell_summary(result: str) -> str:
+    """保留 run_shell 的命令、退出码与最有信息量的输出行。
+
+    ``git status`` / ``git diff --stat`` 的价值在 stdout 首尾行；失败时
+    stderr 首行通常就是原因。只留 ``exit_code`` 等于把结果全部丢掉。
+    """
+    lines = [line.rstrip() for line in result.splitlines()]
+    head = lines[0].strip() if lines else ""
+    stdout = _find_marker(lines, "--- stdout ---")
+    stderr = _find_marker(lines, "--- stderr ---")
+
+    parts = [head] if head else []
+    if stdout is None:
+        body = [line.strip() for line in lines[1:] if line.strip()]
+        if body:
+            parts.append(_one_line(body[0]))
+        return " | ".join(parts)
+
+    stdout_end = stderr if stderr is not None else len(lines)
+    stdout_lines = [line.strip() for line in lines[stdout + 1 : stdout_end] if line.strip()]
+    stderr_lines = (
+        [line.strip() for line in lines[stderr + 1 :] if line.strip()] if stderr is not None else []
+    )
+    if stderr_lines:
+        parts.append(_one_line(stderr_lines[0]))
+    if stdout_lines:
+        parts.append(_one_line(stdout_lines[0]))
+        if len(stdout_lines) > 1:
+            last = _one_line(stdout_lines[-1])
+            if last not in parts:
+                parts.append(last)
+    return " | ".join(part for part in parts if part)
+
+
+def _tests_summary(result: str) -> str:
+    """保留 run_tests 的退出码、pytest 汇总与失败项。"""
+    keep: list[str] = []
+    for line in result.splitlines():
+        text = line.strip()
+        if text.startswith(("exit_code=", "summary:", "status:", "- ")):
+            keep.append(_one_line(text, 160))
+    return " | ".join(keep[:6])
+
+
+def _git_diff_summary(result: str) -> str:
+    """保留 diff 的首尾行；末行通常是 diffstat 合计。"""
+    lines = [line.strip() for line in result.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = _one_line(lines[0])
+    last = _one_line(lines[-1])
+    return first if first == last else f"{first} | {last}"
+
+
+def _summarize_spill_result(tool: str, result: str) -> str:
+    """按工具保留降级后仍然有用的结果摘要。"""
+    if tool == "run_tests":
+        return _tests_summary(result)
+    if tool == "run_shell":
+        return _shell_summary(result)
+    if tool == "git_diff":
+        return _git_diff_summary(result)
+    first = next((line.strip() for line in result.splitlines() if line.strip()), "")
+    return _one_line(first, 160)
+
+
+def _render_spill_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
+    """把可再生工具输出降级为自描述的摘要指针。"""
+    arg_bits = _arg_summary(tool, arguments)
+    if _looks_like_error(result):
+        return _render_error_pointer(tool, arg_bits, result)
+
+    summary = _summarize_spill_result(tool, result)
+    header = f"[{tool} compressed] {arg_bits} → {summary}" if arg_bits else f"[{tool} compressed] → {summary}"
+    if len(header) > SPILL_POINTER_MAX_CHARS:
+        header = header[: SPILL_POINTER_MAX_CHARS - 1] + "…"
+    return f"{header}\n(full output dropped by budget; re-run for more)"
+
+
 def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
-    """把一条工具结果降级为一行指针。
+    """把一条工具结果降级为指针。
 
     Args:
         tool: 工具名。
         arguments: 该调用的参数（解析失败时为空 dict）。
-        result: 原始结果文本，用于统计行数或摘录首行。
+        result: 原始结果文本，用于统计行数或摘录摘要。
 
     Returns:
         指针文本。
@@ -147,8 +301,7 @@ def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
             pointer += "\n... (truncated; narrow the pattern or path for the rest)"
         return pointer
 
-    detail = result.splitlines()[0][:80] if result.strip() else ""
-    return f"[{tool} compressed] {detail} (output dropped by budget; re-run if needed)"
+    return _render_spill_pointer(tool, arguments, result)
 
 
 @dataclass
@@ -304,9 +457,12 @@ class ContextManager:
             return result, self._stats(result, segments)
 
         head = list(messages[:2])
-        body = messages[2:]
+        # update_plan 的计划正文已经由尾部计划块注入；历史里保留调用与短确认，
+        # 但省略参数中的计划全文，避免重复占预算。
+        body = self._compact_plan_updates(messages[2:])
 
         id_to_name, id_to_args = self._index_tool_calls(body)
+        batch_index = self._batch_index(body)
 
         converted: list[dict[str, Any]] = []
         demoted = False
@@ -314,15 +470,17 @@ class ContextManager:
             if msg.get("role") != "tool":
                 converted.append(msg)
                 continue
-            tool = id_to_name.get(msg.get("tool_call_id", ""), "")
+            tool_call_id = msg.get("tool_call_id", "")
+            tool = id_to_name.get(tool_call_id, "")
             content = msg.get("content")
             if tool in POINTER_TOOLS and isinstance(content, str) and len(content) > POINTER_KEEP_CHARS:
                 new_msg = dict(msg)
-                new_msg["content"] = _render_pointer(tool, id_to_args.get(msg.get("tool_call_id", ""), {}), content)
+                new_msg["content"] = _render_pointer(tool, id_to_args.get(tool_call_id, {}), content)
                 demoted = True
                 converted.append(self._compact_tool_result(new_msg))
             else:
-                converted.append(self._compact_tool_result(msg))
+                new_msg = self._compact_tool_result(msg)
+                converted.append(self._with_batch_header(new_msg, tool, tool_call_id, batch_index, id_to_args))
 
         # 状态块只在发生降级时注入；未降级的回合里原始工具结果都还在，
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
@@ -451,6 +609,76 @@ class ContextManager:
             out[i] = new_msg
             changed = True
         return out, changed
+
+    @staticmethod
+    def _compact_plan_updates(body: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """保留 update_plan 的调用与确认，但省略重复的计划正文。
+
+        计划正文已经由尾部计划块注入；assistant tool_call 参数再复制一份
+        既占预算又可能过期。只把参数替换成占位符，保留 tool_call 与短结果，
+        模型才能确认调用已经执行，不会因为看不到结果而反复调用。
+        """
+        plan_ids = {
+            str(tc.get("id", ""))
+            for msg in body
+            if msg.get("role") == "assistant"
+            for tc in msg.get("tool_calls") or []
+            if isinstance(tc, dict) and tc.get("function", {}).get("name") == "update_plan"
+        }
+        if not plan_ids:
+            return list(body)
+
+        out: list[dict[str, Any]] = []
+        for msg in body:
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                out.append(msg)
+                continue
+            changed = False
+            calls: list[dict[str, Any]] = []
+            for tc in msg["tool_calls"]:
+                if isinstance(tc, dict) and str(tc.get("id", "")) in plan_ids:
+                    function = dict(tc.get("function") or {})
+                    function["arguments"] = _PLAN_ARGUMENTS_PLACEHOLDER
+                    tc = {**tc, "function": function}
+                    changed = True
+                calls.append(tc)
+            if changed:
+                msg = dict(msg)
+                msg["tool_calls"] = calls
+            out.append(msg)
+        return out
+
+    @staticmethod
+    def _batch_index(body: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+        """返回同一步并行调用的位置与总数：tool_call_id -> (pos, total)。"""
+        index: dict[str, tuple[int, int]] = {}
+        for msg in body:
+            calls = [tc for tc in msg.get("tool_calls") or [] if isinstance(tc, dict)]
+            if len(calls) < 2:
+                continue
+            for pos, tc in enumerate(calls, 1):
+                index[str(tc.get("id", ""))] = (pos, len(calls))
+        return index
+
+    @staticmethod
+    def _with_batch_header(
+        msg: dict[str, Any],
+        tool: str,
+        tool_call_id: str,
+        batch_index: dict[str, tuple[int, int]],
+        id_to_args: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        """给并行批次中的结果加自描述头，便于与远处的调用对应。"""
+        batch = batch_index.get(tool_call_id)
+        content = msg.get("content")
+        if batch is None or not isinstance(content, str) or not content or content.startswith("["):
+            return msg
+        pos, total = batch
+        args = _arg_summary(tool, id_to_args.get(tool_call_id, {}))
+        header = f"[call {pos}/{total} {tool}" + (f": {args}" if args else "") + "]"
+        new_msg = dict(msg)
+        new_msg["content"] = f"{header}\n{content}"
+        return new_msg
 
     @staticmethod
     def _latest_read_ids(body: list[dict[str, Any]]) -> frozenset[str]:

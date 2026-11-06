@@ -1,8 +1,9 @@
 """breeze chat 的交互会话循环。
 
 run_chat 与 CLI 解耦（agent_factory / trace_factory / input_fn 可注入），
-便于测试与复用。每个提问回合创建独立的 trace 文件；Agent 跨回合存活，
-上一回合的问答结论由 TurnLedger 归档注入下一回合，工具过程不再进入窗口。
+便于测试与复用。默认每个会话共用一个 trace 文件、逐回合追加（/trace auto
+可恢复每回合独立文件）；Agent 跨回合存活，上一回合的问答结论由 TurnLedger
+归档注入下一回合，工具过程不再进入窗口。
 
 传入 session（SessionStore）时，会话开始前沿用其中已归档的回合与状态，
 每回合结束把结论与状态快照落盘，进程退出后仍可 `--resume` 接续。

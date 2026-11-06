@@ -215,14 +215,14 @@ def chat(
     trace_dir: Path = typer.Option(
         Path("traces"),
         "--trace-dir",
-        help="trace file output directory, one trace file per turn",
+        help="trace file output directory; chat appends turns to one file per session",
         file_okay=False,
         dir_okay=True,
     ),
     trace_name: str = typer.Option(
         None,
         "--trace-name",
-        help="trace filename prefix; session id is used by default",
+        help="exact trace filename (without .jsonl); appended across turns",
     ),
     resume: str = typer.Option(
         None,
@@ -296,7 +296,9 @@ def chat(
             temperature=saved.get("temperature"),
             profile=saved.get("profile"),
             trace_prefix=trace_name or saved.get("trace_prefix") or session.session_id,
-            trace_pinned=bool(saved.get("trace_pinned")) and trace_name is None,
+            # 同一会话默认追加到同一个 trace 文件；/trace auto 显式关闭后
+            # 才恢复每回合独立文件。
+            trace_pinned=True if trace_name else saved.get("trace_pinned", True) is not False,
             trace_dir=trace_dir,
             intra_turn_budget=saved.get("intra_turn_budget"),
             hard_budget=saved.get("hard_budget"),
@@ -304,6 +306,9 @@ def chat(
             max_records=saved.get("max_records"),
             max_chars=saved.get("max_chars"),
         )
+        if trace_name:
+            # 把显式指定的 trace 名写回会话，--resume 时无需再次传参。
+            session.record_config(trace_prefix=controller.trace_prefix, trace_pinned=True)
 
         console.print(
             f"[dim]model: {controller.llm.model} | repo: {repo_root} | "
