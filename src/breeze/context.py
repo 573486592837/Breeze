@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -208,7 +209,19 @@ def _shell_summary(result: str) -> str:
     )
     if stderr_lines:
         parts.append(_one_line(stderr_lines[0]))
-    if stdout_lines:
+
+    # ruff/flake8 的每条错误都是 “CODE 说明”，只留首尾会把中间的错误码
+    # （例如 B905 之后的 E501）藏掉，模型就会漏修。
+    lint_codes = [line for line in stdout_lines if re.match(r"^[A-Z]{1,3}\d{3,4}\b", line)]
+    if lint_codes:
+        for line in lint_codes[:4]:
+            text = _one_line(line, 140)
+            if text not in parts:
+                parts.append(text)
+        found = next((line for line in reversed(stdout_lines) if line.startswith("Found ")), "")
+        if found and found not in parts:
+            parts.append(_one_line(found))
+    elif stdout_lines:
         parts.append(_one_line(stdout_lines[0]))
         if len(stdout_lines) > 1:
             last = _one_line(stdout_lines[-1])
@@ -479,8 +492,7 @@ class ContextManager:
                 demoted = True
                 converted.append(self._compact_tool_result(new_msg))
             else:
-                new_msg = self._compact_tool_result(msg)
-                converted.append(self._with_batch_header(new_msg, tool, tool_call_id, batch_index, id_to_args))
+                converted.append(self._compact_tool_result(msg))
 
         # 状态块只在发生降级时注入；未降级的回合里原始工具结果都还在，
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
@@ -516,6 +528,23 @@ class ContextManager:
                 head, converted, id_to_name, id_to_args, hard_budget, state, archive, plan, READ_TOOLS
             )
             demoted = demoted or spilled
+
+        # 批次头必须在降级之后加：否则 _shell_summary 会把 “[call 1/2 ...]”
+        # 当成结果首行，丢掉 exit_code 与错误正文。
+        if batch_index:
+            headed: list[dict[str, Any]] = []
+            for msg in converted:
+                if msg.get("role") == "tool":
+                    tool_call_id = msg.get("tool_call_id", "")
+                    msg = self._with_batch_header(
+                        msg,
+                        id_to_name.get(tool_call_id, ""),
+                        tool_call_id,
+                        batch_index,
+                        id_to_args,
+                    )
+                headed.append(msg)
+            converted = headed
 
         result: list[dict[str, Any]] = []
         segments: dict[str, list[int]] = {}
