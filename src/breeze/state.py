@@ -27,6 +27,13 @@ _READ_DEF_RE = re.compile(r"^\s*(?P<line>\d+) \| (?:async )?(?:def|class) (?P<na
 _TOTAL_LINES_RE = re.compile(r"file has (\d+) lines total")
 _TESTS_SUMMARY_RE = re.compile(r"summary: (.+)")
 _FIRST_FAILURE_RE = re.compile(r"^- (\S+::\S+)", re.M)
+_EDIT_TOOLS = ("apply_patch", "create_file", "delete_path", "git_restore")
+_EDIT_VERBS = {
+    "apply_patch": "patched",
+    "create_file": "created",
+    "delete_path": "deleted",
+    "git_restore": "restored",
+}
 
 
 class SessionState:
@@ -53,6 +60,7 @@ class SessionState:
         self.read_counts: dict[tuple[str, Any, Any], int] = {}
         self.edits: dict[str, str] = {}
         self.tests: str = ""
+        self.tests_stale = False
         self.plan: str = ""
 
     def start_turn(self) -> None:
@@ -82,14 +90,37 @@ class SessionState:
             self._update_read(arguments, result, step)
         elif tool == "grep":
             self._update_grep(result)
-        elif tool in ("apply_patch", "create_file"):
+        elif tool in _EDIT_TOOLS:
             path = str(arguments.get("path", "?"))
-            verb = "created" if tool == "create_file" else "patched"
-            self.edits[path] = f"{verb} at step {step}"
+            self.edits[path] = f"{_EDIT_VERBS[tool]} at step {step}"
+            self._invalidate_path(path)
         elif tool == "run_tests":
             self._update_tests(result, step)
         elif tool == "update_plan":
             self.plan = _clip(str(arguments.get("content", "")), PLAN_MAX_CHARS)
+
+    def _invalidate_path(self, path: str) -> None:
+        """编辑或删除文件后丢弃该路径已失效的读取、符号与重读计数。
+
+        文件内容已变，旧的行范围和符号位置不再可信；保留它们会让模型
+        基于旧行号改代码或误以为无需重读。删除目录时其下文件一并失效。
+        测试结果也随编辑变为过期。
+        """
+        self.reads = {
+            p: desc for p, desc in self.reads.items() if not _same_or_under(p, path)
+        }
+        self.symbols = {
+            name: loc
+            for name, loc in self.symbols.items()
+            if not _same_or_under(loc.rsplit(":", 1)[0], path)
+        }
+        self.read_counts = {
+            key: count
+            for key, count in self.read_counts.items()
+            if not _same_or_under(key[0], path)
+        }
+        if self.tests:
+            self.tests_stale = True
 
     def _update_read(self, arguments: dict[str, Any], result: str, step: int) -> None:
         """记录文件读取范围与其中的 def/class 符号。"""
@@ -128,6 +159,7 @@ class SessionState:
         if failure:
             text += f" — failing: {failure.group(1)}"
         self.tests = f"{text} (step {step})"
+        self.tests_stale = False
 
     def to_dict(self) -> dict[str, Any]:
         """序列化为 JSON 友好的字典，供会话持久化使用。
@@ -143,6 +175,7 @@ class SessionState:
             "reads": dict(self.reads),
             "edits": dict(self.edits),
             "tests": self.tests,
+            "tests_stale": self.tests_stale,
             "plan": self.plan,
         }
 
@@ -161,14 +194,20 @@ class SessionState:
         st.reads.update(data.get("reads") or {})
         st.edits.update(data.get("edits") or {})
         st.tests = data.get("tests") or ""
+        st.tests_stale = bool(data.get("tests_stale"))
         st.plan = data.get("plan") or ""
         return st
 
-    def render(self) -> str:
+    def render(self, *, turn_start: bool = False) -> str:
         """渲染紧凑状态块。空状态返回空字符串。
 
+        Args:
+            turn_start: 是否为回合启动注入。此时事实来自之前的回合，
+                文件内容不在当前上下文中，提示语要避免让模型误以为
+                “最新副本已在上下文里”。
+
         Returns:
-            多行文本，供压缩摘要拼接注入。
+            多行文本，供上下文管理器拼接注入。
         """
         sections: list[str] = []
 
@@ -185,34 +224,62 @@ class SessionState:
             body = "\n".join(f"- {path}: {desc}" for path, desc in items)
             sections.append(f"Edits:\n{body}")
 
-        rereads = [(key, count) for key, count in self.read_counts.items() if count >= 2]
-        if rereads:
-            body_lines = []
-            for (path, start, end), count in rereads[-self.max_entries :]:
-                rng = f"lines {start}-{end}" if start and end else "full file"
-                body_lines.append(
-                    f"- {path} {rng} read {count} times this turn. "
-                    f"If the latest copy is still in context, edit from it instead of reading again."
-                )
-            sections.append("Repeated reads:\n" + "\n".join(body_lines))
+        repeated = self._repeated_reads_lines()
+        if repeated:
+            sections.append("Repeated reads:\n" + "\n".join(repeated))
 
         if self.tests:
-            sections.append(f"Tests: {self.tests}")
+            text = self.tests
+            if self.tests_stale:
+                text += " (stale: files edited after this run; rerun verification)"
+            sections.append(f"Tests: {text}")
 
         if not sections:
             return ""
 
-        lines = ["[Session state — maintained from real tool results]"]
-        lines.extend(sections)
-        lines.append(
-            "This index is authoritative for locate/list questions: answer from it, and only re-read with "
-            "read_file when a needed fact is missing here."
+        if turn_start:
+            header = "[Session state — carried from previous turns]"
+            footer = [
+                "Facts above come from earlier tool results; their file contents are not in this context.",
+                "Use this index for locate/list questions. Before editing, re-read only the ranges you need.",
+                "Facts for an edited or restored file were discarded; re-read that file before editing it.",
+            ]
+        else:
+            header = "[Session state — maintained from real tool results]"
+            footer = [
+                "This index is authoritative for locate/list questions: answer from it, and only re-read with "
+                "read_file when a needed fact is missing here.",
+                "If a needed range is no longer in context or the file changed, re-read only that range with "
+                "read_file; otherwise edit from the latest copy already in context.",
+            ]
+        return "\n".join([header, *sections, *footer])
+
+    def render_repeated(self) -> str:
+        """只渲染本回合的重复读取警示；没有重复时返回空字符串。
+
+        状态块只在压缩发生时注入，但重复读取本身就会消耗步数；
+        单独暴露这一段，让上下文管理器无需压缩也能提醒模型。
+        """
+        lines = self._repeated_reads_lines()
+        if not lines:
+            return ""
+        return "\n".join(
+            ["[Repeated reads this turn — do not re-read an unchanged file]", *lines]
         )
-        lines.append(
-            "If a needed range is no longer in context or the file changed, re-read only that range with "
-            "read_file; otherwise edit from the latest copy already in context."
-        )
-        return "\n".join(lines)
+
+    def _repeated_reads_lines(self) -> list[str]:
+        """生成重复读取提醒行。"""
+        rereads = [(key, count) for key, count in self.read_counts.items() if count >= 2]
+        if not rereads:
+            return []
+        lines: list[str] = []
+        for (path, start, end), count in rereads[-self.max_entries :]:
+            rng = f"lines {start}-{end}" if start and end else "full file"
+            lines.append(
+                f"- {path} {rng} read {count} times this turn. "
+                f"If the latest copy is still in context, edit from it instead of reading again."
+            )
+        return lines
 
     def _render_symbols(self) -> str:
         """按文件最近出现顺序保留 max_entries 个文件，文件内符号全部列出。
@@ -232,6 +299,13 @@ class SessionState:
 
         recent = sorted(grouped, key=lambda path: recency[path])[-self.max_entries :]
         return "\n".join(line for path in recent for line in grouped[path])
+
+
+def _same_or_under(candidate: str, root: str) -> bool:
+    """判断路径是否等于 root 或位于 root 目录下。"""
+    if candidate == root:
+        return True
+    return candidate.startswith(root + "/") or candidate.startswith(root + "\\")
 
 
 def _fold(text: str, limit: int) -> str:

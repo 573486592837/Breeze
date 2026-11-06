@@ -10,6 +10,8 @@
   指针，模型仍可能重读；这是硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
+- 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
+  截断为短摘录，既维持目标连贯，又避免提示词随步数线性膨胀。
 
 任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
 于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
@@ -48,6 +50,11 @@ READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
 # 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
 READ_SPILL_MIN_CHARS = 512
+# 推理模型的思考过程要随工具结果回传，但完整保留每一步会迅速撑爆上下文。
+# 最近两次思考保留全文，更早的只留开头摘录：既维持目标连贯，又限制开销。
+REASONING_KEEP_MESSAGES = 2
+REASONING_PREVIEW_CHARS = 600
+_REASONING_TRUNCATED_MARK = "\n…[earlier reasoning truncated]"
 
 _encoding: tiktoken.Encoding | None = None
 _encoding_failed = False
@@ -107,6 +114,34 @@ def _render_plan(plan: str | None) -> str:
     if not text:
         return ""
     return "[Current plan — agent-maintained; update with update_plan]\n" + text
+
+
+def _compact_reasoning(body: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """保留最近几步的完整思考，更早的截断为短摘录。
+
+    推理模型要求思考过程随工具调用回传；全量保留会让提示词随步数线性膨胀，
+    因此只让最近 ``REASONING_KEEP_MESSAGES`` 步保持全文，更早的留开头，
+    仍能提醒模型当前目标，又不会挤占工具结果的预算。
+    """
+    indexes = [
+        i
+        for i, msg in enumerate(body)
+        if msg.get("role") == "assistant" and isinstance(msg.get("reasoning_content"), str)
+    ]
+    keep = set(indexes[-REASONING_KEEP_MESSAGES:])
+    if all(i in keep for i in indexes):
+        return list(body)
+
+    out: list[dict[str, Any]] = []
+    for i, msg in enumerate(body):
+        text = msg.get("reasoning_content")
+        if i in keep or not isinstance(text, str) or len(text) <= REASONING_PREVIEW_CHARS:
+            out.append(msg)
+            continue
+        trimmed = dict(msg)
+        trimmed["reasoning_content"] = text[:REASONING_PREVIEW_CHARS] + _REASONING_TRUNCATED_MARK
+        out.append(trimmed)
+    return out
 
 
 SPILL_POINTER_MAX_CHARS = 700
@@ -433,20 +468,29 @@ class ContextManager:
         state: Any | None = None,
         archive: str | None = None,
         plan: str | None = None,
+        *,
+        include_state: bool = False,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
         Args:
             messages: 当前回合的完整历史（system、user、若干轮）。
-            state: SessionState 实例；发生降级或存在回合归档时注入。
+            state: SessionState 实例；发生降级或回合启动时注入。
             archive: TurnLedger 渲染的已完成回合文本；注入在 system 之后。
             plan: Agent 维护的短期计划；非空时追加在 body 之后、state 之前，
                 避免计划更新切断历史缓存前缀。
+            include_state: 回合启动时注入上一回合遗留的状态索引。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
         """
-        result, _ = self.build_with_stats(messages, state=state, archive=archive, plan=plan)
+        result, _ = self.build_with_stats(
+            messages,
+            state=state,
+            archive=archive,
+            plan=plan,
+            include_state=include_state,
+        )
         return result
 
     def build_with_stats(
@@ -455,6 +499,8 @@ class ContextManager:
         state: Any | None = None,
         archive: str | None = None,
         plan: str | None = None,
+        *,
+        include_state: bool = False,
     ) -> tuple[list[dict[str, Any]], PromptStats]:
         """构建消息列表，并返回本次提示词的组成与缓存复用量。
 
@@ -473,6 +519,7 @@ class ContextManager:
         # update_plan 的计划正文已经由尾部计划块注入；历史里保留调用与短确认，
         # 但省略参数中的计划全文，避免重复占预算。
         body = self._compact_plan_updates(messages[2:])
+        body = _compact_reasoning(body)
 
         id_to_name, id_to_args = self._index_tool_calls(body)
         batch_index = self._batch_index(body)
@@ -562,10 +609,14 @@ class ContextManager:
         plan_block = _render_plan(plan)
         if plan_block:
             add({"role": "user", "content": plan_block}, "plan")
-        if state is not None and demoted:
-            block = state.render()
+        if state is not None and (demoted or include_state):
+            block = state.render(turn_start=include_state and not demoted)
             if block:
                 add({"role": "user", "content": block}, "state")
+        if state is not None and not demoted and not include_state:
+            repeated = state.render_repeated()
+            if repeated:
+                add({"role": "user", "content": repeated}, "state")
         return result, self._stats(result, segments)
 
     def _spill(
@@ -798,6 +849,9 @@ class ContextManager:
         content = msg.get("content")
         if isinstance(content, str):
             total += _count_text_tokens(content)
+        reasoning = msg.get("reasoning_content")
+        if isinstance(reasoning, str):
+            total += _count_text_tokens(reasoning)
         for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {}) if isinstance(tc, dict) else {}
             total += _count_text_tokens(str(func.get("arguments", ""))) + 10

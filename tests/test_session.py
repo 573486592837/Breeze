@@ -99,7 +99,9 @@ def test_round_trip_restores_ledger_and_state(tmp_path: Path) -> None:
     assert restored_state.edits == state.edits
     assert restored_state.tests == state.tests
     assert restored_state.plan == state.plan
-    assert state.read_counts
+    # apply_patch 使 a.py 的读取范围失效，读取计数随清理为空且不落盘。
+    assert state.reads == {}
+    assert state.read_counts == {}
     assert restored_state.read_counts == {}
 
 

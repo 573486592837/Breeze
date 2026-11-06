@@ -784,3 +784,93 @@ def test_update_plan_error_result_is_preserved() -> None:
 
     joined = " ".join(str(m.get("content", "")) for m in result)
     assert "Error: plan is 9000 chars" in joined
+
+
+def test_recent_reasoning_kept_and_older_trimmed() -> None:
+    """最近两步思考保留全文，更早的只留摘录，控制提示词膨胀。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    messages = [_system(), _user("q")]
+    for i in range(5):
+        assistant = _assistant(f"r{i}", "read_file", '{"path": "a.py"}')
+        assistant["reasoning_content"] = f"step {i} " + "x" * 1000
+        messages.extend([assistant, _tool(f"r{i}", "content")])
+
+    result = cm.build(messages)
+    assistants = [m for m in result if m.get("role") == "assistant"]
+
+    assert assistants[-1]["reasoning_content"].startswith("step 4")
+    assert "truncated" not in assistants[-1]["reasoning_content"]
+    assert assistants[-2]["reasoning_content"].startswith("step 3")
+    assert "truncated" not in assistants[-2]["reasoning_content"]
+    assert assistants[0]["reasoning_content"].startswith("step 0")
+    assert assistants[0]["reasoning_content"].endswith("[earlier reasoning truncated]")
+
+
+def test_reasoning_counts_toward_prompt_tokens() -> None:
+    """思考过程会实际发给模型，必须计入预算测量。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    base = [_system(), _user("q"), _assistant("r0", "read_file", '{"path": "a.py"}')]
+    plain = cm.build_with_stats([*base, _tool("r0", "content")])[1]
+    with_reasoning = [dict(base[2], reasoning_content="思考" * 200)]
+    reasoned = cm.build_with_stats([base[0], base[1], *with_reasoning, _tool("r0", "content")])[1]
+
+    assert reasoned.total_tokens > plain.total_tokens
+
+
+# ─── 跨回合状态注入 ───
+
+
+def _prior_state():
+    from breeze.state import SessionState
+
+    st = SessionState(max_entries=4)
+    st.update(
+        "read_file",
+        {"path": "x.py"},
+        "1 | def helper():\n--- (file has 2 lines total) ---",
+        2,
+    )
+    st.update("run_tests", {"pattern": ""}, "exit_code=1\nsummary: 7 passed, 2 failed\n", 3)
+    st.update("apply_patch", {"path": "y.py"}, "Patched y.py (1 replacement)", 4)
+    return st
+
+
+def test_include_state_injects_prior_turn_index() -> None:
+    """include_state=True 时即使没有压缩也注入上一回合的状态索引。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    state = _prior_state()
+
+    result, stats = cm.build_with_stats([_system(), _user("继续")], state=state, include_state=True)
+
+    text = "\n".join(str(msg.get("content")) for msg in result)
+    assert "[Session state — carried from previous turns]" in text
+    assert "x.py" in text
+    assert "y.py" in text
+    assert stats.state_tokens > 0
+
+
+def test_state_not_injected_without_turn_start_flag() -> None:
+    """普通步骤不重复注入上一回合状态，避免每步增加固定开销。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    state = _prior_state()
+
+    result = cm.build([_system(), _user("继续")], state=state)
+
+    text = "\n".join(str(msg.get("content")) for msg in result)
+    assert "[Session state" not in text
+
+
+def test_repeated_reads_injected_without_compression() -> None:
+    """未触发压缩时也会注入重复读取警示。"""
+    from breeze.state import SessionState
+
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    state = SessionState()
+    state.update("read_file", {"path": "a.py"}, "1 | x", 0)
+    state.update("read_file", {"path": "a.py"}, "1 | x", 1)
+
+    result, stats = cm.build_with_stats([_system(), _user("q")], state=state)
+
+    text = "\n".join(str(msg.get("content")) for msg in result)
+    assert "[Repeated reads this turn" in text
+    assert stats.state_tokens > 0

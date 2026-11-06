@@ -26,6 +26,9 @@ DEFAULT_MAX_STEPS = 10
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
+# 同一回合内同一 read_file 请求最多执行两次：第一次建立上下文，第二次可能是
+# 内容被压缩后的合理重读；第三次起几乎都是模型自循环，直接抑制。
+_MAX_IDENTICAL_READS = 2
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -105,6 +108,15 @@ def _is_verification_call(name: str, arguments_json: str) -> bool:
     return isinstance(command, str) and bool(_VERIFICATION_COMMAND_RE.search(command))
 
 
+def _verification_ran(result: str) -> bool:
+    """判断验证命令是否真的执行并产出了结果。
+
+    参数/权限被拒绝时工具返回 ``Error: ...`` / ``Tool execution failed: ...``，
+    这不是测试结论；把它当成“验证失败”会让模型去修一个并不存在的失败。
+    """
+    return bool(result) and not result.startswith(("Error", "Tool execution failed", "Failed"))
+
+
 def _verification_status(name: str, result: str) -> tuple[bool, str]:
     """解析验证调用的真实结果，返回 (是否通过, 摘要)。
 
@@ -154,6 +166,15 @@ def _claims_completed_edit(text: str) -> bool:
             continue
         return True
     return False
+
+
+def _parsed_arguments(arguments_json: str) -> dict[str, Any] | None:
+    """解析工具参数；空参数返回空 dict，非法 JSON 返回 None。"""
+    try:
+        parsed = json.loads(arguments_json) if arguments_json else {}
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _environment_note(capabilities: Capabilities) -> str:
@@ -509,6 +530,9 @@ class Agent:
         verification_fix_nudged = False
         verification_claim_nudged = False
         last_final_answer: str | None = None
+        # read_file 去重：key = (规范化参数, 文件版本)，值为本回合执行次数。
+        read_requests: dict[tuple[str, int], int] = {}
+        read_versions: dict[str, int] = {}
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -550,6 +574,7 @@ class Agent:
                 state=self.state,
                 archive=self._turn_archive(),
                 plan=self.state.plan,
+                include_state=step == 0 and self._has_prior_turn(),
             )
 
             self._emit(AgentEvent("llm_start", step))
@@ -650,23 +675,25 @@ class Agent:
                 last_final_answer = answer
                 return self._finish_turn(question, answer, turn_start)
 
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": resp.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": tc.arguments_json,
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": resp.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments_json,
+                        },
+                    }
+                    for tc in tool_calls
+                ],
+            }
+            # 推理模型要求把思考过程随工具结果回传，否则多步之后容易跑题。
+            if resp.reasoning_content:
+                assistant_message["reasoning_content"] = resp.reasoning_content
+            self.messages.append(assistant_message)
 
             for tc in tool_calls:
                 if tc.name in _WRITE_TOOLS and edit_failures >= self.max_edit_failures:
@@ -693,14 +720,29 @@ class Agent:
                     )
                     continue
 
+                if tc.name == "read_file" and self._suppress_duplicate_read(
+                    tc, read_requests, read_versions, step
+                ):
+                    continue
+
                 result = self._execute_and_append(tc, step)
                 succeeded = result is not None and not result.startswith(
                     ("Error", "Tool execution failed", "Failed")
                 )
                 if _is_verification_call(tc.name, tc.arguments_json):
-                    last_verification = _verification_status(tc.name, result or "")
+                    if _verification_ran(result or ""):
+                        last_verification = _verification_status(tc.name, result or "")
+                    else:
+                        self.trace.log_guard(
+                            step,
+                            f"verification command did not run: {tc.name}",
+                        )
                 if tc.name in _EDIT_TOOLS and succeeded:
                     edits_this_turn += 1
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    path = arguments.get("path")
+                    if isinstance(path, str):
+                        read_versions[path] = read_versions.get(path, 0) + 1
                 if tc.name in _WRITE_TOOLS:
                     if succeeded:
                         edit_failures = 0
@@ -901,6 +943,14 @@ class Agent:
             return list(self.messages)
         return [self.messages[0], *self.messages[turn_start:]]
 
+    def _has_prior_turn(self) -> bool:
+        """当前回合之前是否已有可复用的会话事实。"""
+        if self.ledger.records:
+            return True
+        return bool(
+            self.state.reads or self.state.edits or self.state.symbols or self.state.tests
+        )
+
     def _turn_archive(self) -> str | None:
         """append 模式下历史已完整保留，不再重复注入回合归档。"""
         if self.context.config.cross_turn == "append":
@@ -937,6 +987,75 @@ class Agent:
             resp = self.llm.chat(messages, tools=tools, tool_choice=tool_choice)
         latency_ms = (time.perf_counter() - start) * 1000
         return resp, latency_ms
+
+    def _suppress_duplicate_read(
+        self,
+        tc: _ToolCall,
+        requests: dict[tuple[str, int], int],
+        versions: dict[str, int],
+        step: int,
+    ) -> bool:
+        """同一回合内重复读取同一文件时跳过执行并返回抑制提示。
+
+        Args:
+            tc: read_file 工具调用。
+            requests: 本回合 (规范化参数, 文件版本) -> 已执行次数。
+            versions: 文件路径 -> 编辑版本号；编辑后版本变化，允许重新读取。
+            step: 当前步数，用于 trace。
+
+        Returns:
+            True 表示已抑制并把提示写入消息；False 表示应正常执行。
+        """
+        arguments = _parsed_arguments(tc.arguments_json)
+        if arguments is None:
+            return False
+        path = arguments.get("path")
+        if not isinstance(path, str):
+            return False
+
+        key = (
+            json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            versions.get(path, 0),
+        )
+        count = requests.get(key, 0)
+        if count < _MAX_IDENTICAL_READS:
+            requests[key] = count + 1
+            return False
+
+        attempts = count + 1
+        start = arguments.get("start_line")
+        end = arguments.get("end_line")
+        target = f"{path} lines {start}-{end}" if start is not None and end is not None else path
+        result = (
+            f"[duplicate read suppressed] read_file {target} was already called with the same "
+            f"arguments {count} times this turn (attempt {attempts}); the file has not changed "
+            "since. Use the result already in this conversation. If that copy is no longer "
+            "visible, read a specific line range or state which fact is missing."
+        )
+        requests[key] = attempts
+
+        self._emit(AgentEvent("tool_start", step, tool=tc.name))
+        self.trace.log_tool(
+            step=step,
+            tool=tc.name,
+            arguments=arguments,
+            result=result,
+            latency_ms=0.0,
+            error=None,
+        )
+        self.trace.log_guard(step, f"duplicate read suppressed: {target} (attempt {attempts})")
+        self._emit(
+            AgentEvent(
+                "tool_end",
+                step,
+                tool=tc.name,
+                duration_ms=0.0,
+                ok=True,
+                detail="duplicate read suppressed",
+            )
+        )
+        self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        return True
 
     def _execute_and_append(
         self,

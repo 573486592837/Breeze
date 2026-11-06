@@ -46,6 +46,7 @@ def _is_param_error(exc: Exception) -> bool:
 @dataclass
 class LLMResponse:
     content: str | None = None
+    reasoning_content: str | None = None
     tool_calls: list[Any] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -96,6 +97,20 @@ def _extract_cache_tokens(usage: Any, prompt_tokens: int) -> tuple[int | None, i
     if miss is None and hit is not None and prompt_tokens > 0:
         miss = max(prompt_tokens - hit, 0)
     return hit, miss
+
+
+def _extract_reasoning(message: Any) -> str | None:
+    """提取推理模型的思考过程。
+
+    DeepSeek 原生字段是 ``reasoning_content``，部分网关放在
+    ``provider_specific_fields`` 里；拿不到时返回 None。
+    """
+    value = getattr(message, "reasoning_content", None)
+    if value is None:
+        fields = getattr(message, "provider_specific_fields", None)
+        if isinstance(fields, dict):
+            value = fields.get("reasoning_content")
+    return value if isinstance(value, str) and value else None
 
 
 def _extract_cost(resp: Any) -> float | None:
@@ -213,6 +228,7 @@ class LLMClient:
 
         return LLMResponse(
             content=choice.message.content,
+            reasoning_content=_extract_reasoning(choice.message),
             tool_calls=getattr(choice.message, "tool_calls", None) or [],
             prompt_tokens=prompt_tokens,
             completion_tokens=usage.completion_tokens if usage else 0,
