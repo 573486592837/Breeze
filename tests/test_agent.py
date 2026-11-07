@@ -2014,6 +2014,40 @@ def test_duplicate_read_is_suppressed_after_two_executions(
     assert any("duplicate read suppressed" in e["message"] for e in guards)
 
 
+def test_duplicate_read_allowed_when_previous_copy_compressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧副本已被 hard limit 压成指针时，允许再读一次，但仍只放行一次。"""
+    from breeze.context import ContextConfig, ContextManager
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | " + "x" * 2000
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}")
+            for i in range(1, 5)
+        ]
+        + [_text("done")]
+    )
+    context = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=1))
+    agent = Agent(llm=llm, trace=trace, max_steps=8, context=context)
+
+    assert agent.run("go") == "done"
+    assert executed == ["a.py", "a.py", "a.py"]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("duplicate read allowed: earlier copies were compressed" in m for m in guards)
+    assert any("duplicate read suppressed" in m for m in guards)
+
+
 def test_read_after_edit_is_not_suppressed(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

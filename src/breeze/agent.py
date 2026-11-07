@@ -567,6 +567,10 @@ class Agent:
         # read_file 去重：key = (规范化参数, 文件版本)，值为本回合执行次数。
         read_requests: dict[tuple[str, int], int] = {}
         read_versions: dict[str, int] = {}
+        # 已实际执行的 read tool_call_id；结合上一份提示词判断旧副本是否仍可见。
+        read_call_ids: dict[tuple[str, int], list[str]] = {}
+        read_retries: dict[tuple[str, int], int] = {}
+        last_demoted_reads: frozenset[str] = frozenset()
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
@@ -613,6 +617,7 @@ class Agent:
                 include_state=include_prior,
                 snapshots=snapshot_block,
             )
+            last_demoted_reads = prompt_stats.demoted_read_ids
 
             self._emit(AgentEvent("llm_start", step))
 
@@ -773,7 +778,13 @@ class Agent:
                     continue
 
                 if tc.name == "read_file" and self._suppress_duplicate_read(
-                    tc, read_requests, read_versions, step
+                    tc,
+                    read_requests,
+                    read_versions,
+                    read_call_ids,
+                    read_retries,
+                    last_demoted_reads,
+                    step,
                 ):
                     continue
 
@@ -781,6 +792,20 @@ class Agent:
                 succeeded = result is not None and not result.startswith(
                     ("Error", "Tool execution failed", "Failed")
                 )
+                if tc.name == "read_file" and succeeded:
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    path = arguments.get("path")
+                    if isinstance(path, str):
+                        key = (
+                            json.dumps(
+                                arguments,
+                                sort_keys=True,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            read_versions.get(path, 0),
+                        )
+                        read_call_ids.setdefault(key, []).append(tc.id)
                 if _is_verification_call(tc.name, tc.arguments_json):
                     if _verification_ran(result or ""):
                         last_verification = _verification_status(tc.name, result or "")
@@ -1076,14 +1101,24 @@ class Agent:
         tc: _ToolCall,
         requests: dict[tuple[str, int], int],
         versions: dict[str, int],
+        executed_ids: dict[tuple[str, int], list[str]],
+        retries: dict[tuple[str, int], int],
+        demoted: frozenset[str],
         step: int,
     ) -> bool:
         """同一回合内重复读取同一文件时跳过执行并返回抑制提示。
 
+        只有在此前执行过的同参数读取仍然可见时才抑制。若那些副本在上一份
+        提示词里已被 hard limit 压成指针，允许再读一次并记录一次重试；否则
+        模型会看到“use the earlier copy”却根本拿不到内容，陷入重读循环。
+
         Args:
             tc: read_file 工具调用。
-            requests: 本回合 (规范化参数, 文件版本) -> 已执行次数。
+            requests: 本回合 (规范化参数, 文件版本) -> 已尝试次数。
             versions: 文件路径 -> 编辑版本号；编辑后版本变化，允许重新读取。
+            executed_ids: (规范化参数, 文件版本) -> 实际执行过的 tool_call_id。
+            retries: (规范化参数, 文件版本) -> 因副本不可见而放行的次数。
+            demoted: 上一份提示词中没有原文的 read tool_call_id。
             step: 当前步数，用于 trace。
 
         Returns:
@@ -1100,20 +1135,34 @@ class Agent:
             json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
             versions.get(path, 0),
         )
+        start = arguments.get("start_line")
+        end = arguments.get("end_line")
+        target = f"{path} lines {start}-{end}" if start is not None and end is not None else path
         count = requests.get(key, 0)
         if count < _MAX_IDENTICAL_READS:
             requests[key] = count + 1
             return False
 
+        prior = executed_ids.get(key, [])
+        if (
+            prior
+            and all(call_id in demoted for call_id in prior)
+            and retries.get(key, 0) < 1
+        ):
+            retries[key] = retries.get(key, 0) + 1
+            requests[key] = count + 1
+            self.trace.log_guard(
+                step,
+                f"duplicate read allowed: earlier copies were compressed: {target}",
+            )
+            return False
+
         attempts = count + 1
-        start = arguments.get("start_line")
-        end = arguments.get("end_line")
-        target = f"{path} lines {start}-{end}" if start is not None and end is not None else path
         result = (
             f"[duplicate read suppressed] read_file {target} was already called with the same "
             f"arguments {count} times this turn (attempt {attempts}); the file has not changed "
-            "since. If the earlier copy is still visible, use it; if it was compressed away, "
-            "read a specific line range or state which fact is missing."
+            "since. Use the visible copy if one is still in this context; otherwise read a "
+            "specific line range or state which fact is missing."
         )
         requests[key] = attempts
 

@@ -426,6 +426,7 @@ class PromptStats:
     body_tokens: int = 0
     total_tokens: int = 0
     cacheable_prefix_tokens: int = 0
+    demoted_read_ids: frozenset[str] = frozenset()
 
     def breakdown(self) -> dict[str, int]:
         """返回按注入位置分类的 Token 组成。"""
@@ -604,6 +605,11 @@ class ContextManager:
             )
             demoted = demoted or spilled
 
+        # 同一路径的旧读取被降级后，若后面还有一份可见的读取，指针不应再要求
+        # 模型重读整个范围——否则模型会追着旧指针反复读取。
+        converted = self._annotate_superseded_reads(converted, id_to_name, id_to_args)
+        demoted_read_ids = self._demoted_read_ids(converted)
+
         # 批次头必须在降级之后加：否则 _shell_summary 会把 “[call 1/2 ...]”
         # 当成结果首行，丢掉 exit_code 与错误正文。
         if batch_index:
@@ -647,7 +653,7 @@ class ContextManager:
             repeated = state.render_repeated()
             if repeated:
                 add({"role": "user", "content": repeated}, "state")
-        return result, self._stats(result, segments)
+        return result, self._stats(result, segments, demoted_read_ids)
 
     def _spill(
         self,
@@ -729,6 +735,72 @@ class ContextManager:
             out[i] = new_msg
             changed = True
         return out, changed
+
+    @staticmethod
+    def _annotate_superseded_reads(
+        converted: list[dict[str, Any]],
+        id_to_name: dict[str, str],
+        id_to_args: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """同一文件有更新副本时，把旧读取指针改写成“已被更新副本取代”。
+
+        旧指针原本写着“re-read this range”，模型会照着它反复读取；若后面已经
+        有一份可见的读取，指针应引导模型使用新副本而不是再读一遍。
+        """
+        latest_visible: dict[str, int] = {}
+        for i, msg in enumerate(converted):
+            if msg.get("role") != "tool":
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            if id_to_name.get(tc_id) != "read_file":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or content.startswith("["):
+                continue
+            path = id_to_args.get(tc_id, {}).get("path")
+            if isinstance(path, str):
+                latest_visible[path] = i
+        if not latest_visible:
+            return list(converted)
+
+        out: list[dict[str, Any]] = []
+        for i, msg in enumerate(converted):
+            content = msg.get("content")
+            if (
+                msg.get("role") != "tool"
+                or not isinstance(content, str)
+                or not content.startswith("[read_file compressed]")
+            ):
+                out.append(msg)
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            args = id_to_args.get(tc_id, {})
+            path = args.get("path")
+            if not isinstance(path, str) or latest_visible.get(path, -1) <= i:
+                out.append(msg)
+                continue
+            start, end = args.get("start_line"), args.get("end_line")
+            rng = f"lines {start}-{end}" if start and end else "full file"
+            new_msg = dict(msg)
+            new_msg["content"] = (
+                f"[read_file superseded] {path} ({rng}) — older copy dropped by hard limit; "
+                "a newer read of this file appears later in this context. Use that copy for "
+                "the lines it covers; read only the missing range."
+            )
+            out.append(new_msg)
+        return out
+
+    @staticmethod
+    def _demoted_read_ids(converted: list[dict[str, Any]]) -> frozenset[str]:
+        """返回本次提示词中没有原文的 read_file tool_call_id。"""
+        prefixes = ("[read_file compressed]", "[read_file superseded]")
+        return frozenset(
+            str(msg.get("tool_call_id", ""))
+            for msg in converted
+            if msg.get("role") == "tool"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].startswith(prefixes)
+        )
 
     @staticmethod
     def _compact_plan_updates(body: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -858,7 +930,12 @@ class ContextManager:
                 total += _count_text_tokens(block) + 10
         return total
 
-    def _stats(self, messages: list[dict[str, Any]], segments: dict[str, list[int]]) -> PromptStats:
+    def _stats(
+        self,
+        messages: list[dict[str, Any]],
+        segments: dict[str, list[int]],
+        demoted_read_ids: frozenset[str] = frozenset(),
+    ) -> PromptStats:
         """统计本次消息组成，并与上一次 build 比较可复用前缀。"""
         counts = [self._count_message(msg) for msg in messages]
 
@@ -884,6 +961,7 @@ class ContextManager:
             body_tokens=segment_tokens("body"),
             total_tokens=sum(counts),
             cacheable_prefix_tokens=reusable,
+            demoted_read_ids=demoted_read_ids,
         )
 
     @staticmethod

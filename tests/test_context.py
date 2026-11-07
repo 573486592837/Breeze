@@ -938,8 +938,9 @@ def test_hard_limit_keeps_latest_read_of_same_file() -> None:
     total = probe._measure(messages[:2], messages[2:], None)
     cm = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=total - 1))
 
-    result = cm.build(messages)
+    result, stats = cm.build_with_stats(messages)
 
     by_id = {msg.get("tool_call_id"): msg.get("content") for msg in result if msg.get("role") == "tool"}
-    assert by_id["c_old"].startswith("[read_file compressed] a.py (lines 1-40)")
+    assert by_id["c_old"].startswith("[read_file superseded] a.py (lines 1-40)")
     assert "new119" in by_id["c_new"]
+    assert stats.demoted_read_ids == frozenset({"c_old"})
