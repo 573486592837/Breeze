@@ -59,7 +59,9 @@ POINTER_KEEP_CHARS = 1_000
 # 大结果保留的预览长度：整块丢弃会让模型失去判断依据，只剩“重跑”一个选择。
 POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
-SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
+# 写操作结果不是可再生产出：压缩成“re-run for more”会诱导模型重复 apply_patch，
+# 把同一段代码插入多次。写结果本身很短，始终保留原文。
+SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff"})
 # 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
 READ_SPILL_MIN_CHARS = 512
 # 推理模型的思考过程要随工具结果回传，但完整保留每一步会迅速撑爆上下文。

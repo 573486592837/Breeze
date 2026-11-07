@@ -583,15 +583,18 @@ def test_agent_keeps_tools_but_forbids_calls_on_last_step(
 
 
 def test_agent_ignores_tool_calls_on_last_step(trace: RunTrace, fake_tool: None) -> None:
-    """provider 无视 tool_choice 时，最终步的工具调用不执行。"""
+    """provider 无视 tool_choice 时，最终步不执行工具，也不把前言当答案。"""
     responses = [
         _tool_call("fake_echo", {"text": "one"}, call_id="c1"),
         _tool_call("fake_echo", {"text": "two"}, call_id="c2"),
-        _tool_call("fake_echo", {"text": "three"}, call_id="c3", content="final answer"),
+        _tool_call("fake_echo", {"text": "three"}, call_id="c3", content="继续执行剩余实现："),
     ]
     llm = FakeLLMClient(responses)
     agent = Agent(llm=llm, trace=trace, max_steps=3)
-    assert agent.run("go") == "final answer"
+    answer = agent.run("go")
+    assert "not completed" in answer
+    assert "fake_echo" in answer
+    assert "继续执行剩余实现" not in answer
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     assert len(tool_events) == 2
@@ -847,7 +850,7 @@ def test_agent_edit_failure_streak_resets_on_success(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
+        _tool_call("apply_patch", {"path": f"x{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}")
         for i in range(6)
     ] + [_text("done")]
 
@@ -2280,3 +2283,48 @@ def test_agent_nudges_convergence_when_context_near_hard_budget(
     assert len(nudges) == 1
     guards = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert any("asking to converge" in e["message"] for e in guards)
+
+
+def test_duplicate_apply_patch_is_suppressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同参数写操作已成功后不再执行，避免重复插入代码。"""
+    from breeze.tools import registry
+
+    executed: list[dict[str, Any]] = []
+
+    def fake_execute(name, arguments):
+        if name == "apply_patch":
+            executed.append(arguments)
+            return "Patched a.py (1 replacement)"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    patch = {"path": "a.py", "old": "a = 1", "new": "a = 1\n\ndef f():\n    return 1"}
+    llm = FakeLLMClient(
+        [
+            _tool_call("apply_patch", patch, call_id="p1"),
+            _tool_call("apply_patch", patch, call_id="p2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert len(executed) == 1
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "duplicate edit suppressed" in tool_messages[-1]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("duplicate edit suppressed: apply_patch a.py" in m for m in guards)
+
+
+def test_plan_answer_detects_continuation_and_imperative_edits() -> None:
+    """“继续执行…/给 X 追加…”这类未执行叙述应识别为计划。"""
+    from breeze.agent import _is_plan_answer
+
+    assert _is_plan_answer("继续执行 M5 实现。给 cli.py 追加 diff 命令实现（这是最后一块核心代码）：")
+    assert _is_plan_answer("给 cli.py 追加 `diff` 命令实现")
+    assert _is_plan_answer("Let me continue with the CLI wiring.")
+    assert not _is_plan_answer("给 cli.py 添加了 diff 命令，测试已通过。")
+    assert not _is_plan_answer("已完成实现并通过测试。建议下一步：运行全量测试。")

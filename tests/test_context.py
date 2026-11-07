@@ -1114,3 +1114,26 @@ def test_disabled_context_still_avoids_system_tail() -> None:
     result = cm.build([_system(), _user("q"), {"role": "system", "content": "系统提醒"}])
 
     assert result[-1] == {"role": "user", "content": "继续当前任务。"}
+
+
+def test_write_result_not_compressed_by_budget() -> None:
+    """写操作结果保留原文，不出现诱导重跑的 re-run 指针。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100, hard_budget=100_000))
+    patch_result = "Patched a.py (1 replacement)"
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("p1", "apply_patch", '{"path": "a.py", "old": "a", "new": "b"}', patch_result),
+        *_round(
+            "s1",
+            "run_shell",
+            '{"command": "git status"}',
+            "exit_code: 0\n" + "x" * 5_000,
+        ),
+    ]
+
+    result = cm.build(messages)
+
+    by_id = {m.get("tool_call_id"): m.get("content") for m in result if m.get("role") == "tool"}
+    assert by_id["p1"] == patch_result
+    assert by_id["s1"].startswith("[run_shell compressed]")

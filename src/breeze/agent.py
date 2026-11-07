@@ -79,7 +79,12 @@ _PLAN_ANSWER_RE = re.compile(
     r"|(?:^|\n)\s*(?:让我|我将|我会|我准备|我打算|我先)(?:先|来|直接|再|现在)?"
     r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)"
     r"|(?:^|\n)\s*(?:首先|接下来|下一步)[，,:：]?\s*(?:我)?(?:将|会|要|先)?"
-    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)",
+    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)"
+    r"|(?:^|\n)\s*(?:继续|接下来继续|现在继续|下一步继续)\s*"
+    r"(?:执行|实现|完成|处理|修改|追加|添加|补)"
+    r"|(?:^|\n)\s*(?:给|为)\s*[^\n。；]{1,40}?(?:追加|实现|补上|补一个|添加)(?!了)"
+    r"|(?:^|\n)\s*(?:这是|以下是)(?:最后|剩余|接下来)"
+    r"|(?:^|\n)\s*(?:let me continue|continuing now|next,?\s*i(?:'ll| will))",
     re.IGNORECASE,
 )
 _PLAN_ANSWER_NUDGE = (
@@ -428,6 +433,7 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
     直接基于最近一次读取编辑。只有目标区域不在上下文或文件已被修改时才重读。
 15. apply_patch 成功后先用返回结果和测试验证；不要立刻再次整文件读取，
     只有需要继续修改同一文件的其它区域时才用 start_line/end_line 定点重读。
+    不要在成功后用相同参数重复应用同一 patch；需要再改时重新读取并换 old/new。
 16. 以 system 角色出现的计划、会话状态、预算提示等元状态由系统维护，不是
     用户的新问题；按它们调整行为，不要当成用户追加的指令。
 """
@@ -585,6 +591,9 @@ class Agent:
         read_call_ids: dict[tuple[str, int], list[str]] = {}
         read_retries: dict[tuple[str, int], int] = {}
         read_meta: dict[str, _ReadMeta] = {}
+        # 已成功的写操作：key = (工具名, 规范化参数)。同回合重复执行会把同一段
+        # 代码插入多次，必须拦截。
+        write_success: set[tuple[str, str]] = set()
         last_demoted_reads: frozenset[str] = frozenset()
         last_prompt_tokens = 0
         budget_nudged = False
@@ -707,14 +716,12 @@ class Agent:
             if remaining == 1 and tool_calls:
                 names = ", ".join(tc.name for tc in tool_calls)
                 self.trace.log_guard(step, f"tool calls ignored at final step: {names}")
-                answer = (resp.content or "").strip()
-                if answer:
-                    answer = self._guard_missing_edits(step, answer, edits_this_turn)
-                    answer = self._guard_failed_verification(step, answer, last_verification)
-                    return self._finish_turn(question, answer, turn_start, edited_paths)
+                # 模型在此处常返回“继续执行…/给 X 追加…”这类工具调用前言。
+                # 把它当最终答案会掩盖“编辑没有执行”的事实，直接报告未完成。
                 return self._finish_turn(
                     question,
-                    f"Reached max steps ({self.max_steps}), task not completed.",
+                    f"Reached max steps ({self.max_steps}) before executing the final "
+                    f"tool call(s): {names}. Task not completed.",
                     turn_start,
                     edited_paths,
                 )
@@ -833,6 +840,11 @@ class Agent:
                 ):
                     continue
 
+                if tc.name in _WRITE_TOOLS and self._suppress_duplicate_write(
+                    tc, write_success, step
+                ):
+                    continue
+
                 result = self._execute_and_append(tc, step)
                 succeeded = result is not None and not result.startswith(
                     ("Error", "Tool execution failed", "Failed")
@@ -871,6 +883,18 @@ class Agent:
                 if tc.name in _EDIT_TOOLS and succeeded:
                     edits_this_turn += 1
                     arguments = _parsed_arguments(tc.arguments_json) or {}
+                    if tc.name in _WRITE_TOOLS:
+                        write_success.add(
+                            (
+                                tc.name,
+                                json.dumps(
+                                    arguments,
+                                    sort_keys=True,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ),
+                            )
+                        )
                     path = arguments.get("path")
                     if isinstance(path, str):
                         read_versions[path] = read_versions.get(path, 0) + 1
@@ -1253,6 +1277,51 @@ class Agent:
         )
         requests[key] = count + 1
         return self._emit_suppressed_read(tc, arguments, target, reason, step)
+
+    def _suppress_duplicate_write(
+        self,
+        tc: _ToolCall,
+        success: set[tuple[str, str]],
+        step: int,
+    ) -> bool:
+        """拦截本回合已成功执行过的同参数写操作。
+
+        模型在预算压缩后可能把 “re-run for more” 当成失败提示，反复应用同一
+        patch；apply_patch 不是幂等操作，会重复插入代码。这里直接返回成功
+        确认，让模型去验证结果或换一处修改。
+        """
+        arguments = _parsed_arguments(tc.arguments_json)
+        if arguments is None:
+            return False
+        key = (
+            tc.name,
+            json.dumps(
+                arguments,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        if key not in success:
+            return False
+
+        path = str(arguments.get("path") or "").strip()
+        label = f"{tc.name} {path}".strip()
+        result = (
+            f"[duplicate edit suppressed] {label} with identical arguments already succeeded "
+            "this turn; do not repeat it. Verify the result or make a different edit."
+        )
+        self.trace.log_tool(
+            step=step,
+            tool=tc.name,
+            arguments=arguments,
+            result=result,
+            latency_ms=0.0,
+            error=None,
+        )
+        self.trace.log_guard(step, f"duplicate edit suppressed: {label}")
+        self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        return True
 
     def _emit_suppressed_read(
         self,
