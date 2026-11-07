@@ -1987,10 +1987,10 @@ def test_rejected_verification_command_is_not_a_failed_check(
 # ─── 重复读取与跨回合状态 ───
 
 
-def test_duplicate_read_is_suppressed_after_two_executions(
+def test_duplicate_read_is_suppressed_when_previous_copy_visible(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """同一回合内第三次相同 read_file 不再执行，返回抑制提示。"""
+    """同一副本仍可见时，第二次相同 read_file 不再执行。"""
     from breeze.tools import registry
 
     executed: list[str] = []
@@ -2014,11 +2014,79 @@ def test_duplicate_read_is_suppressed_after_two_executions(
     agent = Agent(llm=llm, trace=trace, max_steps=6)
 
     assert agent.run("go") == "done"
-    assert executed == ["a.py", "a.py"]
+    assert executed == ["a.py"]
     tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
     assert "duplicate read suppressed" in tool_messages[-1]
     guards = [e for e in _events(trace.path) if e["event"] == "guard"]
-    assert any("duplicate read suppressed" in e["message"] for e in guards)
+    assert sum("duplicate read suppressed" in e["message"] for e in guards) == 2
+
+
+def test_range_read_covered_by_visible_full_read_is_suppressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整文件读取仍可见时，后续行范围读取直接抑制。"""
+    from breeze.tools import registry
+
+    executed: list[tuple[str, object]] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append((str(arguments.get("path")), arguments.get("start_line")))
+            return "\n".join(f"{i} | line {i}" for i in range(1, 121)) + (
+                "\n--- (file has 120 lines total) ---"
+            )
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py", "start_line": 10, "end_line": 20}, call_id="r2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == [("a.py", None)]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "already covered by a visible earlier read (the full file)" in tool_messages[-1]
+
+
+def test_truncated_full_read_does_not_cover_range(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整文件读取被截断时，行范围读取仍应执行。"""
+    from breeze.tools import registry
+
+    executed: list[object] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(arguments.get("start_line"))
+            if arguments.get("start_line") is None:
+                return "1 | head\n... (truncated to 16000 bytes; file has 1000 lines total)"
+            return "800 | target\n--- (file has 1000 lines total) ---"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "big.py"}, call_id="r1"),
+            _tool_call(
+                "read_file",
+                {"path": "big.py", "start_line": 800, "end_line": 820},
+                call_id="r2",
+            ),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == [None, 800]
 
 
 def test_duplicate_read_allowed_when_previous_copy_compressed(
@@ -2049,7 +2117,7 @@ def test_duplicate_read_allowed_when_previous_copy_compressed(
     agent = Agent(llm=llm, trace=trace, max_steps=8, context=context)
 
     assert agent.run("go") == "done"
-    assert executed == ["a.py", "a.py", "a.py"]
+    assert executed == ["a.py", "a.py"]
     guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
     assert any("duplicate read allowed: earlier copies were compressed" in m for m in guards)
     assert any("duplicate read suppressed" in m for m in guards)
@@ -2089,7 +2157,9 @@ def test_read_after_edit_is_not_suppressed(
     agent = Agent(llm=llm, trace=trace, max_steps=6)
 
     assert agent.run("go") == "done"
-    assert executed == ["a.py", "a.py", "a.py"]
+    assert executed == ["a.py", "a.py"]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert not tool_messages[-1].startswith("[duplicate read suppressed]")
 
 
 def test_second_turn_first_request_includes_prior_state(
@@ -2182,3 +2252,31 @@ def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> 
 
     reasonings = [e.reasoning for e in events if e.kind == "llm_end"]
     assert reasonings == ["先读文件", "再总结"]
+
+
+def test_agent_nudges_convergence_when_context_near_hard_budget(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """上下文接近硬上限且尚未编辑时，提醒停止扩展调研。"""
+    from breeze.context import ContextConfig, ContextManager
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "one"}, call_id="c1"),
+            _tool_call("fake_echo", {"text": "two"}, call_id="c2"),
+            _text("done"),
+        ]
+    )
+    context = ContextManager(ContextConfig(intra_turn_budget=2_000, hard_budget=2_000))
+    agent = Agent(llm=llm, trace=trace, max_steps=6, context=context)
+
+    assert agent.run("go") == "done"
+
+    nudges = [
+        m
+        for m in llm.calls[1]["messages"]
+        if m["role"] == "system" and "上下文已用到约" in str(m.get("content", ""))
+    ]
+    assert len(nudges) == 1
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("asking to converge" in e["message"] for e in guards)

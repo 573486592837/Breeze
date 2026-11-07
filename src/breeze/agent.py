@@ -27,9 +27,10 @@ DEFAULT_MAX_STEPS = 10
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
-# 同一回合内同一 read_file 请求最多执行两次：第一次建立上下文，第二次可能是
-# 内容被压缩后的合理重读；第三次起几乎都是模型自循环，直接抑制。
-_MAX_IDENTICAL_READS = 2
+
+# 一次成功读取的覆盖信息：路径、文件版本、起始行、结束行、结果是否完整。
+# 行号为 None 表示未指定；完整读取以 1..∞ 参与覆盖判断。
+_ReadMeta = tuple[str, int, int | None, int | None, bool]
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -583,11 +584,38 @@ class Agent:
         # 已实际执行的 read tool_call_id；结合上一份提示词判断旧副本是否仍可见。
         read_call_ids: dict[tuple[str, int], list[str]] = {}
         read_retries: dict[tuple[str, int], int] = {}
+        read_meta: dict[str, _ReadMeta] = {}
         last_demoted_reads: frozenset[str] = frozenset()
+        last_prompt_tokens = 0
+        budget_nudged = False
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
 
+            hard_budget = getattr(self.context.config, "hard_budget", 0)
+            if (
+                not budget_nudged
+                and edits_this_turn == 0
+                and hard_budget > 0
+                and last_prompt_tokens >= hard_budget * 0.75
+            ):
+                budget_nudged = True
+                percent = round(last_prompt_tokens * 100 / hard_budget)
+                self.messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"上下文已用到约 {percent}%（{last_prompt_tokens}/{hard_budget} tokens）。"
+                            "继续扩大读取会开始压缩已有文件内容，并显著拖慢模型响应。"
+                            "现在停止扩展调研：基于已读内容调用 update_plan，随后立即编写测试与"
+                            "实现；只读取尚未看过的必要行范围。"
+                        ),
+                    }
+                )
+                self.trace.log_guard(
+                    step,
+                    f"context {percent}% of hard budget without edits; asking to converge",
+                )
             if self.max_steps >= 8 and step == self.max_steps // 2 and edits_this_turn == 0:
                 self.messages.append(
                     {
@@ -632,6 +660,7 @@ class Agent:
                 instructions=self.project_instructions,
             )
             last_demoted_reads = prompt_stats.demoted_read_ids
+            last_prompt_tokens = prompt_stats.total_tokens
 
             self._emit(AgentEvent("llm_start", step))
 
@@ -798,6 +827,7 @@ class Agent:
                     read_versions,
                     read_call_ids,
                     read_retries,
+                    read_meta,
                     last_demoted_reads,
                     step,
                 ):
@@ -821,6 +851,15 @@ class Agent:
                             read_versions.get(path, 0),
                         )
                         read_call_ids.setdefault(key, []).append(tc.id)
+                        result_text = result or ""
+                        read_meta[tc.id] = (
+                            path,
+                            read_versions.get(path, 0),
+                            arguments.get("start_line"),
+                            arguments.get("end_line"),
+                            "truncated to " not in result_text
+                            and "[line truncated:" not in result_text,
+                        )
                 if _is_verification_call(tc.name, tc.arguments_json):
                     if _verification_ran(result or ""):
                         last_verification = _verification_status(tc.name, result or "")
@@ -1136,14 +1175,16 @@ class Agent:
         versions: dict[str, int],
         executed_ids: dict[tuple[str, int], list[str]],
         retries: dict[tuple[str, int], int],
+        meta: dict[str, _ReadMeta],
         demoted: frozenset[str],
         step: int,
     ) -> bool:
         """同一回合内重复读取同一文件时跳过执行并返回抑制提示。
 
-        只有在此前执行过的同参数读取仍然可见时才抑制。若那些副本在上一份
-        提示词里已被 hard limit 压成指针，允许再读一次并记录一次重试；否则
-        模型会看到“use the earlier copy”却根本拿不到内容，陷入重读循环。
+        只要上一份提示词里仍有可用的原文副本就抑制：同参数读取直接拒绝；
+        整文件读取还会覆盖后续的行范围读取（截断的结果除外）。若所有旧副本
+        都已被 hard limit 压成指针，允许再读一次；否则模型会看到“use the
+        earlier copy”却拿不到内容，陷入重读循环。
 
         Args:
             tc: read_file 工具调用。
@@ -1151,6 +1192,7 @@ class Agent:
             versions: 文件路径 -> 编辑版本号；编辑后版本变化，允许重新读取。
             executed_ids: (规范化参数, 文件版本) -> 实际执行过的 tool_call_id。
             retries: (规范化参数, 文件版本) -> 因副本不可见而放行的次数。
+            meta: tool_call_id -> 本次读取覆盖的路径、版本、行范围与是否完整。
             demoted: 上一份提示词中没有原文的 read tool_call_id。
             step: 当前步数，用于 trace。
 
@@ -1164,24 +1206,39 @@ class Agent:
         if not isinstance(path, str):
             return False
 
-        key = (
-            json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
-            versions.get(path, 0),
-        )
+        version = versions.get(path, 0)
         start = arguments.get("start_line")
         end = arguments.get("end_line")
         target = f"{path} lines {start}-{end}" if start is not None and end is not None else path
+
+        covered = self._covering_read(arguments, version, meta, demoted)
+        if covered is not None:
+            reason = (
+                f"is already covered by a visible earlier read ({covered}) this turn; "
+                "the file has not changed. Use that copy instead of re-reading; "
+                "if a specific fact is missing, say which fact."
+            )
+            return self._emit_suppressed_read(tc, arguments, target, reason, step)
+
+        key = (
+            json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            version,
+        )
         count = requests.get(key, 0)
-        if count < _MAX_IDENTICAL_READS:
-            requests[key] = count + 1
+        if count == 0:
+            requests[key] = 1
             return False
 
         prior = executed_ids.get(key, [])
-        if (
-            prior
-            and all(call_id in demoted for call_id in prior)
-            and retries.get(key, 0) < 1
-        ):
+        if any(call_id not in demoted for call_id in prior):
+            reason = (
+                "was already read with the same arguments this turn and that copy is still "
+                "visible; use it instead of re-reading."
+            )
+            requests[key] = count + 1
+            return self._emit_suppressed_read(tc, arguments, target, reason, step)
+
+        if prior and retries.get(key, 0) < 1:
             retries[key] = retries.get(key, 0) + 1
             requests[key] = count + 1
             self.trace.log_guard(
@@ -1190,15 +1247,23 @@ class Agent:
             )
             return False
 
-        attempts = count + 1
-        result = (
-            f"[duplicate read suppressed] read_file {target} was already called with the same "
-            f"arguments {count} times this turn (attempt {attempts}); the file has not changed "
-            "since. Use the visible copy if one is still in this context; otherwise read a "
-            "specific line range or state which fact is missing."
+        reason = (
+            "was already read with the same arguments and the earlier copy was compressed; "
+            "read a specific line range or state which fact is missing."
         )
-        requests[key] = attempts
+        requests[key] = count + 1
+        return self._emit_suppressed_read(tc, arguments, target, reason, step)
 
+    def _emit_suppressed_read(
+        self,
+        tc: _ToolCall,
+        arguments: dict[str, Any],
+        target: str,
+        reason: str,
+        step: int,
+    ) -> bool:
+        """把被抑制的读取记录成一条工具消息，保证 tool_call 有对应结果。"""
+        result = f"[duplicate read suppressed] read_file {target} {reason}"
         self._emit(AgentEvent("tool_start", step, tool=tc.name))
         self.trace.log_tool(
             step=step,
@@ -1208,7 +1273,7 @@ class Agent:
             latency_ms=0.0,
             error=None,
         )
-        self.trace.log_guard(step, f"duplicate read suppressed: {target} (attempt {attempts})")
+        self.trace.log_guard(step, f"duplicate read suppressed: {target}")
         self._emit(
             AgentEvent(
                 "tool_end",
@@ -1221,6 +1286,44 @@ class Agent:
         )
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         return True
+
+    @staticmethod
+    def _covering_read(
+        arguments: dict[str, Any],
+        version: int,
+        meta: dict[str, _ReadMeta],
+        demoted: frozenset[str],
+    ) -> str | None:
+        """返回覆盖本次读取范围且仍可见的旧读取描述；没有则返回 None。"""
+        path = arguments.get("path")
+        if not isinstance(path, str):
+            return None
+        start = arguments.get("start_line")
+        end = arguments.get("end_line")
+        full = start is None and end is None
+
+        for call_id, (prev_path, prev_version, prev_start, prev_end, complete) in meta.items():
+            if prev_path != path or prev_version != version or call_id in demoted:
+                continue
+            if prev_start is None and prev_end is None:
+                if full or complete:
+                    return "the full file"
+                continue
+            if full:
+                if complete and prev_start == 1 and prev_end is None:
+                    return "the full file"
+                continue
+            if not complete:
+                continue
+            prev_from = prev_start if prev_start is not None else 1
+            prev_to = prev_end if prev_end is not None else 10**9
+            want_from = start if start is not None else 1
+            want_to = end if end is not None else 10**9
+            if prev_from <= want_from and want_to <= prev_to:
+                if prev_end is None:
+                    return f"lines {prev_from}-end"
+                return f"lines {prev_from}-{prev_end}"
+        return None
 
     def _execute_and_append(
         self,
