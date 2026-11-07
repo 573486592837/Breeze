@@ -67,6 +67,11 @@ intra_turn_budget = 24000
 # Defaults to intra_turn_budget. Raise it only when the provider's prefix
 # cache actually reports hits; otherwise keeping reads intact costs tokens.
 hard_budget = 24000
+# Cross-turn working set: keep at most this many files' current content as a
+# bounded snapshot, injected at the start of the next turn so the agent does
+# not re-read files it just edited. Set max_files = 0 to disable.
+snapshot_max_files = 4
+snapshot_max_chars = 32000
 # Maximum entries per section in the structured session-state block
 # (symbols, reads, edits) injected with the summary on compression.
 state_max_entries = 8

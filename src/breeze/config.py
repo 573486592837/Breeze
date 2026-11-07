@@ -80,6 +80,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "cross_turn": "archive",
         "intra_turn_budget": 24000,
         "hard_budget": 24000,
+        "snapshot_max_files": 4,
+        "snapshot_max_chars": 32000,
         "state_max_entries": 8,
         "tool_result_max_bytes": 16000,
         "tool_result_head_bytes": 8000,
@@ -115,6 +117,8 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "BREEZE_CONTEXT_CROSS_TURN": ("context", "cross_turn"),
     "BREEZE_CONTEXT_INTRA_TURN_BUDGET": ("context", "intra_turn_budget"),
     "BREEZE_CONTEXT_HARD_BUDGET": ("context", "hard_budget"),
+    "BREEZE_CONTEXT_SNAPSHOT_MAX_FILES": ("context", "snapshot_max_files"),
+    "BREEZE_CONTEXT_SNAPSHOT_MAX_CHARS": ("context", "snapshot_max_chars"),
     "BREEZE_CHAT_ANSWER_PREVIEW": ("chat", "answer_preview"),
     "BREEZE_CHAT_MAX_RECORDS": ("chat", "max_records"),
     "BREEZE_CHAT_MAX_CHARS": ("chat", "max_chars"),
@@ -388,6 +392,8 @@ class Settings:
         self.context_cross_turn: str = cross_turn
         self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
         self.context_hard_budget: int = int(cfg["context"]["hard_budget"])
+        self.context_snapshot_max_files: int = int(cfg["context"]["snapshot_max_files"])
+        self.context_snapshot_max_chars: int = int(cfg["context"]["snapshot_max_chars"])
         self.context_state_max_entries: int = int(cfg["context"]["state_max_entries"])
         self.context_tool_result_max_bytes: int = int(cfg["context"]["tool_result_max_bytes"])
         self.context_tool_result_head_bytes: int = int(cfg["context"]["tool_result_head_bytes"])

@@ -8,6 +8,21 @@ from breeze.chat import HELP_TEXT, run_chat
 from breeze.state import SessionState, TurnLedger
 
 
+class StubSnapshots:
+    """假工作集快照。"""
+
+    def __init__(self) -> None:
+        self.restored: dict[str, Any] | None = None
+        self.data: dict[str, Any] = {"version": 1, "files": []}
+
+    def restore(self, data: dict[str, Any]) -> None:
+        self.restored = data
+        self.data = data
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.data
+
+
 class StubAgent:
     """按脚本返回答案的假 Agent。答案为 "INTERRUPT" 时模拟回合中断。"""
 
@@ -18,6 +33,7 @@ class StubAgent:
         self.resets = 0
         self.ledger = TurnLedger()
         self.state = SessionState()
+        self.snapshots = StubSnapshots()
 
     def run(self, question: str) -> str:
         self.questions.append(question)
@@ -77,10 +93,18 @@ class StubSession:
     def __init__(self, ledger: TurnLedger | None = None, state: SessionState | None = None) -> None:
         self.restore = (ledger or TurnLedger(), state or SessionState())
         self.saved: list[tuple[Any, dict[str, Any]]] = []
+        self.saved_snapshots: list[dict[str, Any]] = []
+        self.snapshot_data: dict[str, Any] = {}
         self.resets = 0
 
     def load(self) -> tuple[TurnLedger, SessionState]:
         return self.restore
+
+    def load_snapshots(self) -> dict[str, Any]:
+        return self.snapshot_data
+
+    def save_snapshots(self, data: dict[str, Any]) -> None:
+        self.saved_snapshots.append(data)
 
     def record_turn(self, record: Any, state: Any, summary: dict[str, Any]) -> None:
         self.saved.append((record, summary))
@@ -317,6 +341,7 @@ def test_session_records_each_completed_turn() -> None:
         (2, "q2", ["a.py"]),
     ]
     assert session.saved[1][1]["trace_path"] == "traces/2.jsonl"
+    assert len(session.saved_snapshots) == 2
 
 
 def test_session_restores_before_first_turn() -> None:
@@ -326,11 +351,16 @@ def test_session_restores_before_first_turn() -> None:
     state = SessionState()
     state.symbols["target"] = "old.py:1"
     session = StubSession(ledger=ledger, state=state)
+    session.snapshot_data = {
+        "version": 1,
+        "files": [{"path": "old.py", "content": "old = 1\n"}],
+    }
 
     _, _, _, agents = _run(["next question", "/exit"], answers=["a"], session=session)
 
     assert agents[0].ledger.records == ledger.records
     assert agents[0].state is state
+    assert agents[0].snapshots.restored == session.snapshot_data
 
 
 def test_interrupted_turn_is_not_recorded() -> None:

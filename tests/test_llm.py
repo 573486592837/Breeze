@@ -294,3 +294,33 @@ def test_tool_choice_fallback_retry(client: LLMClient, monkeypatch: pytest.Monke
     assert "tool_choice" not in calls[1]
     assert "parallel_tool_calls" not in calls[1]
     assert resp.content == "ok"
+
+
+def test_extracts_reasoning_content(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """推理模型的 thinking 原文进入 LLMResponse，供后续请求回传。"""
+    usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    msg = types.SimpleNamespace(content=None, tool_calls=[], reasoning_content="先读文件再改")
+    resp_obj = types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)], usage=usage)
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: resp_obj)
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.reasoning_content == "先读文件再改"
+
+
+def test_extracts_reasoning_from_provider_fields(
+    client: LLMClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """网关把 thinking 放进 provider_specific_fields 时也要取到。"""
+    usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    msg = types.SimpleNamespace(
+        content=None,
+        tool_calls=[],
+        provider_specific_fields={"reasoning_content": "plan"},
+    )
+    resp_obj = types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg)], usage=usage)
+    monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: resp_obj)
+
+    resp = client.chat([{"role": "user", "content": "hi"}])
+
+    assert resp.reasoning_content == "plan"

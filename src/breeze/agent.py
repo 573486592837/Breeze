@@ -16,6 +16,7 @@ from breeze.config import PERMISSION_MODES, settings
 from breeze.context import ContextManager
 from breeze.instructions import load_project_instructions, render_project_instructions
 from breeze.llm import LLMClient, LLMResponse
+from breeze.snapshots import SnapshotStore
 from breeze.state import SessionState, TurnLedger
 from breeze.tools import registry, shell
 from breeze.trace import RunTrace
@@ -26,6 +27,13 @@ DEFAULT_MAX_STEPS = 10
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
+
+# 一次成功读取的覆盖信息：路径、文件版本、起始行、结束行、结果是否完整。
+# 行号为 None 表示未指定；完整读取以 1..∞ 参与覆盖判断。
+_ReadMeta = tuple[str, int, int | None, int | None, bool]
+# 同一路径的读取在副本仍可见时连续被抑制到第 3 次，说明模型没有在使用上下文，
+# 继续循环只会空耗步数；直接结束本回合并报告未完成。
+_MAX_DUPLICATE_READ_SUPPRESSIONS = 3
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -62,6 +70,30 @@ _EDIT_CLAIM_NUDGE = (
 _EMPTY_ANSWER_NUDGE = (
     "你刚才的回复没有内容。请用简洁的中文直接给出最终答案："
     "准确说明已经完成和尚未完成的部分，不要再调用工具。"
+)
+
+# 真实试跑中出现过：模型没有调用工具，而是用“Let me / 我将先”这类计划作最终回答。
+# 只匹配句首的第一人称意图或明确的步骤引导，避免把最终报告里的
+# “建议下一步：……”误判成计划。
+_PLAN_ANSWER_RE = re.compile(
+    r"(?:^|\n)\s*(?:let me\b(?!\s+know)|i'll\b|i\s+will\b|i'm\s+going\s+to\b|"
+    r"i\s+am\s+going\s+to\b)\s*(?:add|create|fix|update|implement|modify|edit|write|run|read|check|"
+    r"apply|patch|change|refactor|remove|delete|test|now\b)"
+    r"|(?:^|\n)\s*(?:让我|我将|我会|我准备|我打算|我先)(?:先|来|直接|再|现在)?"
+    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)"
+    r"|(?:^|\n)\s*(?:首先|接下来|下一步)[，,:：]?\s*(?:我)?(?:将|会|要|先)?"
+    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)"
+    r"|(?:^|\n)\s*(?:继续|接下来继续|现在继续|下一步继续)\s*"
+    r"(?:执行|实现|完成|处理|修改|追加|添加|补)"
+    r"|(?:^|\n)\s*(?:给|为)\s*[^\n。；]{1,40}?(?:追加|实现|补上|补一个|添加)(?!了)"
+    r"|(?:^|\n)\s*(?:这是|以下是)(?:最后|剩余|接下来)"
+    r"|(?:^|\n)\s*(?:let me continue|continuing now|next,?\s*i(?:'ll| will))",
+    re.IGNORECASE,
+)
+_PLAN_ANSWER_NUDGE = (
+    "你的最终回答给出的是接下来要执行的计划（例如“Let me ...”“我将先...”），"
+    "但本轮没有继续调用工具，计划并未执行。请现在真正执行计划中的工具调用；"
+    "如果任务已经完成或无法继续，请直接给出结果和原因，不要以计划结尾。"
 )
 
 _VERIFICATION_CLAIM_RE = re.compile(
@@ -105,6 +137,23 @@ def _is_verification_call(name: str, arguments_json: str) -> bool:
     return isinstance(command, str) and bool(_VERIFICATION_COMMAND_RE.search(command))
 
 
+_FAILURE_PREFIXES = ("Error", "Tool execution failed", "Failed")
+
+
+def _is_failure_result(result: str) -> bool:
+    """工具以文本返回失败（而不是抛异常）时，统一按这些前缀识别。"""
+    return result.startswith(_FAILURE_PREFIXES)
+
+
+def _verification_ran(result: str) -> bool:
+    """判断验证命令是否真的执行并产出了结果。
+
+    参数/权限被拒绝时工具返回 ``Error: ...`` / ``Tool execution failed: ...``，
+    这不是测试结论；把它当成“验证失败”会让模型去修一个并不存在的失败。
+    """
+    return bool(result) and not _is_failure_result(result)
+
+
 def _verification_status(name: str, result: str) -> tuple[bool, str]:
     """解析验证调用的真实结果，返回 (是否通过, 摘要)。
 
@@ -113,7 +162,7 @@ def _verification_status(name: str, result: str) -> tuple[bool, str]:
         result: 工具返回的原始文本（不是压缩后的指针）。
     """
     first = result.splitlines()[0].strip() if result else ""
-    ok = not result.startswith(("Error", "Tool execution failed", "Failed"))
+    ok = not _is_failure_result(result)
 
     if name == "run_tests":
         ok = ok and first.replace(" ", "").startswith("exit_code=0")
@@ -154,6 +203,24 @@ def _claims_completed_edit(text: str) -> bool:
             continue
         return True
     return False
+
+
+def _is_plan_answer(text: str) -> bool:
+    """判断最终回答是否只是“接下来要做什么”的计划。
+
+    只在句首匹配第一人称意图或明确的步骤引导；最终报告末尾的
+    “建议下一步：……”不会命中。调用方只在没有工具调用时使用。
+    """
+    return bool(text) and bool(_PLAN_ANSWER_RE.search(text))
+
+
+def _parsed_arguments(arguments_json: str) -> dict[str, Any] | None:
+    """解析工具参数；空参数返回空 dict，非法 JSON 返回 None。"""
+    try:
+        parsed = json.loads(arguments_json) if arguments_json else {}
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _environment_note(capabilities: Capabilities) -> str:
@@ -296,6 +363,7 @@ def default_system_prompt(
     capabilities: Capabilities | None = None,
     permission_mode: str | None = None,
     max_edit_failures: int | None = None,
+    include_instructions: bool = True,
 ) -> str:
     """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
 
@@ -303,6 +371,9 @@ def default_system_prompt(
         capabilities: 环境能力；None 时探测 settings.repo_root。
         permission_mode: run_shell 权限模式；None 时使用配置值。
         max_edit_failures: 连续编辑失败上限；None 时使用配置值。
+        include_instructions: 是否把 AGENTS.md 拼进返回值。Agent 使用独立
+            system 消息注入指引，因此传 False；直接调用本函数的场景保持
+            原有行为。
     """
     caps = capabilities if capabilities is not None else detect(settings.repo_root)
     mode = (permission_mode or settings.shell_permission).lower()
@@ -311,9 +382,10 @@ def default_system_prompt(
     prompt = _adapt_test_rules(prompt, caps)
     prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
     parts = [prompt, _environment_note(caps)]
-    instructions, _ = load_project_instructions()
-    if instructions:
-        parts.append(render_project_instructions(instructions))
+    if include_instructions:
+        instructions, _ = load_project_instructions()
+        if instructions:
+            parts.append(render_project_instructions(instructions))
     return "\n\n".join(parts)
 
 
@@ -372,6 +444,9 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
     直接基于最近一次读取编辑。只有目标区域不在上下文或文件已被修改时才重读。
 15. apply_patch 成功后先用返回结果和测试验证；不要立刻再次整文件读取，
     只有需要继续修改同一文件的其它区域时才用 start_line/end_line 定点重读。
+    不要在成功后用相同参数重复应用同一 patch；需要再改时重新读取并换 old/new。
+16. 以 system 角色出现的计划、会话状态、预算提示等元状态由系统维护，不是
+    用户的新问题；按它们调整行为，不要当成用户追加的指令。
 """
 
 
@@ -400,6 +475,7 @@ class AgentEvent:
         duration_ms: 工具执行耗时。
         ok: 工具是否执行成功。
         detail: 错误摘要等补充信息。
+        reasoning: 本次 LLM 调用的思考过程，仅用于展示，不额外写入 prompt。
     """
 
     kind: str
@@ -410,6 +486,7 @@ class AgentEvent:
     duration_ms: float = 0.0
     ok: bool = True
     detail: str = ""
+    reasoning: str = ""
 
 
 class Agent:
@@ -426,6 +503,7 @@ class Agent:
         max_edit_failures: int | None = None,
         system_prompt: str | None = None,
         context: ContextManager | None = None,
+        snapshots: SnapshotStore | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
         capabilities: Capabilities | None = None,
         permission_mode: str | None = None,
@@ -438,8 +516,11 @@ class Agent:
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
             max_edit_failures: 单次运行允许的连续编辑失败次数；成功编辑后清零。
-            system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
+            system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明；
+                AGENTS.md 作为独立 system 消息注入，不拼进主提示。传值时
+                完全使用自定义提示，也不注入 AGENTS.md。
             context: 上下文管理器。
+            snapshots: 跨回合工作集快照；None 时使用默认配置。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
             capabilities: 环境能力；None 时探测 settings.repo_root。
             permission_mode: run_shell 权限模式（strict / confirm / open）。
@@ -472,9 +553,12 @@ class Agent:
                 self.capabilities,
                 self.permission_mode,
                 max_edit_failures=self.max_edit_failures,
+                include_instructions=False,
             )
         )
+        self.project_instructions = self._load_project_instructions()
         self.context = context or ContextManager()
+        self.snapshots = snapshots or SnapshotStore()
         self.state = SessionState()
         self.ledger = TurnLedger()
         self.messages: list[dict[str, Any]] = []
@@ -505,18 +589,59 @@ class Agent:
         edits_this_turn = 0
         edit_failures = 0
         edit_claim_nudged = False
+        plan_answer_nudged = False
         last_verification: tuple[bool, str] | None = None
         verification_fix_nudged = False
         verification_claim_nudged = False
         last_final_answer: str | None = None
+        edited_paths: list[str] = []
+        # read_file 去重：key = (规范化参数, 文件版本)，值为本回合执行次数。
+        read_requests: dict[tuple[str, int], int] = {}
+        read_versions: dict[str, int] = {}
+        # 已实际执行的 read tool_call_id；结合上一份提示词判断旧副本是否仍可见。
+        read_call_ids: dict[tuple[str, int], list[str]] = {}
+        read_retries: dict[tuple[str, int], int] = {}
+        read_meta: dict[str, _ReadMeta] = {}
+        read_text: dict[str, str] = {}
+        read_suppressions: dict[str, int] = {}
+        # 已成功的写操作：key = (工具名, 规范化参数)。同回合重复执行会把同一段
+        # 代码插入多次，必须拦截。
+        write_success: set[tuple[str, str]] = set()
+        last_demoted_reads: frozenset[str] = frozenset()
+        last_prompt_tokens = 0
+        budget_nudged = False
 
         for step in range(self.max_steps):
             remaining = self.max_steps - step
 
+            hard_budget = getattr(self.context.config, "hard_budget", 0)
+            if (
+                not budget_nudged
+                and edits_this_turn == 0
+                and hard_budget > 0
+                and last_prompt_tokens >= hard_budget * 0.75
+            ):
+                budget_nudged = True
+                percent = round(last_prompt_tokens * 100 / hard_budget)
+                self.messages.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            f"上下文已用到约 {percent}%（{last_prompt_tokens}/{hard_budget} tokens）。"
+                            "继续扩大读取会开始压缩已有文件内容，并显著拖慢模型响应。"
+                            "现在停止扩展调研：基于已读内容调用 update_plan，随后立即编写测试与"
+                            "实现；只读取尚未看过的必要行范围。"
+                        ),
+                    }
+                )
+                self.trace.log_guard(
+                    step,
+                    f"context {percent}% of hard budget without edits; asking to converge",
+                )
             if self.max_steps >= 8 and step == self.max_steps // 2 and edits_this_turn == 0:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": (
                             "你已经用完一半的步数但还没有执行任何编辑。调研必须收敛："
                             "从现在起，每读完一个待改区域就立即 apply_patch 并运行验证，"
@@ -527,7 +652,7 @@ class Agent:
             elif remaining == 2:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": (
                             "你还有 1 次工具调用机会。如果已有足够信息回答用户问题，"
                             "请立即给出最终答案，不要再调用工具。"
@@ -537,7 +662,7 @@ class Agent:
             elif remaining == 1:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": ("这是最后一步。请基于已获取的信息直接给出最终答案，不要再调用工具。"),
                     }
                 )
@@ -545,12 +670,19 @@ class Agent:
             tools = registry.schemas(self.tool_names)
             tool_choice = None if remaining > 1 else "none"
             view = self._llm_view(turn_start)
+            include_prior = step == 0 and self._has_prior_turn()
+            snapshot_block = self.snapshots.render() if include_prior else None
             llm_messages, prompt_stats = self.context.build_with_stats(
                 view,
                 state=self.state,
                 archive=self._turn_archive(),
                 plan=self.state.plan,
+                include_state=include_prior,
+                snapshots=snapshot_block,
+                instructions=self.project_instructions,
             )
+            last_demoted_reads = prompt_stats.demoted_read_ids
+            last_prompt_tokens = prompt_stats.total_tokens
 
             self._emit(AgentEvent("llm_start", step))
 
@@ -590,27 +722,41 @@ class Agent:
                     step,
                     tokens=resp.total_tokens,
                     tool_calls=len(tool_calls),
+                    reasoning=resp.reasoning_content or "",
                 )
             )
 
             if remaining == 1 and tool_calls:
                 names = ", ".join(tc.name for tc in tool_calls)
                 self.trace.log_guard(step, f"tool calls ignored at final step: {names}")
-                answer = (resp.content or "").strip()
-                if answer:
-                    answer = self._guard_missing_edits(step, answer, edits_this_turn)
-                    answer = self._guard_failed_verification(step, answer, last_verification)
-                    return self._finish_turn(question, answer, turn_start)
+                # 模型在此处常返回“继续执行…/给 X 追加…”这类工具调用前言。
+                # 把它当最终答案会掩盖“编辑没有执行”的事实，直接报告未完成。
                 return self._finish_turn(
                     question,
-                    f"Reached max steps ({self.max_steps}), task not completed.",
+                    f"Reached max steps ({self.max_steps}) before executing the final "
+                    f"tool call(s): {names}. Task not completed.",
                     turn_start,
+                    edited_paths,
                 )
 
             if not tool_calls:
                 answer = resp.content or ""
                 if not answer.strip():
                     answer = self._recover_empty_answer(step, turn_start)
+                if (
+                    _is_plan_answer(answer)
+                    and not _claims_completed_edit(answer)
+                    and not plan_answer_nudged
+                    and remaining > 1
+                ):
+                    plan_answer_nudged = True
+                    self.messages.append({"role": "assistant", "content": answer})
+                    self.messages.append({"role": "system", "content": _PLAN_ANSWER_NUDGE})
+                    self.trace.log_guard(
+                        step,
+                        "final answer was a plan with no tool call; re-prompting to execute",
+                    )
+                    continue
                 if (
                     _claims_completed_edit(answer)
                     and edits_this_turn == 0
@@ -619,7 +765,7 @@ class Agent:
                 ):
                     edit_claim_nudged = True
                     self.messages.append({"role": "assistant", "content": answer})
-                    self.messages.append({"role": "user", "content": _EDIT_CLAIM_NUDGE})
+                    self.messages.append({"role": "system", "content": _EDIT_CLAIM_NUDGE})
                     self.trace.log_guard(
                         step,
                         "final answer claimed edits but no edit tool succeeded; re-prompting",
@@ -636,7 +782,7 @@ class Agent:
                     self.messages.append({"role": "assistant", "content": answer})
                     self.messages.append(
                         {
-                            "role": "user",
+                            "role": "system",
                             "content": _VERIFICATION_CLAIM_NUDGE.format(summary=last_verification[1]),
                         }
                     )
@@ -648,27 +794,29 @@ class Agent:
                 answer = self._guard_missing_edits(step, answer, edits_this_turn)
                 answer = self._guard_failed_verification(step, answer, last_verification)
                 last_final_answer = answer
-                return self._finish_turn(question, answer, turn_start)
+                return self._finish_turn(question, answer, turn_start, edited_paths)
 
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": resp.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": tc.arguments_json,
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-            )
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": resp.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments_json,
+                        },
+                    }
+                    for tc in tool_calls
+                ],
+            }
+            # 推理模型要求把思考过程随工具结果回传，否则多步之后容易跑题。
+            if resp.reasoning_content:
+                assistant_message["reasoning_content"] = resp.reasoning_content
+            self.messages.append(assistant_message)
 
-            for tc in tool_calls:
+            for call_index, tc in enumerate(tool_calls):
                 if tc.name in _WRITE_TOOLS and edit_failures >= self.max_edit_failures:
                     error_msg = (
                         f"Error: max_edit_failures ({self.max_edit_failures}) reached "
@@ -693,14 +841,108 @@ class Agent:
                     )
                     continue
 
+                if tc.name == "read_file" and self._suppress_duplicate_read(
+                    tc,
+                    read_requests,
+                    read_versions,
+                    read_call_ids,
+                    read_retries,
+                    read_meta,
+                    read_text,
+                    last_demoted_reads,
+                    step,
+                ):
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    path = str(arguments.get("path") or "?")
+                    suppressed = read_suppressions.get(path, 0) + 1
+                    read_suppressions[path] = suppressed
+                    if suppressed >= _MAX_DUPLICATE_READ_SUPPRESSIONS:
+                        self.trace.log_guard(
+                            step,
+                            f"read loop stopped: {path} suppressed {suppressed} times",
+                        )
+                        # 其余 tool_call 必须补上结果，否则下一回合的请求会因
+                        # assistant tool_calls 缺少对应 tool 消息而被网关拒绝。
+                        for skipped in tool_calls[call_index:]:
+                            self.messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": skipped.id,
+                                    "content": "[skipped] turn stopped after repeated duplicate reads",
+                                }
+                            )
+                        return self._finish_turn(
+                            question,
+                            f"Stopped: read_file {path} was requested {suppressed} times "
+                            "while its content was already visible and unchanged. "
+                            "The task is not completed.",
+                            turn_start,
+                            edited_paths,
+                        )
+                    continue
+
+                if tc.name in _WRITE_TOOLS and self._suppress_duplicate_write(
+                    tc, write_success, step
+                ):
+                    continue
+
                 result = self._execute_and_append(tc, step)
-                succeeded = result is not None and not result.startswith(
-                    ("Error", "Tool execution failed", "Failed")
-                )
+                succeeded = result is not None and not _is_failure_result(result)
+                if succeeded:
+                    read_suppressions.clear()
+                if tc.name == "read_file" and succeeded:
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    path = arguments.get("path")
+                    if isinstance(path, str):
+                        key = (
+                            json.dumps(
+                                arguments,
+                                sort_keys=True,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                            read_versions.get(path, 0),
+                        )
+                        read_call_ids.setdefault(key, []).append(tc.id)
+                        result_text = result or ""
+                        read_text[tc.id] = result_text
+                        read_meta[tc.id] = (
+                            path,
+                            read_versions.get(path, 0),
+                            arguments.get("start_line"),
+                            arguments.get("end_line"),
+                            "truncated to " not in result_text
+                            and "[line truncated:" not in result_text,
+                        )
                 if _is_verification_call(tc.name, tc.arguments_json):
-                    last_verification = _verification_status(tc.name, result or "")
+                    if _verification_ran(result or ""):
+                        last_verification = _verification_status(tc.name, result or "")
+                    else:
+                        self.trace.log_guard(
+                            step,
+                            f"verification command did not run: {tc.name}",
+                        )
                 if tc.name in _EDIT_TOOLS and succeeded:
                     edits_this_turn += 1
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    if tc.name in _WRITE_TOOLS:
+                        write_success.add(
+                            (
+                                tc.name,
+                                json.dumps(
+                                    arguments,
+                                    sort_keys=True,
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                ),
+                            )
+                        )
+                    path = arguments.get("path")
+                    if isinstance(path, str):
+                        read_versions[path] = read_versions.get(path, 0) + 1
+                        self.snapshots.invalidate(path)
+                        if path not in edited_paths:
+                            edited_paths.append(path)
                 if tc.name in _WRITE_TOOLS:
                     if succeeded:
                         edit_failures = 0
@@ -717,14 +959,14 @@ class Agent:
                 verification_fix_nudged = True
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": _VERIFICATION_FAILED_NUDGE.format(summary=last_verification[1]),
                     }
                 )
                 self.trace.log_guard(step, "verification failed; asking to fix before final answer")
 
         answer = last_final_answer or f"Reached max steps ({self.max_steps}), task not completed."
-        return self._finish_turn(question, answer, turn_start)
+        return self._finish_turn(question, answer, turn_start, edited_paths)
 
     def _refresh_capabilities(self) -> bool:
         """重新探测环境能力；变化时同步工具集。"""
@@ -755,14 +997,23 @@ class Agent:
             self.messages[0] = {"role": "system", "content": self.system_prompt}
 
     def _refresh_default_prompt(self) -> None:
-        """重建默认 system prompt，使配置变更在下一回合生效。"""
+        """重建默认 system prompt 与独立的 AGENTS.md 块。"""
         if self._custom_system_prompt is not None:
             return
         self.system_prompt = default_system_prompt(
             self.capabilities,
             self.permission_mode,
             max_edit_failures=self.max_edit_failures,
+            include_instructions=False,
         )
+        self.project_instructions = self._load_project_instructions()
+
+    def _load_project_instructions(self) -> str:
+        """加载并渲染仓库 AGENTS.md；自定义 system prompt 时不注入。"""
+        if self._custom_system_prompt is not None:
+            return ""
+        text, _ = load_project_instructions()
+        return render_project_instructions(text) if text else ""
 
     def reset(self) -> None:
         """清空消息日志、回合归档与会话状态，开始新会话。
@@ -772,6 +1023,7 @@ class Agent:
         self.messages = []
         self.ledger = TurnLedger()
         self.state = SessionState()
+        self.snapshots.clear()
         self.context.reset()
         self._refresh_default_prompt()
 
@@ -821,7 +1073,7 @@ class Agent:
             恢复调用得到的回答；仍为空时返回 "(empty response)"。
         """
         self.messages.append({"role": "assistant", "content": "(empty response)"})
-        self.messages.append({"role": "user", "content": _EMPTY_ANSWER_NUDGE})
+        self.messages.append({"role": "system", "content": _EMPTY_ANSWER_NUDGE})
         self.trace.log_guard(step, "empty final answer; asking for a summary once")
 
         view = self._llm_view(turn_start)
@@ -830,6 +1082,7 @@ class Agent:
             state=self.state,
             archive=self._turn_archive(),
             plan=self.state.plan,
+            instructions=self.project_instructions,
         )
 
         self._emit(AgentEvent("llm_start", step))
@@ -858,16 +1111,31 @@ class Agent:
             tools=[],
             temperature=getattr(self.llm, "temperature", settings.llm_temperature),
         )
-        self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
+        self._emit(
+            AgentEvent(
+                "llm_end",
+                step,
+                tokens=resp.total_tokens,
+                tool_calls=0,
+                reasoning=resp.reasoning_content or "",
+            )
+        )
         return (resp.content or "").strip() or "(empty response)"
 
-    def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
-        """把本回合的问答结论与触碰文件归档，返回答案。
+    def _finish_turn(
+        self,
+        question: str,
+        answer: str,
+        turn_start: int,
+        edited_paths: list[str] | None = None,
+    ) -> str:
+        """把本回合的问答结论、触碰文件与工作集快照归档，返回答案。
 
         Args:
             question: 本回合的用户问题。
             answer: 本回合最终答案。
             turn_start: 本回合在消息日志中的起始下标。
+            edited_paths: 本回合成功编辑的路径。
 
         Returns:
             答案原文（便于调用点直接 return）。
@@ -888,8 +1156,24 @@ class Agent:
                 if isinstance(path, str) and path not in touched:
                     touched.append(path)
 
+        self._capture_snapshots(touched, edited_paths or [], len(self.ledger.records) + 1)
         self.ledger.record(question, answer, touched)
         return answer
+
+    def _capture_snapshots(self, touched: list[str], edited: list[str], turn: int) -> None:
+        """按本回合的工作集捕获少量文件的当前内容，供下一回合注入。"""
+        if not self.context.config.enable or not self.snapshots.enabled:
+            return
+        if not touched and not edited:
+            return
+        with contextlib.suppress(Exception):
+            self.snapshots.capture(
+                touched,
+                turn=turn,
+                edited=edited,
+                plan=self.state.plan,
+                read_hits=self.state.read_hits,
+            )
 
     def _llm_view(self, turn_start: int) -> list[dict[str, Any]]:
         """选择发给上下文管理器的消息视图。
@@ -900,6 +1184,18 @@ class Agent:
         if self.context.config.cross_turn == "append":
             return list(self.messages)
         return [self.messages[0], *self.messages[turn_start:]]
+
+    def _has_prior_turn(self) -> bool:
+        """当前回合之前是否已有可复用的会话事实。"""
+        if self.ledger.records:
+            return True
+        return bool(
+            self.state.reads
+            or self.state.edits
+            or self.state.symbols
+            or self.state.tests
+            or self.snapshots
+        )
 
     def _turn_archive(self) -> str | None:
         """append 模式下历史已完整保留，不再重复注入回合归档。"""
@@ -937,6 +1233,259 @@ class Agent:
             resp = self.llm.chat(messages, tools=tools, tool_choice=tool_choice)
         latency_ms = (time.perf_counter() - start) * 1000
         return resp, latency_ms
+
+    def _suppress_duplicate_read(
+        self,
+        tc: _ToolCall,
+        requests: dict[tuple[str, int], int],
+        versions: dict[str, int],
+        executed_ids: dict[tuple[str, int], list[str]],
+        retries: dict[tuple[str, int], int],
+        meta: dict[str, _ReadMeta],
+        texts: dict[str, str],
+        demoted: frozenset[str],
+        step: int,
+    ) -> bool:
+        """同一回合内重复读取同一文件时跳过执行并返回抑制提示。
+
+        只要上一份提示词里仍有可用的原文副本就抑制：同参数读取直接拒绝；
+        整文件读取还会覆盖后续的行范围读取（截断的结果除外）。若所有旧副本
+        都已被 hard limit 压成指针，允许再读一次；否则模型会看到“use the
+        earlier copy”却拿不到内容，陷入重读循环。
+
+        Args:
+            tc: read_file 工具调用。
+            requests: 本回合 (规范化参数, 文件版本) -> 已尝试次数。
+            versions: 文件路径 -> 编辑版本号；编辑后版本变化，允许重新读取。
+            executed_ids: (规范化参数, 文件版本) -> 实际执行过的 tool_call_id。
+            retries: (规范化参数, 文件版本) -> 因副本不可见而放行的次数。
+            meta: tool_call_id -> 本次读取覆盖的路径、版本、行范围与是否完整。
+            texts: tool_call_id -> 读取结果原文，用于在抑制时附带短预览。
+            demoted: 上一份提示词中没有原文的 read tool_call_id。
+            step: 当前步数，用于 trace。
+
+        Returns:
+            True 表示已抑制并把提示写入消息；False 表示应正常执行。
+        """
+        arguments = _parsed_arguments(tc.arguments_json)
+        if arguments is None:
+            return False
+        path = arguments.get("path")
+        if not isinstance(path, str):
+            return False
+
+        version = versions.get(path, 0)
+        start = arguments.get("start_line")
+        end = arguments.get("end_line")
+        target = f"{path} lines {start}-{end}" if start is not None and end is not None else path
+
+        covered = self._covering_read(arguments, version, meta, demoted)
+        if covered is not None:
+            cover_label, cover_id = covered
+            preview = self._read_preview(
+                texts.get(cover_id, ""),
+                start=start if isinstance(start, int) else None,
+                end=end if isinstance(end, int) else None,
+            )
+            reason = (
+                f"is already covered by a visible earlier read ({cover_label}) this turn; "
+                "the file has not changed. Use that copy instead of re-reading; "
+                "if a specific fact is missing, say which fact."
+            )
+            return self._emit_suppressed_read(tc, arguments, target, reason, step, preview)
+
+        key = (
+            json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
+            version,
+        )
+        count = requests.get(key, 0)
+        if count == 0:
+            requests[key] = 1
+            return False
+
+        prior = executed_ids.get(key, [])
+        visible_prior = [call_id for call_id in prior if call_id not in demoted]
+        if visible_prior:
+            reason = (
+                "was already read with the same arguments this turn and that copy is still "
+                "visible; use it instead of re-reading."
+            )
+            requests[key] = count + 1
+            preview = self._read_preview(texts.get(visible_prior[0], ""))
+            return self._emit_suppressed_read(tc, arguments, target, reason, step, preview)
+
+        if prior and retries.get(key, 0) < 1:
+            retries[key] = retries.get(key, 0) + 1
+            requests[key] = count + 1
+            self.trace.log_guard(
+                step,
+                f"duplicate read allowed: earlier copies were compressed: {target}",
+            )
+            return False
+
+        reason = (
+            "was already read with the same arguments and the earlier copy was compressed; "
+            "read a specific line range or state which fact is missing."
+        )
+        requests[key] = count + 1
+        return self._emit_suppressed_read(tc, arguments, target, reason, step)
+
+    def _suppress_duplicate_write(
+        self,
+        tc: _ToolCall,
+        success: set[tuple[str, str]],
+        step: int,
+    ) -> bool:
+        """拦截本回合已成功执行过的同参数写操作。
+
+        模型在预算压缩后可能把 “re-run for more” 当成失败提示，反复应用同一
+        patch；apply_patch 不是幂等操作，会重复插入代码。这里直接返回成功
+        确认，让模型去验证结果或换一处修改。
+        """
+        arguments = _parsed_arguments(tc.arguments_json)
+        if arguments is None:
+            return False
+        key = (
+            tc.name,
+            json.dumps(
+                arguments,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        if key not in success:
+            return False
+
+        path = str(arguments.get("path") or "").strip()
+        label = f"{tc.name} {path}".strip()
+        result = (
+            f"[duplicate edit suppressed] {label} with identical arguments already succeeded "
+            "this turn; do not repeat it. Verify the result or make a different edit."
+        )
+        self.trace.log_tool(
+            step=step,
+            tool=tc.name,
+            arguments=arguments,
+            result=result,
+            latency_ms=0.0,
+            error=None,
+        )
+        self.trace.log_guard(step, f"duplicate edit suppressed: {label}")
+        self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        return True
+
+    @staticmethod
+    def _read_preview(
+        text: str,
+        limit: int = 800,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> str:
+        """截取可见副本，避免模型收到抑制提示却看不到内容。
+
+        整文件副本覆盖行范围读取时，只挑出请求范围内的行；read_file 的结果
+        以 ``行号 | 内容`` 呈现，其余行对本次请求没有意义。
+        """
+        body = text.strip()
+        if body and start is not None:
+            lo = start
+            hi = end if end is not None else 10**9
+            picked: list[str] = []
+            for line in body.splitlines():
+                head, sep, _ = line.partition(" | ")
+                if not sep:
+                    continue
+                try:
+                    line_no = int(head.strip())
+                except ValueError:
+                    continue
+                if lo <= line_no <= hi:
+                    picked.append(line)
+            if picked:
+                body = "\n".join(picked)
+        if not body:
+            return ""
+        if len(body) <= limit:
+            return body
+        return f"{body[:limit]}\n... [truncated; {len(body) - limit} chars omitted]"
+
+    def _emit_suppressed_read(
+        self,
+        tc: _ToolCall,
+        arguments: dict[str, Any],
+        target: str,
+        reason: str,
+        step: int,
+        preview: str = "",
+    ) -> bool:
+        """把被抑制的读取记录成一条工具消息，保证 tool_call 有对应结果。"""
+        result = f"[duplicate read suppressed] read_file {target} {reason}"
+        if preview:
+            result += (
+                f"\n\nVisible earlier copy:\n{preview}\n\n"
+                "If this copy is sufficient, continue with the task without re-reading."
+            )
+        self._emit(AgentEvent("tool_start", step, tool=tc.name))
+        self.trace.log_tool(
+            step=step,
+            tool=tc.name,
+            arguments=arguments,
+            result=result,
+            latency_ms=0.0,
+            error=None,
+        )
+        self.trace.log_guard(step, f"duplicate read suppressed: {target}")
+        self._emit(
+            AgentEvent(
+                "tool_end",
+                step,
+                tool=tc.name,
+                duration_ms=0.0,
+                ok=True,
+                detail="duplicate read suppressed",
+            )
+        )
+        self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+        return True
+
+    @staticmethod
+    def _covering_read(
+        arguments: dict[str, Any],
+        version: int,
+        meta: dict[str, _ReadMeta],
+        demoted: frozenset[str],
+    ) -> tuple[str, str] | None:
+        """返回覆盖本次读取范围且仍可见的旧读取 (描述, tool_call_id)；没有则返回 None。"""
+        path = arguments.get("path")
+        if not isinstance(path, str):
+            return None
+        start = arguments.get("start_line")
+        end = arguments.get("end_line")
+        full = start is None and end is None
+
+        for call_id, (prev_path, prev_version, prev_start, prev_end, complete) in meta.items():
+            if prev_path != path or prev_version != version or call_id in demoted:
+                continue
+            if prev_start is None and prev_end is None:
+                if full or complete:
+                    return ("the full file", call_id)
+                continue
+            if full:
+                if complete and prev_start == 1 and prev_end is None:
+                    return ("the full file", call_id)
+                continue
+            if not complete:
+                continue
+            prev_from = prev_start if prev_start is not None else 1
+            prev_to = prev_end if prev_end is not None else 10**9
+            want_from = start if start is not None else 1
+            want_to = end if end is not None else 10**9
+            if prev_from <= want_from and want_to <= prev_to:
+                if prev_end is None:
+                    return (f"lines {prev_from}-end", call_id)
+                return (f"lines {prev_from}-{prev_end}", call_id)
+        return None
 
     def _execute_and_append(
         self,
@@ -990,11 +1539,18 @@ class Agent:
                 result = self._execute_shell(arguments, step)
             else:
                 result = registry.execute(tc.name, arguments)
-            error = None
+            exception_error = None
         except Exception as exc:
             result = f"Tool execution failed: {exc}"
-            error = str(exc)
+            exception_error = str(exc)
         latency_ms = (time.perf_counter() - start) * 1000
+
+        # 多数工具把失败写成 "Error: ..." 字符串而不是抛异常。若不在这里
+        # 归因，trace 与 run_summary 的 errors 会把失败记成成功，下游的
+        # Breeze Lens 错误指标与 --fail-on-error-increase 也会少计。
+        error = exception_error
+        if error is None and _is_failure_result(result):
+            error = result.splitlines()[0][:300]
 
         self.trace.log_tool(
             step=step,
@@ -1018,7 +1574,7 @@ class Agent:
         self.state.update(tc.name, arguments, result, step)
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        return None if error is not None else result
+        return None if exception_error is not None else result
 
     def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
         """按权限模式执行 run_shell。

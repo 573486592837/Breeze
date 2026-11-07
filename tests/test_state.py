@@ -362,3 +362,112 @@ def test_ledger_defaults_come_from_settings(monkeypatch: pytest.MonkeyPatch) -> 
     ledger = TurnLedger()
 
     assert (ledger.answer_preview, ledger.max_records, ledger.max_chars) == (30, 2, 90)
+
+
+# ─── 编辑后的状态失效 ───
+
+
+def test_successful_edit_invalidates_reads_symbols_and_repeat_counts() -> None:
+    """apply_patch 后旧读取范围、符号位置与重读计数全部失效。"""
+    st = _state()
+    result = "1 | def foo():\n--- (file has 5 lines total) ---"
+    st.update("read_file", {"path": "x.py"}, result, 0)
+    st.update("read_file", {"path": "x.py"}, result, 1)
+    st.update("run_tests", {"pattern": ""}, "exit_code=0\nsummary: 5 passed\n", 2)
+
+    st.update("apply_patch", {"path": "x.py"}, "Patched x.py (1 replacement)", 3)
+
+    assert "x.py" not in st.reads
+    assert all(not loc.startswith("x.py:") for loc in st.symbols.values())
+    assert st.read_counts == {}
+    assert st.edits["x.py"] == "patched at step 3"
+    assert st.tests_stale is True
+
+
+def test_failed_edit_keeps_reads_and_tests_fresh() -> None:
+    """编辑失败没有改变文件，旧读取与测试结果仍然有效。"""
+    st = _state()
+    st.update("read_file", {"path": "x.py"}, "1 | def foo():\n--- (file has 2 lines total) ---", 0)
+    st.update("run_tests", {"pattern": ""}, "exit_code=0\nsummary: 5 passed\n", 1)
+
+    st.update("apply_patch", {"path": "x.py"}, "Error: old text not found", 2)
+
+    assert "x.py" in st.reads
+    assert st.symbols["foo"] == "x.py:1"
+    assert st.tests_stale is False
+    assert st.edits["x.py"] == "failed at step 2"
+
+
+def test_delete_and_restore_invalidate_path() -> None:
+    """删除与恢复同样使路径的读取记录失效。"""
+    st = _state()
+    st.update("read_file", {"path": "gone.py"}, "1 | x", 0)
+    st.update("delete_path", {"path": "gone.py"}, "Deleted gone.py", 1)
+    assert "gone.py" not in st.reads
+    assert st.edits["gone.py"] == "deleted at step 1"
+
+    st.update("git_restore", {"path": "gone.py"}, "Restored gone.py", 2)
+    assert st.edits["gone.py"] == "restored at step 2"
+
+
+def test_tests_stale_marked_after_edit_and_cleared_by_rerun() -> None:
+    """编辑后测试结果标注过期，重新跑测试后恢复可信。"""
+    st = _state()
+    st.update("run_tests", {"pattern": ""}, "exit_code=1\nsummary: 7 passed, 2 failed\n", 1)
+    st.update("apply_patch", {"path": "x.py"}, "Patched x.py (1 replacement)", 2)
+
+    assert "stale" in st.render()
+
+    st.update("run_tests", {"pattern": ""}, "exit_code=0\nsummary: 9 passed\n", 3)
+    assert st.tests_stale is False
+    assert "stale" not in st.render()
+
+
+def test_tests_stale_round_trips() -> None:
+    """测试过期标记随会话状态持久化。"""
+    st = _state()
+    st.update("run_tests", {"pattern": ""}, "exit_code=1\nsummary: 1 failed\n", 0)
+    st.update("apply_patch", {"path": "x.py"}, "Patched x.py (1 replacement)", 1)
+
+    restored = SessionState.from_dict(st.to_dict())
+
+    assert restored.tests_stale is True
+
+
+def test_turn_start_render_marks_previous_turn_facts() -> None:
+    """回合启动渲染明确说明内容来自之前回合，不在当前上下文。"""
+    st = _state()
+    st.update("read_file", {"path": "a.py"}, "1 | x", 0)
+
+    block = st.render(turn_start=True)
+
+    assert "[Session state — carried from previous turns]" in block
+    assert "file contents are not in this context" in block
+    assert "re-read only the ranges you need" in block
+
+
+def test_render_repeated_returns_only_repeat_warning() -> None:
+    """重复读取警示可单独注入，不携带整块状态。"""
+    st = _state()
+    assert st.render_repeated() == ""
+
+    st.update("read_file", {"path": "a.py"}, "1 | x", 0)
+    assert st.render_repeated() == ""
+
+    st.update("read_file", {"path": "a.py"}, "1 | x", 1)
+    block = st.render_repeated()
+    assert "[Repeated reads this turn" in block
+    assert "a.py" in block
+    assert "Symbols located" not in block
+
+
+def test_delete_directory_invalidates_nested_reads_and_symbols() -> None:
+    """删除目录时，其下文件的读取记录与符号索引一并失效。"""
+    st = _state()
+    st.update("read_file", {"path": "pkg/a.py"}, "1 | def f():\n--- (file has 1 lines total) ---", 0)
+
+    st.update("delete_path", {"path": "pkg"}, "Deleted pkg", 1)
+
+    assert st.reads == {}
+    assert st.symbols == {}
+    assert st.edits["pkg"] == "deleted at step 1"

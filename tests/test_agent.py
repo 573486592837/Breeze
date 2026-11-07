@@ -150,7 +150,8 @@ def test_agent_message_flow(trace: RunTrace, fake_tool: None) -> None:
     agent.run("echo xyz")
 
     second = llm.calls[1]["messages"]
-    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool", "system", "user"]
+    assert second[-2]["content"].startswith("[Context budget")
 
     assistant_msg = second[2]
     assert assistant_msg["tool_calls"][0]["id"] == "c1"
@@ -562,7 +563,7 @@ def test_agent_injects_closing_hint_near_max_steps(trace: RunTrace, fake_tool: N
 
     # 第 1 步 (remaining=2) 的消息里应含提示
     step1_messages = llm.calls[1]["messages"]
-    hints = [m for m in step1_messages if m["role"] == "user" and "工具调用机会" in m.get("content", "")]
+    hints = [m for m in step1_messages if m["role"] == "system" and "工具调用机会" in m.get("content", "")]
     assert len(hints) == 1
 
 
@@ -582,15 +583,18 @@ def test_agent_keeps_tools_but_forbids_calls_on_last_step(
 
 
 def test_agent_ignores_tool_calls_on_last_step(trace: RunTrace, fake_tool: None) -> None:
-    """provider 无视 tool_choice 时，最终步的工具调用不执行。"""
+    """provider 无视 tool_choice 时，最终步不执行工具，也不把前言当答案。"""
     responses = [
         _tool_call("fake_echo", {"text": "one"}, call_id="c1"),
         _tool_call("fake_echo", {"text": "two"}, call_id="c2"),
-        _tool_call("fake_echo", {"text": "three"}, call_id="c3", content="final answer"),
+        _tool_call("fake_echo", {"text": "three"}, call_id="c3", content="继续执行剩余实现："),
     ]
     llm = FakeLLMClient(responses)
     agent = Agent(llm=llm, trace=trace, max_steps=3)
-    assert agent.run("go") == "final answer"
+    answer = agent.run("go")
+    assert "not completed" in answer
+    assert "fake_echo" in answer
+    assert "继续执行剩余实现" not in answer
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     assert len(tool_events) == 2
@@ -606,9 +610,27 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
     calls: list[int] = []
 
     class RecordingContext(ContextManager):
-        def build_with_stats(self, messages, state=None, archive=None, plan=None):
+        def build_with_stats(
+            self,
+            messages,
+            state=None,
+            archive=None,
+            plan=None,
+            *,
+            include_state: bool = False,
+            snapshots=None,
+            instructions=None,
+        ):
             seen_state.append(state is not None)
-            return super().build_with_stats(messages, state=state, archive=archive, plan=plan)
+            return super().build_with_stats(
+                messages,
+                state=state,
+                archive=archive,
+                plan=plan,
+                include_state=include_state,
+                snapshots=snapshots,
+                instructions=instructions,
+            )
 
     class RecordingLLM:
         model = "recorder"
@@ -679,8 +701,10 @@ def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
     messages = llm.calls[0]["messages"]
     assert messages[0]["content"] == "SYS"
     assert messages[1]["content"] == "hi"
-    assert messages[-1]["content"].startswith("[Current plan")
-    assert "2. patch" in messages[-1]["content"]
+    plan_msg = next(m for m in messages[2:] if str(m.get("content", "")).startswith("[Current plan"))
+    assert "2. patch" in plan_msg["content"]
+    assert messages[-2]["content"].startswith("[Context budget")
+    assert messages[-1] == {"role": "user", "content": "继续当前任务。"}
 
 
 def test_agent_append_mode_keeps_previous_turn_messages(
@@ -725,7 +749,7 @@ def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
     assert agent.state.plan == "1. inspect\n2. patch"
     assert not any("[Current plan" in str(m.get("content", "")) for m in llm.calls[0]["messages"])
     second = llm.calls[1]["messages"]
-    plan_msgs = [m for m in second if m["role"] == "user" and "[Current plan" in m["content"]]
+    plan_msgs = [m for m in second if m["role"] == "system" and "[Current plan" in m["content"]]
     assert len(plan_msgs) == 1
     assert "2. patch" in plan_msgs[0]["content"]
 
@@ -794,10 +818,12 @@ def test_agent_stops_after_consecutive_edit_failures(
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
     assert len(apply_events) == 6
 
-    rejected = [e for e in apply_events if e["error"]]
+    rejected = [e for e in apply_events if "max_edit_failures" in (e["error"] or "")]
     assert len(rejected) == 3
-    assert all("max_edit_failures" in e["error"] for e in rejected)
     assert all("do not claim" in e["error"] for e in rejected)
+    failed = [e for e in apply_events if e["error"] and "max_edit_failures" not in e["error"]]
+    assert len(failed) == 3
+    assert all(e["error"].startswith("Error: old text not found") for e in failed)
 
 
 def test_agent_edit_failure_streak_resets_on_success(
@@ -826,7 +852,7 @@ def test_agent_edit_failure_streak_resets_on_success(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
+        _tool_call("apply_patch", {"path": f"x{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}")
         for i in range(6)
     ] + [_text("done")]
 
@@ -839,7 +865,10 @@ def test_agent_edit_failure_streak_resets_on_success(
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
-    assert not [e for e in apply_events if e["error"]]
+    failed = [e for e in apply_events if e["error"]]
+    assert len(failed) == 4
+    assert all(e["error"].startswith("Error: old text not found") for e in failed)
+    assert sum(e["error"] is None for e in apply_events) == 2
 
 
 def test_agent_edit_failure_cap_resets_between_runs(
@@ -900,7 +929,9 @@ def test_agent_edit_failure_cap_ignores_read_tools(
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
-    assert not [e for e in apply_events if e["error"]]
+    assert len(apply_events) == 1
+    assert apply_events[0]["error"]
+    assert "max_edit_failures" not in apply_events[0]["error"]
 
 
 # ─── 配置集成 ───
@@ -1162,8 +1193,8 @@ def test_agent_reprompts_when_claiming_edit_without_edits(
     assert executed == ["apply_patch"]
 
     roles = [m["role"] for m in llm.calls[1]["messages"]]
-    assert roles[-2:] == ["assistant", "user"]
-    nudge = llm.calls[1]["messages"][-1]["content"]
+    assert roles[-4:] == ["assistant", "system", "system", "user"]
+    nudge = llm.calls[1]["messages"][-3]["content"]
     assert "没有" in nudge
     assert "apply_patch" in nudge
 
@@ -1299,7 +1330,7 @@ def test_agent_recovers_from_empty_final_answer(trace: RunTrace) -> None:
     assert agent.run("继续") == "已完成撤销逻辑，界面与测试尚未完成。"
     assert len(llm.calls) == 2
     assert llm.calls[1]["tools"] == []
-    assert "没有内容" in llm.calls[1]["messages"][-1]["content"]
+    assert "没有内容" in llm.calls[1]["messages"][-3]["content"]
     guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert [e["message"] for e in guard_events] == ["empty final answer; asking for a summary once"]
 
@@ -1315,6 +1346,66 @@ def test_agent_empty_answer_recovery_runs_once(trace: RunTrace) -> None:
     assert len(llm.calls) == 2
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Both failures are clear.\n\nLet me fix the test file. First add the pytest import:",
+        "我将先修改 cli.py，然后补测试。",
+        "首先添加 `get_run_tools`。",
+        "让我直接修复 `tests/test_diff.py`。",
+    ],
+)
+def test_is_plan_answer_detects_intent(text: str) -> None:
+    """句首的第一人称意图或步骤引导视为计划式回答。"""
+    from breeze.agent import _is_plan_answer
+
+    assert _is_plan_answer(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "建议下一步：在 query.py 末尾追加 get_run_tools。",
+        "已完成实现：新增了 diff 命令，57 passed。",
+        "Let me know if you need anything else.",
+        "下一步 | 在 cli.py 注册 diff 命令。",
+    ],
+)
+def test_is_plan_answer_ignores_reports(text: str) -> None:
+    """最终报告里的建议与完成声明不算计划。"""
+    from breeze.agent import _is_plan_answer
+
+    assert not _is_plan_answer(text)
+
+
+def test_agent_reprompts_when_answer_is_a_plan(trace: RunTrace, fake_tool: None) -> None:
+    """无工具调用的计划式回答应触发一次纠正，而不是直接归档。"""
+    llm = FakeLLMClient(
+        [
+            _text("Both failures are clear.\n\nLet me fix the test. First add the import:"),
+            _tool_call("fake_echo", {"text": "done"}),
+            _text("已修复并验证。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("修复测试") == "已修复并验证。"
+    assert len(llm.calls) == 3
+    assert "计划" in llm.calls[1]["messages"][-3]["content"]
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("final answer was a plan" in e["message"] for e in guards)
+
+
+def test_agent_plan_answer_repropted_once(trace: RunTrace, fake_tool: None) -> None:
+    """连续给计划时只纠正一次，第二次计划作为最终答案返回。"""
+    plan = "Let me fix the test file."
+    llm = FakeLLMClient([_text(plan), _text(plan)])
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("修复测试") == plan
+    assert len(llm.calls) == 2
+
+
 # ─── 多回合会话 ───
 
 
@@ -1323,7 +1414,7 @@ def test_agent_archives_completed_turns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """第二回合的 LLM 视图应含上一回合问答，且不含其工具结果原文。"""
+    """第二回合的 LLM 视图应含上一回合问答，并注入工作集而不是工具结果原文。"""
     from breeze.config import settings
 
     root = tmp_path.resolve()
@@ -1347,7 +1438,10 @@ def test_agent_archives_completed_turns(
     assert "[Completed turns" in joined
     assert "where is target defined?" in joined
     assert "turn1 conclusion" in joined
-    assert "def target():" not in joined
+    # L2：上一回合触碰过的文件内容以工作集快照注入，而不是原始 tool 消息。
+    assert "[Working set" in joined
+    assert "def target():" in joined
+    assert not any(m.get("role") == "tool" for m in turn2_view)
 
     # 归档的触碰文件来自真实工具参数
     assert agent.ledger.records[0].touched == ["a.py"]
@@ -1355,6 +1449,65 @@ def test_agent_archives_completed_turns(
 
     # 完整消息日志仍在 self.messages 里供调试
     assert any("def target():" in str(m.get("content", "")) for m in agent.messages)
+
+
+def test_agent_injects_post_edit_snapshot_next_turn(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上一回合创建/编辑的文件内容应作为工作集注入下一回合。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "new.py", "content": "value = 42\n"}),
+            _text("created"),
+            _text("answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("create new.py") == "created"
+    assert agent.run("what is the value?") == "answer"
+
+    turn2_view = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in turn2_view)
+    assert "[Working set" in joined
+    assert "value = 42" in joined
+
+
+def test_agent_skips_snapshot_changed_between_turns(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件在回合间被外部修改后，旧快照不得注入。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "new.py", "content": "value = 1\n"}),
+            _text("created"),
+            _text("answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("create new.py") == "created"
+    target = root / "new.py"
+    target.write_text("value = 2\n", encoding="utf-8")
+    assert agent.run("what is the value?") == "answer"
+
+    turn2_view = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in turn2_view)
+    assert "value = 1" not in joined
 
 
 def test_agent_second_turn_view_only_grows_within_turn(
@@ -1374,14 +1527,14 @@ def test_agent_second_turn_view_only_grows_within_turn(
     agent.run("q1")
     agent.run("q2")
 
-    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题
+    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题 + 预算 + 续跑
     roles = [m["role"] for m in llm.calls[2]["messages"]]
-    assert roles == ["system", "user", "user"]
+    assert roles == ["system", "system", "user", "system", "user"]
 
     # 第三次调用带上了本回合的工具轮
     roles = [m["role"] for m in llm.calls[3]["messages"]]
-    assert roles == ["system", "user", "user", "assistant", "tool"]
-    assert "echo: two" in str(llm.calls[3]["messages"][-1]["content"])
+    assert roles == ["system", "system", "user", "assistant", "tool", "system", "user"]
+    assert "echo: two" in str(llm.calls[3]["messages"][-3]["content"])
     assert "echo: one" not in " ".join(str(m.get("content", "")) for m in llm.calls[3]["messages"])
 
 
@@ -1702,7 +1855,9 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
     assert len(records) == 1
     record = records[0]
     assert record["messages"][0]["content"] == "SYS"
-    assert record["messages"][-1]["content"] == "hi"
+    assert record["messages"][-3]["content"] == "hi"
+    assert record["messages"][-2]["content"].startswith("[Context budget")
+    assert record["messages"][-1] == {"role": "user", "content": "继续当前任务。"}
     assert record["tool_choice"] is None
     assert isinstance(record["temperature"], float)
     assert record["response"]["content"] == "ok"
@@ -1793,3 +1948,481 @@ def test_agent_honest_failure_report_not_flagged(
 
     assert answer == "验证失败：1 项失败，任务未完成"
     assert not answer.startswith("[验证未通过]")
+
+
+def test_agent_passes_reasoning_content_back_with_tool_results(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """推理模型的 thinking 随工具调用回传，避免多步后偏离目标。"""
+    first = _tool_call("fake_echo", {"text": "x"})
+    first.reasoning_content = "先回显 x，再给最终答案"
+    llm = FakeLLMClient([first, _text("done")])
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("go") == "done"
+
+    assistant = [
+        msg
+        for msg in llm.calls[1]["messages"]
+        if msg.get("role") == "assistant" and msg.get("tool_calls")
+    ]
+    assert assistant
+    assert assistant[0]["reasoning_content"] == "先回显 x，再给最终答案"
+
+
+def test_rejected_verification_command_is_not_a_failed_check(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """命令因管道/权限被拒绝时没有产生验证结论，不应触发“验证失败”纠偏。"""
+    import breeze.agent as agent_mod
+    from breeze.tools import registry
+
+    monkeypatch.setattr(agent_mod, "_is_verification_call", lambda name, _args: name == "run_tests")
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "Tool execution failed: Shell operators are not supported",
+    )
+    llm = FakeLLMClient([_tool_call("run_tests", {}), _text("done")])
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("verify") == "done"
+
+    joined = " ".join(str(m.get("content", "")) for m in llm.calls[1]["messages"])
+    assert "验证未通过" not in joined
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("did not run" in e["message"] for e in guards)
+
+
+# ─── 重复读取与跨回合状态 ───
+
+
+def test_tool_error_strings_are_recorded_as_errors(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """工具以 Error: 文本返回失败时，trace 与 run_summary 必须计入 errors。"""
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "Error: file already exists: x.py. Use apply_patch to modify it.",
+    )
+    llm = FakeLLMClient(
+        [_tool_call("create_file", {"path": "x.py", "content": "a"}), _text("done")]
+    )
+    events: list = []
+    agent = Agent(llm=llm, trace=trace, max_steps=4, on_event=events.append)
+
+    assert agent.run("go") == "done"
+
+    tool_event = [e for e in _events(trace.path) if e["event"] == "tool_call"][0]
+    assert tool_event["error"] == "Error: file already exists: x.py. Use apply_patch to modify it."
+    end_event = [e for e in events if e.kind == "tool_end"][0]
+    assert end_event.ok is False
+    assert trace.summary()["errors"] == 1
+
+
+def test_duplicate_read_is_suppressed_when_previous_copy_visible(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一副本仍可见时，第二次相同 read_file 不再执行。"""
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | def f():\n--- (file has 2 lines total) ---"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r2"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r3"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == ["a.py"]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "duplicate read suppressed" in tool_messages[-1]
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert sum("duplicate read suppressed" in e["message"] for e in guards) == 2
+
+
+def test_suppressed_read_includes_visible_copy_preview(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抑制结果附带可见副本预览，避免模型因看不到内容而反复重读。"""
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "1 | def f():\n2 |     return 42\n--- (file has 2 lines total) ---",
+    )
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "[duplicate read suppressed]" in tool_messages[-1]
+    assert "Visible earlier copy:" in tool_messages[-1]
+    assert "return 42" in tool_messages[-1]
+
+
+def test_third_duplicate_read_suppression_stops_turn(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一路径连续第 3 次被抑制时终止本回合，避免无限重读。"""
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | x"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}") for i in range(1, 5)]
+        + [_text("done")]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    result = agent.run("go")
+
+    assert result.startswith("Stopped: read_file a.py")
+    assert executed == ["a.py"]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("read loop stopped: a.py suppressed 3 times" in g for g in guards)
+    tool_ids = {m["tool_call_id"] for m in agent.messages if m.get("role") == "tool"}
+    for message in agent.messages:
+        for call in message.get("tool_calls") or []:
+            assert call["id"] in tool_ids
+
+
+def test_range_read_covered_by_visible_full_read_is_suppressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整文件读取仍可见时，后续行范围读取直接抑制。"""
+    from breeze.tools import registry
+
+    executed: list[tuple[str, object]] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append((str(arguments.get("path")), arguments.get("start_line")))
+            return "\n".join(f"{i} | line {i}" for i in range(1, 121)) + (
+                "\n--- (file has 120 lines total) ---"
+            )
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py", "start_line": 10, "end_line": 20}, call_id="r2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == [("a.py", None)]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "already covered by a visible earlier read (the full file)" in tool_messages[-1]
+    assert "10 | line 10" in tool_messages[-1]
+    assert "11 | line 11" in tool_messages[-1]
+    assert "100 | line 100" not in tool_messages[-1]
+
+
+def test_truncated_full_read_does_not_cover_range(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整文件读取被截断时，行范围读取仍应执行。"""
+    from breeze.tools import registry
+
+    executed: list[object] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(arguments.get("start_line"))
+            if arguments.get("start_line") is None:
+                return "1 | head\n... (truncated to 16000 bytes; file has 1000 lines total)"
+            return "800 | target\n--- (file has 1000 lines total) ---"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "big.py"}, call_id="r1"),
+            _tool_call(
+                "read_file",
+                {"path": "big.py", "start_line": 800, "end_line": 820},
+                call_id="r2",
+            ),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == [None, 800]
+
+
+def test_duplicate_read_allowed_when_previous_copy_compressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧副本已被 hard limit 压成指针时，允许再读一次，但仍只放行一次。"""
+    from breeze.context import ContextConfig, ContextManager
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | " + "x" * 2000
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}")
+            for i in range(1, 5)
+        ]
+        + [_text("done")]
+    )
+    context = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=1))
+    agent = Agent(llm=llm, trace=trace, max_steps=8, context=context)
+
+    assert agent.run("go") == "done"
+    assert executed == ["a.py", "a.py"]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("duplicate read allowed: earlier copies were compressed" in m for m in guards)
+    assert any("duplicate read suppressed" in m for m in guards)
+
+
+def test_read_after_edit_is_not_suppressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """文件被编辑后版本变化，允许再次读取。"""
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | old\n--- (file has 1 lines total) ---"
+        if name == "apply_patch":
+            return "Patched a.py (1 replacement)"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r2"),
+            _tool_call(
+                "apply_patch",
+                {"path": "a.py", "old": "old", "new": "new"},
+                call_id="p1",
+            ),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r3"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert executed == ["a.py", "a.py"]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert not tool_messages[-1].startswith("[duplicate read suppressed]")
+
+
+def test_second_turn_first_request_includes_prior_state(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """第二个回合首次请求带上一回合的读取与符号索引。"""
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "1 | def helper():\n--- (file has 2 lines total) ---",
+    )
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="c1"),
+            _text("done"),
+            _text("again"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=4)
+
+    assert agent.run("first") == "done"
+    assert agent.run("second") == "again"
+
+    second_turn = llm.calls[2]["messages"]
+    text = "\n".join(str(msg.get("content")) for msg in second_turn)
+    assert "[Session state — carried from previous turns]" in text
+    assert "a.py" in text
+
+
+def test_first_turn_does_not_inject_prior_state(trace: RunTrace) -> None:
+    """首个回合没有历史事实，不注入状态块。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, max_steps=2)
+
+    assert agent.run("hi") == "ok"
+    text = "\n".join(str(msg.get("content")) for msg in llm.calls[0]["messages"])
+    assert "[Session state" not in text
+
+
+def test_agent_injects_agents_md_as_separate_system_message(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md 单独注入，不再混进主 system prompt。"""
+    from breeze.config import settings
+
+    (tmp_path / "AGENTS.md").write_text("总是先跑 tests", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient([_text("ok")])
+
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("hi")
+
+    messages = llm.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "总是先跑 tests" not in messages[0]["content"]
+    assert messages[1]["role"] == "system"
+    assert "总是先跑 tests" in messages[1]["content"]
+    assert messages[2] == {"role": "user", "content": "hi"}
+
+
+def test_agent_custom_system_prompt_skips_agents_md(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式传入 system_prompt 时保持原有行为：不额外注入 AGENTS.md。"""
+    from breeze.config import settings
+
+    (tmp_path / "AGENTS.md").write_text("总是先跑 tests", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient([_text("ok")])
+
+    agent = Agent(llm=llm, trace=trace, system_prompt="CUSTOM")
+    agent.run("hi")
+
+    assert agent.project_instructions == ""
+    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user", "system", "user"]
+
+
+def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> None:
+    """每次 LLM 调用都通过事件回传思考内容，供展示层替换显示。"""
+    first = _tool_call("fake_echo", {"text": "one"}, call_id="c1")
+    first.reasoning_content = "先读文件"
+    second = _text("done")
+    second.reasoning_content = "再总结"
+    events: list[Any] = []
+
+    agent = Agent(llm=FakeLLMClient([first, second]), trace=trace, on_event=events.append)
+    assert agent.run("go") == "done"
+
+    reasonings = [e.reasoning for e in events if e.kind == "llm_end"]
+    assert reasonings == ["先读文件", "再总结"]
+
+
+def test_agent_nudges_convergence_when_context_near_hard_budget(
+    trace: RunTrace, fake_tool: None
+) -> None:
+    """上下文接近硬上限且尚未编辑时，提醒停止扩展调研。"""
+    from breeze.context import ContextConfig, ContextManager
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("fake_echo", {"text": "one"}, call_id="c1"),
+            _tool_call("fake_echo", {"text": "two"}, call_id="c2"),
+            _text("done"),
+        ]
+    )
+    context = ContextManager(ContextConfig(intra_turn_budget=2_000, hard_budget=2_000))
+    agent = Agent(llm=llm, trace=trace, max_steps=6, context=context)
+
+    assert agent.run("go") == "done"
+
+    nudges = [
+        m
+        for m in llm.calls[1]["messages"]
+        if m["role"] == "system" and "上下文已用到约" in str(m.get("content", ""))
+    ]
+    assert len(nudges) == 1
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("asking to converge" in e["message"] for e in guards)
+
+
+def test_duplicate_apply_patch_is_suppressed(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同参数写操作已成功后不再执行，避免重复插入代码。"""
+    from breeze.tools import registry
+
+    executed: list[dict[str, Any]] = []
+
+    def fake_execute(name, arguments):
+        if name == "apply_patch":
+            executed.append(arguments)
+            return "Patched a.py (1 replacement)"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    patch = {"path": "a.py", "old": "a = 1", "new": "a = 1\n\ndef f():\n    return 1"}
+    llm = FakeLLMClient(
+        [
+            _tool_call("apply_patch", patch, call_id="p1"),
+            _tool_call("apply_patch", patch, call_id="p2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    assert len(executed) == 1
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "duplicate edit suppressed" in tool_messages[-1]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("duplicate edit suppressed: apply_patch a.py" in m for m in guards)
+
+
+def test_plan_answer_detects_continuation_and_imperative_edits() -> None:
+    """“继续执行…/给 X 追加…”这类未执行叙述应识别为计划。"""
+    from breeze.agent import _is_plan_answer
+
+    assert _is_plan_answer("继续执行 M5 实现。给 cli.py 追加 diff 命令实现（这是最后一块核心代码）：")
+    assert _is_plan_answer("给 cli.py 追加 `diff` 命令实现")
+    assert _is_plan_answer("Let me continue with the CLI wiring.")
+    assert not _is_plan_answer("给 cli.py 添加了 diff 命令，测试已通过。")
+    assert not _is_plan_answer("已完成实现并通过测试。建议下一步：运行全量测试。")

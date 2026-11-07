@@ -5,11 +5,21 @@
 - 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
   git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
   模型只能重读；改写历史还会切断前缀缓存。
-- 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：优先降级最大
-  的结果，并保护每个路径最近一次读取；仍超限时才放开保护。被降级的范围只剩
-  指针，模型仍可能重读；这是硬上限的兜底代价，不是没有代价的保留策略。
+- 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：保护每个路径最近
+  一次读取，并按消息顺序从旧到新降级更早的读取，保证刚读到的新内容优先留在
+  上下文里；仍超限时才放开保护。被降级的范围只剩指针，模型仍可能重读；这是
+  硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
+- 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
+  截断为短摘录，既维持目标连贯，又避免提示词随步数线性膨胀。
+- 系统维护的元状态（AGENTS.md、回合归档、工作集快照、计划、SessionState、
+  预算提示）统一使用 ``system`` 角色；只有用户真正输入的问题保留 ``user``，
+  避免模型把状态索引当成新的用户指令。
+- 每次构建提示词都会在末尾追加一条简短的预算提示，告诉模型已用/剩余 Token、
+  当前仍可见的 read_file 文件与“旧读取先变指针”的淘汰顺序，让模型自己决定
+  是否继续调研。部分网关在最后一条是 system 时会返回空内容，因此元状态之后
+  再补一条固定的 user 续跑消息（不含新要求），保证请求以可回应的角色结束。
 
 任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
 于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
@@ -39,15 +49,26 @@ DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
 DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
 
 POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
+# 部分 OpenAI-compatible 网关（例如 SJTU 的 deepseek-reasoner）在最后一条消息
+# 是 system 时会直接 finish_reason=stop 并返回空内容。元状态之后补一条不含新
+# 要求的短 user 消息，保证请求以可回应的角色结束。
+_CONTINUATION_PROMPT = "继续当前任务。"
 # 小于该字符数的定位结果直接透传：一行指针往往比结果本身还长，
 # 且状态块并不记录目录列表，模型只能反复重跑同一工具。
 POINTER_KEEP_CHARS = 1_000
 # 大结果保留的预览长度：整块丢弃会让模型失去判断依据，只剩“重跑”一个选择。
 POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
-SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff", "apply_patch", "create_file"})
+# 写操作结果不是可再生产出：压缩成“re-run for more”会诱导模型重复 apply_patch，
+# 把同一段代码插入多次。写结果本身很短，始终保留原文。
+SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff"})
 # 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
 READ_SPILL_MIN_CHARS = 512
+# 推理模型的思考过程要随工具结果回传，但完整保留每一步会迅速撑爆上下文。
+# 最近两次思考保留全文，更早的只留开头摘录：既维持目标连贯，又限制开销。
+REASONING_KEEP_MESSAGES = 2
+REASONING_PREVIEW_CHARS = 600
+_REASONING_TRUNCATED_MARK = "\n…[earlier reasoning truncated]"
 
 _encoding: tiktoken.Encoding | None = None
 _encoding_failed = False
@@ -107,6 +128,34 @@ def _render_plan(plan: str | None) -> str:
     if not text:
         return ""
     return "[Current plan — agent-maintained; update with update_plan]\n" + text
+
+
+def _compact_reasoning(body: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """保留最近几步的完整思考，更早的截断为短摘录。
+
+    推理模型要求思考过程随工具调用回传；全量保留会让提示词随步数线性膨胀，
+    因此只让最近 ``REASONING_KEEP_MESSAGES`` 步保持全文，更早的留开头，
+    仍能提醒模型当前目标，又不会挤占工具结果的预算。
+    """
+    indexes = [
+        i
+        for i, msg in enumerate(body)
+        if msg.get("role") == "assistant" and isinstance(msg.get("reasoning_content"), str)
+    ]
+    keep = set(indexes[-REASONING_KEEP_MESSAGES:])
+    if all(i in keep for i in indexes):
+        return list(body)
+
+    out: list[dict[str, Any]] = []
+    for i, msg in enumerate(body):
+        text = msg.get("reasoning_content")
+        if i in keep or not isinstance(text, str) or len(text) <= REASONING_PREVIEW_CHARS:
+            out.append(msg)
+            continue
+        trimmed = dict(msg)
+        trimmed["reasoning_content"] = text[:REASONING_PREVIEW_CHARS] + _REASONING_TRUNCATED_MARK
+        out.append(trimmed)
+    return out
 
 
 SPILL_POINTER_MAX_CHARS = 700
@@ -382,20 +431,29 @@ class PromptStats:
     """
 
     system_tokens: int = 0
+    instructions_tokens: int = 0
     plan_tokens: int = 0
     archive_tokens: int = 0
+    snapshot_tokens: int = 0
+    budget_tokens: int = 0
+    continuation_tokens: int = 0
     user_tokens: int = 0
     state_tokens: int = 0
     body_tokens: int = 0
     total_tokens: int = 0
     cacheable_prefix_tokens: int = 0
+    demoted_read_ids: frozenset[str] = frozenset()
 
     def breakdown(self) -> dict[str, int]:
         """返回按注入位置分类的 Token 组成。"""
         return {
             "system": self.system_tokens,
+            "instructions": self.instructions_tokens,
             "plan": self.plan_tokens,
             "archive": self.archive_tokens,
+            "snapshot": self.snapshot_tokens,
+            "budget": self.budget_tokens,
+            "continuation": self.continuation_tokens,
             "user": self.user_tokens,
             "state": self.state_tokens,
             "body": self.body_tokens,
@@ -433,20 +491,35 @@ class ContextManager:
         state: Any | None = None,
         archive: str | None = None,
         plan: str | None = None,
+        *,
+        include_state: bool = False,
+        snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
         Args:
             messages: 当前回合的完整历史（system、user、若干轮）。
-            state: SessionState 实例；发生降级或存在回合归档时注入。
+            state: SessionState 实例；发生降级或回合启动时注入。
             archive: TurnLedger 渲染的已完成回合文本；注入在 system 之后。
             plan: Agent 维护的短期计划；非空时追加在 body 之后、state 之前，
                 避免计划更新切断历史缓存前缀。
+            include_state: 回合启动时注入上一回合遗留的状态索引。
+            snapshots: 回合启动时注入的工作集文件内容；不参与降级。
+            instructions: AGENTS.md 渲染块，作为独立 system 消息注入。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
         """
-        result, _ = self.build_with_stats(messages, state=state, archive=archive, plan=plan)
+        result, _ = self.build_with_stats(
+            messages,
+            state=state,
+            archive=archive,
+            plan=plan,
+            include_state=include_state,
+            snapshots=snapshots,
+            instructions=instructions,
+        )
         return result
 
     def build_with_stats(
@@ -455,6 +528,10 @@ class ContextManager:
         state: Any | None = None,
         archive: str | None = None,
         plan: str | None = None,
+        *,
+        include_state: bool = False,
+        snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> tuple[list[dict[str, Any]], PromptStats]:
         """构建消息列表，并返回本次提示词的组成与缓存复用量。
 
@@ -467,12 +544,16 @@ class ContextManager:
                 "user": [1] if len(result) > 1 else [],
                 "body": list(range(2, len(result))),
             }
+            if result and result[-1]["role"] == "system":
+                segments["continuation"] = [len(result)]
+                result.append({"role": "user", "content": _CONTINUATION_PROMPT})
             return result, self._stats(result, segments)
 
         head = list(messages[:2])
         # update_plan 的计划正文已经由尾部计划块注入；历史里保留调用与短确认，
         # 但省略参数中的计划全文，避免重复占预算。
         body = self._compact_plan_updates(messages[2:])
+        body = _compact_reasoning(body)
 
         id_to_name, id_to_args = self._index_tool_calls(body)
         batch_index = self._batch_index(body)
@@ -498,15 +579,25 @@ class ContextManager:
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
         soft_budget = self.config.intra_turn_budget
         counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan) > soft_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > soft_budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, soft_budget, state, archive, plan, SPILL_TOOLS
+                head,
+                converted,
+                id_to_name,
+                id_to_args,
+                soft_budget,
+                state,
+                archive,
+                plan,
+                snapshots,
+                SPILL_TOOLS,
+                instructions=instructions,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
 
         hard_budget = self.config.hard_budget
-        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > hard_budget:
             protected = self._latest_read_ids(body)
             converted, spilled = self._spill(
                 head,
@@ -517,17 +608,47 @@ class ContextManager:
                 state,
                 archive,
                 plan,
+                snapshots,
                 READ_TOOLS,
+                instructions=instructions,
                 protect=protected,
                 min_chars=READ_SPILL_MIN_CHARS,
+                oldest_first=True,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > hard_budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, hard_budget, state, archive, plan, READ_TOOLS
+                head,
+                converted,
+                id_to_name,
+                id_to_args,
+                hard_budget,
+                state,
+                archive,
+                plan,
+                snapshots,
+                READ_TOOLS,
+                instructions=instructions,
+                oldest_first=True,
             )
             demoted = demoted or spilled
+
+        # 同一路径的旧读取被降级后，若后面还有一份可见的读取，指针不应再要求
+        # 模型重读整个范围——否则模型会追着旧指针反复读取。
+        converted = self._annotate_superseded_reads(converted, id_to_name, id_to_args)
+        demoted_read_ids = self._demoted_read_ids(converted)
+        budget_note = self._budget_note(
+            head,
+            converted,
+            counted_state,
+            archive,
+            plan,
+            snapshots,
+            instructions,
+            id_to_name,
+            id_to_args,
+        )
 
         # 批次头必须在降级之后加：否则 _shell_summary 会把 “[call 1/2 ...]”
         # 当成结果首行，丢掉 exit_code 与错误正文。
@@ -554,19 +675,31 @@ class ContextManager:
             result.append(msg)
 
         add(head[0], "system")
+        if instructions:
+            add({"role": "system", "content": instructions}, "instructions")
         if archive:
-            add({"role": "user", "content": archive}, "archive")
+            add({"role": "system", "content": archive}, "archive")
         add(head[1], "user")
+        if snapshots:
+            add({"role": "system", "content": snapshots}, "snapshot")
         for msg in converted:
             add(msg, "body")
         plan_block = _render_plan(plan)
         if plan_block:
-            add({"role": "user", "content": plan_block}, "plan")
-        if state is not None and demoted:
-            block = state.render()
+            add({"role": "system", "content": plan_block}, "plan")
+        if state is not None and (demoted or include_state):
+            block = state.render(turn_start=include_state and not demoted)
             if block:
-                add({"role": "user", "content": block}, "state")
-        return result, self._stats(result, segments)
+                add({"role": "system", "content": block}, "state")
+        if state is not None and not demoted and not include_state:
+            repeated = state.render_repeated()
+            if repeated:
+                add({"role": "system", "content": repeated}, "state")
+        if budget_note:
+            add({"role": "system", "content": budget_note}, "budget")
+        if result[-1]["role"] == "system":
+            add({"role": "user", "content": _CONTINUATION_PROMPT}, "continuation")
+        return result, self._stats(result, segments, demoted_read_ids)
 
     def _spill(
         self,
@@ -578,14 +711,20 @@ class ContextManager:
         state: Any | None,
         archive: str | None,
         plan: str | None,
+        snapshots: str | None,
         classes: frozenset[str],
         *,
+        instructions: str | None = None,
         protect: frozenset[str] = frozenset(),
         min_chars: int = 0,
+        oldest_first: bool = False,
     ) -> tuple[list[dict[str, Any]], bool]:
         """预算溢出时把指定类别的工具结果降级为指针。
 
-        从最大的结果开始降级：小结果换出省不下多少 Token，却会迫使模型重读。
+        默认从最大的结果开始降级：小结果换出省不下多少 Token，却会迫使模型重读。
+        ``oldest_first`` 用于 read_file：按消息顺序从旧到新降级，保证刚读到的新
+        内容优先留在上下文里。否则模型会陷入“读取→被压缩→立刻重读”的循环，
+        新的读取永远看不到原文。
         ``protect`` 中的 tool_call_id 先跳过（通常是每个文件最近一次读取），
         仍超限时再由调用方放开保护重试。
 
@@ -598,15 +737,18 @@ class ContextManager:
             state: 用于计入状态块开销，可为 None。
             archive: 回合归档文本，计入 head 开销，可为 None。
             plan: 计划块文本，计入 head 开销，可为 None。
+            snapshots: 工作集快照文本，计入 head 开销且不参与降级，可为 None。
             classes: 本次允许降级的工具类别。
+            instructions: AGENTS.md 块，计入 head 开销，可为 None。
             protect: 本轮不降级的 tool_call_id 集合。
             min_chars: 小于该字符数的结果不参与降级。
+            oldest_first: True 时按消息顺序从旧到新降级，否则按结果大小降序。
 
         Returns:
             (新列表, 是否发生降级)。
         """
         out = list(converted)
-        if self._measure(head, out, state, archive, plan) <= budget:
+        if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
             return out, False
 
         candidates: list[tuple[int, int]] = []
@@ -623,11 +765,14 @@ class ContextManager:
             if len(content) < min_chars:
                 continue
             candidates.append((len(content), i))
-        candidates.sort(key=lambda item: (-item[0], item[1]))
+        if oldest_first:
+            candidates.sort(key=lambda item: item[1])
+        else:
+            candidates.sort(key=lambda item: (-item[0], item[1]))
 
         changed = False
         for _, i in candidates:
-            if self._measure(head, out, state, archive, plan) <= budget:
+            if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
                 break
             msg = out[i]
             tool = id_to_name.get(msg.get("tool_call_id", ""), "")
@@ -638,6 +783,151 @@ class ContextManager:
             out[i] = new_msg
             changed = True
         return out, changed
+
+    def _budget_note(
+        self,
+        head: list[dict[str, Any]],
+        body: list[dict[str, Any]],
+        state: Any | None,
+        archive: str | None,
+        plan: str | None,
+        snapshots: str | None,
+        instructions: str | None,
+        id_to_name: dict[str, str],
+        id_to_args: dict[str, dict[str, Any]],
+    ) -> str:
+        """每轮告诉模型当前消息预算与仍可见的 read_file 工作集。
+
+        read_file 的淘汰顺序是“旧读取先丢”，模型只有持续看到剩余预算和已读
+        文件，才能主动收敛。提示块很小，不参与降级；它放在消息末尾，不切断
+        历史前缀。
+        """
+        hard = self.config.hard_budget
+        if hard <= 0:
+            return ""
+        used = self._measure(head, body, state, archive, plan, snapshots, instructions)
+
+        reads = 0
+        visible = 0
+        read_tokens = 0
+        paths: list[str] = []
+        for msg in body:
+            if msg.get("role") != "tool":
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            if id_to_name.get(tc_id) != "read_file":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            reads += 1
+            if content.startswith("["):
+                continue
+            visible += 1
+            read_tokens += _count_text_tokens(content)
+            path = id_to_args.get(tc_id, {}).get("path")
+            if isinstance(path, str) and path and path not in paths:
+                paths.append(path)
+
+        remaining = max(hard - used, 0)
+        if remaining:
+            usage = f"Message budget: ~{used} / {hard} tokens used (~{remaining} left)."
+        else:
+            usage = (
+                f"Message budget exhausted: ~{used} / {hard} tokens used. "
+                "New reads will push older read_file results into pointers."
+            )
+        if visible:
+            shown = ", ".join(paths[:6])
+            if len(paths) > 6:
+                shown += f" (+{len(paths) - 6} more)"
+            if shown:
+                files = (
+                    f"Visible read_file content: ~{read_tokens} tokens / "
+                    f"{visible} read(s) from {shown}."
+                )
+            else:
+                files = f"Visible read_file content: ~{read_tokens} tokens / {visible} read(s)."
+        else:
+            files = "Visible read_file content: none yet."
+        if reads > visible:
+            files += f" {reads - visible} older read(s) already compressed to pointers."
+        return "\n".join(
+            [
+                "[Context budget — system-maintained, not user input]",
+                usage,
+                files,
+                "When the limit is exceeded, the oldest read_file results become pointers first "
+                "and the newest reads stay. Plan reads accordingly: do not re-read unchanged "
+                "files, and read only the ranges you still need.",
+            ]
+        )
+
+    @staticmethod
+    def _annotate_superseded_reads(
+        converted: list[dict[str, Any]],
+        id_to_name: dict[str, str],
+        id_to_args: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """同一文件有更新副本时，把旧读取指针改写成“已被更新副本取代”。
+
+        旧指针原本写着“re-read this range”，模型会照着它反复读取；若后面已经
+        有一份可见的读取，指针应引导模型使用新副本而不是再读一遍。
+        """
+        latest_visible: dict[str, int] = {}
+        for i, msg in enumerate(converted):
+            if msg.get("role") != "tool":
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            if id_to_name.get(tc_id) != "read_file":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or content.startswith("["):
+                continue
+            path = id_to_args.get(tc_id, {}).get("path")
+            if isinstance(path, str):
+                latest_visible[path] = i
+        if not latest_visible:
+            return list(converted)
+
+        out: list[dict[str, Any]] = []
+        for i, msg in enumerate(converted):
+            content = msg.get("content")
+            if (
+                msg.get("role") != "tool"
+                or not isinstance(content, str)
+                or not content.startswith("[read_file compressed]")
+            ):
+                out.append(msg)
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            args = id_to_args.get(tc_id, {})
+            path = args.get("path")
+            if not isinstance(path, str) or latest_visible.get(path, -1) <= i:
+                out.append(msg)
+                continue
+            start, end = args.get("start_line"), args.get("end_line")
+            rng = f"lines {start}-{end}" if start and end else "full file"
+            new_msg = dict(msg)
+            new_msg["content"] = (
+                f"[read_file superseded] {path} ({rng}) — older copy dropped by hard limit; "
+                "a newer read of this file appears later in this context. Use that copy for "
+                "the lines it covers; read only the missing range."
+            )
+            out.append(new_msg)
+        return out
+
+    @staticmethod
+    def _demoted_read_ids(converted: list[dict[str, Any]]) -> frozenset[str]:
+        """返回本次提示词中没有原文的 read_file tool_call_id。"""
+        prefixes = ("[read_file compressed]", "[read_file superseded]")
+        return frozenset(
+            str(msg.get("tool_call_id", ""))
+            for msg in converted
+            if msg.get("role") == "tool"
+            and isinstance(msg.get("content"), str)
+            and msg["content"].startswith(prefixes)
+        )
 
     @staticmethod
     def _compact_plan_updates(body: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -750,21 +1040,32 @@ class ContextManager:
         state: Any | None,
         archive: str | None = None,
         plan: str | None = None,
+        snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> int:
-        """估算 head+plan+archive(+状态块)+body 的实际 Token 总量。"""
+        """估算 head+instructions+plan+archive+snapshot(+状态块)+body 的 Token 总量。"""
         total = self._count_messages(head) + self._count_messages(body)
+        if instructions:
+            total += _count_text_tokens(instructions) + 10
         plan_block = _render_plan(plan)
         if plan_block:
             total += _count_text_tokens(plan_block) + 10
         if archive:
             total += _count_text_tokens(archive) + 10
+        if snapshots:
+            total += _count_text_tokens(snapshots) + 10
         if state is not None:
             block = state.render()
             if block:
                 total += _count_text_tokens(block) + 10
         return total
 
-    def _stats(self, messages: list[dict[str, Any]], segments: dict[str, list[int]]) -> PromptStats:
+    def _stats(
+        self,
+        messages: list[dict[str, Any]],
+        segments: dict[str, list[int]],
+        demoted_read_ids: frozenset[str] = frozenset(),
+    ) -> PromptStats:
         """统计本次消息组成，并与上一次 build 比较可复用前缀。"""
         counts = [self._count_message(msg) for msg in messages]
 
@@ -782,13 +1083,18 @@ class ContextManager:
 
         return PromptStats(
             system_tokens=segment_tokens("system"),
+            instructions_tokens=segment_tokens("instructions"),
             plan_tokens=segment_tokens("plan"),
             archive_tokens=segment_tokens("archive"),
+            snapshot_tokens=segment_tokens("snapshot"),
+            budget_tokens=segment_tokens("budget"),
+            continuation_tokens=segment_tokens("continuation"),
             user_tokens=segment_tokens("user"),
             state_tokens=segment_tokens("state"),
             body_tokens=segment_tokens("body"),
             total_tokens=sum(counts),
             cacheable_prefix_tokens=reusable,
+            demoted_read_ids=demoted_read_ids,
         )
 
     @staticmethod
@@ -798,6 +1104,9 @@ class ContextManager:
         content = msg.get("content")
         if isinstance(content, str):
             total += _count_text_tokens(content)
+        reasoning = msg.get("reasoning_content")
+        if isinstance(reasoning, str):
+            total += _count_text_tokens(reasoning)
         for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {}) if isinstance(tc, dict) else {}
             total += _count_text_tokens(str(func.get("arguments", ""))) + 10
