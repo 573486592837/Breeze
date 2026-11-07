@@ -18,7 +18,8 @@
   避免模型把状态索引当成新的用户指令。
 - 每次构建提示词都会在末尾追加一条简短的预算提示，告诉模型已用/剩余 Token、
   当前仍可见的 read_file 文件与“旧读取先变指针”的淘汰顺序，让模型自己决定
-  是否继续调研。
+  是否继续调研。部分网关在最后一条是 system 时会返回空内容，因此元状态之后
+  再补一条固定的 user 续跑消息（不含新要求），保证请求以可回应的角色结束。
 
 任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
 于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
@@ -48,6 +49,10 @@ DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
 DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
 
 POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
+# 部分 OpenAI-compatible 网关（例如 SJTU 的 deepseek-reasoner）在最后一条消息
+# 是 system 时会直接 finish_reason=stop 并返回空内容。元状态之后补一条不含新
+# 要求的短 user 消息，保证请求以可回应的角色结束。
+_CONTINUATION_PROMPT = "继续当前任务。"
 # 小于该字符数的定位结果直接透传：一行指针往往比结果本身还长，
 # 且状态块并不记录目录列表，模型只能反复重跑同一工具。
 POINTER_KEEP_CHARS = 1_000
@@ -429,6 +434,7 @@ class PromptStats:
     archive_tokens: int = 0
     snapshot_tokens: int = 0
     budget_tokens: int = 0
+    continuation_tokens: int = 0
     user_tokens: int = 0
     state_tokens: int = 0
     body_tokens: int = 0
@@ -445,6 +451,7 @@ class PromptStats:
             "archive": self.archive_tokens,
             "snapshot": self.snapshot_tokens,
             "budget": self.budget_tokens,
+            "continuation": self.continuation_tokens,
             "user": self.user_tokens,
             "state": self.state_tokens,
             "body": self.body_tokens,
@@ -535,6 +542,9 @@ class ContextManager:
                 "user": [1] if len(result) > 1 else [],
                 "body": list(range(2, len(result))),
             }
+            if result and result[-1]["role"] == "system":
+                segments["continuation"] = [len(result)]
+                result.append({"role": "user", "content": _CONTINUATION_PROMPT})
             return result, self._stats(result, segments)
 
         head = list(messages[:2])
@@ -685,6 +695,8 @@ class ContextManager:
                 add({"role": "system", "content": repeated}, "state")
         if budget_note:
             add({"role": "system", "content": budget_note}, "budget")
+        if result[-1]["role"] == "system":
+            add({"role": "user", "content": _CONTINUATION_PROMPT}, "continuation")
         return result, self._stats(result, segments, demoted_read_ids)
 
     def _spill(
@@ -1074,6 +1086,7 @@ class ContextManager:
             archive_tokens=segment_tokens("archive"),
             snapshot_tokens=segment_tokens("snapshot"),
             budget_tokens=segment_tokens("budget"),
+            continuation_tokens=segment_tokens("continuation"),
             user_tokens=segment_tokens("user"),
             state_tokens=segment_tokens("state"),
             body_tokens=segment_tokens("body"),

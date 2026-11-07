@@ -868,7 +868,7 @@ def test_chat_resume_injects_archive_into_first_view(
     )
 
     resumed_view = views[-1]
-    assert [m["role"] for m in resumed_view] == ["system", "system", "user", "system"]
+    assert [m["role"] for m in resumed_view] == ["system", "system", "user", "system", "user"]
     assert "[Completed turns" in resumed_view[1]["content"]
     assert "previous question" in resumed_view[1]["content"]
     assert "prior answer" in resumed_view[1]["content"]

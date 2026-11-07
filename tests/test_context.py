@@ -204,7 +204,10 @@ def test_soft_budget_keeps_prefix_reusable() -> None:
     result, second = cm.build_with_stats(messages)
 
     assert [m["content"] for m in result if m["role"] == "tool"] == [big, big]
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens
+    assert (
+        second.cacheable_prefix_tokens
+        == first.total_tokens - first.budget_tokens - first.continuation_tokens
+    )
 
 
 def test_hard_budget_never_below_soft() -> None:
@@ -260,7 +263,8 @@ def test_plan_appended_after_content_without_demotion() -> None:
     plan_msg = next(m for m in result if str(m.get("content", "")).startswith("[Current plan"))
     assert plan_msg["role"] == "system"
     assert "2. 改代码" in plan_msg["content"]
-    assert result[-1]["content"].startswith("[Context budget")
+    assert result[-2]["content"].startswith("[Context budget")
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
 
 
 def test_empty_plan_not_injected() -> None:
@@ -394,7 +398,7 @@ def test_archive_injected_between_system_and_question() -> None:
     messages = [_system(), _user("current question")]
     result = cm.build(messages, state=_state(), archive="[Completed turns — 1 most recent of 1]\nTurn 1 Q: old")
 
-    assert [m["role"] for m in result] == ["system", "system", "user", "system"]
+    assert [m["role"] for m in result] == ["system", "system", "user", "system", "user"]
     assert "Completed turns" in result[1]["content"]
     assert result[2]["content"] == "current question"
 
@@ -416,7 +420,7 @@ def test_no_archive_keeps_layout() -> None:
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
     result = cm.build(messages, state=_state({"target": "a.py:1"}))
 
-    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool", "system"]
+    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool", "system", "user"]
 
 
 def test_archive_counted_in_budget() -> None:
@@ -471,7 +475,10 @@ def test_stats_prefix_reuse_for_append_only_turn() -> None:
     messages = [*base, *_round("c1", "read_file", '{"path": "a.py"}', "content")]
     _, second = cm.build_with_stats(messages)
 
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens
+    assert (
+        second.cacheable_prefix_tokens
+        == first.total_tokens - first.budget_tokens - first.continuation_tokens
+    )
     assert second.total_tokens > first.total_tokens
 
 
@@ -482,7 +489,10 @@ def test_stats_prefix_reuse_keeps_content_when_plan_changes() -> None:
     _, first = cm.build_with_stats(base, plan="1. step A")
     _, second = cm.build_with_stats(base, plan="1. step B")
 
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.plan_tokens - first.budget_tokens
+    assert (
+        second.cacheable_prefix_tokens
+        == first.total_tokens - first.plan_tokens - first.budget_tokens - first.continuation_tokens
+    )
     assert second.cacheable_prefix_tokens > first.system_tokens
 
 
@@ -497,7 +507,13 @@ def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:
     state.symbols["other"] = "b.py:2"
     _, second = cm.build_with_stats(messages, state=state, archive="Turn 1 A: done")
 
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.state_tokens - first.budget_tokens
+    assert (
+        second.cacheable_prefix_tokens
+        == first.total_tokens
+        - first.state_tokens
+        - first.budget_tokens
+        - first.continuation_tokens
+    )
     assert second.cacheable_prefix_tokens > first.system_tokens
 
 
@@ -891,7 +907,8 @@ def test_snapshot_block_injected_and_counted() -> None:
 
     snapshot_msg = next(m for m in result if m.get("content") == block)
     assert snapshot_msg == {"role": "system", "content": block}
-    assert result[-1]["content"].startswith("[Context budget")
+    assert result[-2]["content"].startswith("[Context budget")
+    assert result[-1]["role"] == "user"
     assert stats.snapshot_tokens > 0
     assert stats.breakdown()["snapshot"] == stats.snapshot_tokens
 
@@ -983,9 +1000,10 @@ def test_metadata_blocks_use_system_role() -> None:
         "system",
         "system",
         "system",
+        "user",
     ]
     user_msgs = [m for m in result if m["role"] == "user"]
-    assert [m["content"] for m in user_msgs] == ["q"]
+    assert [m["content"] for m in user_msgs] == ["q", "继续当前任务。"]
     metadata = "\n".join(m["content"] for m in result if m["role"] == "system")
     for marker in (
         "[项目指引]",
@@ -1022,7 +1040,7 @@ def test_budget_note_reports_remaining_reads_and_eviction_order() -> None:
 
     result, stats = cm.build_with_stats(messages)
 
-    note = result[-1]
+    note = result[-2]
     assert note["role"] == "system"
     assert "[Context budget" in note["content"]
     assert "10000" in note["content"]
@@ -1030,8 +1048,11 @@ def test_budget_note_reports_remaining_reads_and_eviction_order() -> None:
     assert "a.py" in note["content"]
     assert "1 read(s)" in note["content"]
     assert "oldest" in note["content"]
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
     assert stats.budget_tokens > 0
     assert stats.breakdown()["budget"] == stats.budget_tokens
+    assert stats.continuation_tokens > 0
+    assert stats.breakdown()["continuation"] == stats.continuation_tokens
 
 
 def test_budget_note_present_from_first_call() -> None:
@@ -1040,10 +1061,11 @@ def test_budget_note_present_from_first_call() -> None:
 
     result = cm.build([_system(), _user("q")])
 
-    note = result[-1]
+    note = result[-2]
     assert note["role"] == "system"
     assert "10000" in note["content"]
     assert "none yet" in note["content"]
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
 
 
 def test_budget_note_lists_only_visible_reads() -> None:
@@ -1062,7 +1084,33 @@ def test_budget_note_lists_only_visible_reads() -> None:
 
     result = cm.build(messages)
 
-    note = str(result[-1].get("content", ""))
+    note = str(result[-2].get("content", ""))
     assert "new.py" in note
     assert "old.py" not in note
     assert "1 older read(s) already compressed" in note
+
+
+def test_prompt_never_ends_with_system_message() -> None:
+    """末尾是 system 元状态时补一条 user 续跑消息，避免网关直接返回空。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+
+    result = cm.build(
+        [
+            _system(),
+            _user("q"),
+            {"role": "assistant", "content": "(empty response)"},
+            {"role": "system", "content": "请直接给出最终答案。"},
+        ]
+    )
+
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
+    assert result[-2]["role"] == "system"
+
+
+def test_disabled_context_still_avoids_system_tail() -> None:
+    """关闭上下文管理时也不让请求以 system 结尾。"""
+    cm = ContextManager(ContextConfig(enable=False))
+
+    result = cm.build([_system(), _user("q"), {"role": "system", "content": "系统提醒"}])
+
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
