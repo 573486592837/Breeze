@@ -81,11 +81,15 @@ def test_cross_turn_invalid_raises() -> None:
         ContextConfig(cross_turn="both")
 
 
-def test_head_only_returns_original() -> None:
-    """只有 system+user 时原样返回。"""
+def test_head_only_keeps_original_and_adds_budget() -> None:
+    """只有 system+user 时原消息不变，仅追加预算提示。"""
     cm = ContextManager()
     messages = [_system(), _user("q")]
-    assert cm.build(messages) == messages
+    result = cm.build(messages)
+
+    assert result[:2] == messages
+    assert result[2]["role"] == "system"
+    assert "[Context budget" in result[2]["content"]
 
 
 # ─── 定位类结果 ───
@@ -200,7 +204,7 @@ def test_soft_budget_keeps_prefix_reusable() -> None:
     result, second = cm.build_with_stats(messages)
 
     assert [m["content"] for m in result if m["role"] == "tool"] == [big, big]
-    assert second.cacheable_prefix_tokens == first.total_tokens
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens
 
 
 def test_hard_budget_never_below_soft() -> None:
@@ -253,18 +257,19 @@ def test_plan_appended_after_content_without_demotion() -> None:
 
     assert result[0]["content"] == "SYS"
     assert result[1]["content"] == "q"
-    assert result[-1]["role"] == "system"
-    assert result[-1]["content"].startswith("[Current plan")
-    assert "2. 改代码" in result[-1]["content"]
+    plan_msg = next(m for m in result if str(m.get("content", "")).startswith("[Current plan"))
+    assert plan_msg["role"] == "system"
+    assert "2. 改代码" in plan_msg["content"]
+    assert result[-1]["content"].startswith("[Context budget")
 
 
 def test_empty_plan_not_injected() -> None:
-    """空计划不产生额外消息。"""
+    """空计划不产生额外计划消息。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     messages = [_system(), _user("q")]
 
-    assert cm.build(messages, plan="  \n") == messages
-    assert cm.build(messages, plan=None) == messages
+    assert cm.build(messages, plan="  \n") == cm.build(messages, plan=None)
+    assert not any("[Current plan" in str(m.get("content", "")) for m in cm.build(messages, plan="  \n"))
 
 
 def test_plan_appended_after_archive_and_question() -> None:
@@ -389,7 +394,7 @@ def test_archive_injected_between_system_and_question() -> None:
     messages = [_system(), _user("current question")]
     result = cm.build(messages, state=_state(), archive="[Completed turns — 1 most recent of 1]\nTurn 1 Q: old")
 
-    assert [m["role"] for m in result] == ["system", "system", "user"]
+    assert [m["role"] for m in result] == ["system", "system", "user", "system"]
     assert "Completed turns" in result[1]["content"]
     assert result[2]["content"] == "current question"
 
@@ -406,12 +411,12 @@ def test_state_block_skipped_with_archive_when_no_demotion() -> None:
 
 
 def test_no_archive_keeps_layout() -> None:
-    """无归档时不注入额外消息。"""
+    """无归档时只追加预算提示，不注入状态块。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
     result = cm.build(messages, state=_state({"target": "a.py:1"}))
 
-    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool"]
+    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool", "system"]
 
 
 def test_archive_counted_in_budget() -> None:
@@ -466,7 +471,7 @@ def test_stats_prefix_reuse_for_append_only_turn() -> None:
     messages = [*base, *_round("c1", "read_file", '{"path": "a.py"}', "content")]
     _, second = cm.build_with_stats(messages)
 
-    assert second.cacheable_prefix_tokens == first.total_tokens
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens
     assert second.total_tokens > first.total_tokens
 
 
@@ -477,7 +482,7 @@ def test_stats_prefix_reuse_keeps_content_when_plan_changes() -> None:
     _, first = cm.build_with_stats(base, plan="1. step A")
     _, second = cm.build_with_stats(base, plan="1. step B")
 
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.plan_tokens
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.plan_tokens - first.budget_tokens
     assert second.cacheable_prefix_tokens > first.system_tokens
 
 
@@ -884,7 +889,9 @@ def test_snapshot_block_injected_and_counted() -> None:
 
     result, stats = cm.build_with_stats([_system(), _user("继续")], snapshots=block)
 
-    assert result[-1] == {"role": "system", "content": block}
+    snapshot_msg = next(m for m in result if m.get("content") == block)
+    assert snapshot_msg == {"role": "system", "content": block}
+    assert result[-1]["content"].startswith("[Context budget")
     assert stats.snapshot_tokens > 0
     assert stats.breakdown()["snapshot"] == stats.snapshot_tokens
 
@@ -975,11 +982,19 @@ def test_metadata_blocks_use_system_role() -> None:
         "tool",
         "system",
         "system",
+        "system",
     ]
     user_msgs = [m for m in result if m["role"] == "user"]
     assert [m["content"] for m in user_msgs] == ["q"]
     metadata = "\n".join(m["content"] for m in result if m["role"] == "system")
-    for marker in ("[项目指引]", "Turn 1 A: done", "[Working set]", "[Current plan", "[Session state"):
+    for marker in (
+        "[项目指引]",
+        "Turn 1 A: done",
+        "[Working set]",
+        "[Current plan",
+        "[Session state",
+        "[Context budget",
+    ):
         assert marker in metadata
 
 
@@ -999,36 +1014,55 @@ def test_instructions_injected_as_separate_system_message() -> None:
 # ─── 显式预算状态 ───
 
 
-def test_budget_note_reports_remaining_and_eviction_order() -> None:
-    """接近硬上限时注入预算提示，说明剩余量与旧读取先被丢弃。"""
+def test_budget_note_reports_remaining_reads_and_eviction_order() -> None:
+    """每轮预算提示包含剩余量、可见读取文件与旧读取先丢弃的规则。"""
     body = _code_lines(60)
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
-    probe = ContextManager(ContextConfig(intra_turn_budget=10**9, hard_budget=10**9))
-    _, before = probe.build_with_stats(messages)
-    used = before.total_tokens
-    hard = used * 2
+    cm = ContextManager(ContextConfig(intra_turn_budget=10_000, hard_budget=10_000))
 
-    cm = ContextManager(ContextConfig(intra_turn_budget=hard, hard_budget=hard))
     result, stats = cm.build_with_stats(messages)
 
     note = result[-1]
     assert note["role"] == "system"
     assert "[Context budget" in note["content"]
-    assert str(hard) in note["content"]
+    assert "10000" in note["content"]
+    assert "left" in note["content"]
+    assert "a.py" in note["content"]
+    assert "1 read(s)" in note["content"]
     assert "oldest" in note["content"]
     assert stats.budget_tokens > 0
     assert stats.breakdown()["budget"] == stats.budget_tokens
 
 
-def test_budget_note_absent_when_far_from_limit() -> None:
-    """预算充裕且没有降级时不注入预算提示。"""
-    body = _code_lines(30)
-    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
-    probe = ContextManager(ContextConfig(intra_turn_budget=10**9, hard_budget=10**9))
-    _, before = probe.build_with_stats(messages)
+def test_budget_note_present_from_first_call() -> None:
+    """还没有读取任何文件时也注入预算提示，让模型从第一步就规划。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=10_000, hard_budget=10_000))
 
-    hard = before.total_tokens * 4
-    cm = ContextManager(ContextConfig(intra_turn_budget=hard, hard_budget=hard))
+    result = cm.build([_system(), _user("q")])
+
+    note = result[-1]
+    assert note["role"] == "system"
+    assert "10000" in note["content"]
+    assert "none yet" in note["content"]
+
+
+def test_budget_note_lists_only_visible_reads() -> None:
+    """被压缩成指针的旧读取不再算作当前可见读取，只提示已压缩数量。"""
+    old = _code_lines(40, prefix="old")
+    new = _code_lines(120, prefix="new")
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c_old", "read_file", '{"path": "old.py"}', old),
+        *_round("c_new", "read_file", '{"path": "new.py"}', new),
+    ]
+    probe = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=10**9))
+    total = probe._measure(messages[:2], messages[2:], None)
+    cm = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=total - 1))
+
     result = cm.build(messages)
 
-    assert not any("[Context budget" in str(m.get("content", "")) for m in result)
+    note = str(result[-1].get("content", ""))
+    assert "new.py" in note
+    assert "old.py" not in note
+    assert "1 older read(s) already compressed" in note

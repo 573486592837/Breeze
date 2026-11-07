@@ -150,7 +150,8 @@ def test_agent_message_flow(trace: RunTrace, fake_tool: None) -> None:
     agent.run("echo xyz")
 
     second = llm.calls[1]["messages"]
-    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool", "system"]
+    assert second[-1]["content"].startswith("[Context budget")
 
     assistant_msg = second[2]
     assert assistant_msg["tool_calls"][0]["id"] == "c1"
@@ -697,8 +698,9 @@ def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
     messages = llm.calls[0]["messages"]
     assert messages[0]["content"] == "SYS"
     assert messages[1]["content"] == "hi"
-    assert messages[-1]["content"].startswith("[Current plan")
-    assert "2. patch" in messages[-1]["content"]
+    plan_msg = next(m for m in messages[2:] if str(m.get("content", "")).startswith("[Current plan"))
+    assert "2. patch" in plan_msg["content"]
+    assert messages[-1]["content"].startswith("[Context budget")
 
 
 def test_agent_append_mode_keeps_previous_turn_messages(
@@ -1180,8 +1182,8 @@ def test_agent_reprompts_when_claiming_edit_without_edits(
     assert executed == ["apply_patch"]
 
     roles = [m["role"] for m in llm.calls[1]["messages"]]
-    assert roles[-2:] == ["assistant", "system"]
-    nudge = llm.calls[1]["messages"][-1]["content"]
+    assert roles[-3:] == ["assistant", "system", "system"]
+    nudge = llm.calls[1]["messages"][-2]["content"]
     assert "没有" in nudge
     assert "apply_patch" in nudge
 
@@ -1317,7 +1319,7 @@ def test_agent_recovers_from_empty_final_answer(trace: RunTrace) -> None:
     assert agent.run("继续") == "已完成撤销逻辑，界面与测试尚未完成。"
     assert len(llm.calls) == 2
     assert llm.calls[1]["tools"] == []
-    assert "没有内容" in llm.calls[1]["messages"][-1]["content"]
+    assert "没有内容" in llm.calls[1]["messages"][-2]["content"]
     guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert [e["message"] for e in guard_events] == ["empty final answer; asking for a summary once"]
 
@@ -1378,7 +1380,7 @@ def test_agent_reprompts_when_answer_is_a_plan(trace: RunTrace, fake_tool: None)
 
     assert agent.run("修复测试") == "已修复并验证。"
     assert len(llm.calls) == 3
-    assert "计划" in llm.calls[1]["messages"][-1]["content"]
+    assert "计划" in llm.calls[1]["messages"][-2]["content"]
     guards = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert any("final answer was a plan" in e["message"] for e in guards)
 
@@ -1514,14 +1516,14 @@ def test_agent_second_turn_view_only_grows_within_turn(
     agent.run("q1")
     agent.run("q2")
 
-    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题
+    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题 + 预算提示
     roles = [m["role"] for m in llm.calls[2]["messages"]]
-    assert roles == ["system", "system", "user"]
+    assert roles == ["system", "system", "user", "system"]
 
     # 第三次调用带上了本回合的工具轮
     roles = [m["role"] for m in llm.calls[3]["messages"]]
-    assert roles == ["system", "system", "user", "assistant", "tool"]
-    assert "echo: two" in str(llm.calls[3]["messages"][-1]["content"])
+    assert roles == ["system", "system", "user", "assistant", "tool", "system"]
+    assert "echo: two" in str(llm.calls[3]["messages"][-2]["content"])
     assert "echo: one" not in " ".join(str(m.get("content", "")) for m in llm.calls[3]["messages"])
 
 
@@ -1842,7 +1844,8 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
     assert len(records) == 1
     record = records[0]
     assert record["messages"][0]["content"] == "SYS"
-    assert record["messages"][-1]["content"] == "hi"
+    assert record["messages"][-2]["content"] == "hi"
+    assert record["messages"][-1]["content"].startswith("[Context budget")
     assert record["tool_choice"] is None
     assert isinstance(record["temperature"], float)
     assert record["response"]["content"] == "ok"
@@ -2161,7 +2164,7 @@ def test_agent_custom_system_prompt_skips_agents_md(
     agent.run("hi")
 
     assert agent.project_instructions == ""
-    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user"]
+    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user", "system"]
 
 
 def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> None:

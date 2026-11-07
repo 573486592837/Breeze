@@ -16,8 +16,9 @@
 - 系统维护的元状态（AGENTS.md、回合归档、工作集快照、计划、SessionState、
   预算提示）统一使用 ``system`` 角色；只有用户真正输入的问题保留 ``user``，
   避免模型把状态索引当成新的用户指令。
-- 消息用量接近硬上限或已经降级时，末尾追加一条简短的预算提示，告诉模型已用/
-  剩余 Token 与“旧读取先变指针”的淘汰顺序，让模型自己决定是否继续调研。
+- 每次构建提示词都会在末尾追加一条简短的预算提示，告诉模型已用/剩余 Token、
+  当前仍可见的 read_file 文件与“旧读取先变指针”的淘汰顺序，让模型自己决定
+  是否继续调研。
 
 任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
 于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
@@ -634,7 +635,7 @@ class ContextManager:
             snapshots,
             instructions,
             id_to_name,
-            demoted=demoted,
+            id_to_args,
         )
 
         # 批次头必须在降级之后加：否则 _shell_summary 会把 “[call 1/2 ...]”
@@ -779,23 +780,23 @@ class ContextManager:
         snapshots: str | None,
         instructions: str | None,
         id_to_name: dict[str, str],
-        *,
-        demoted: bool,
+        id_to_args: dict[str, dict[str, Any]],
     ) -> str:
-        """接近硬上限或已发生降级时，告诉模型还剩多少读取预算。
+        """每轮告诉模型当前消息预算与仍可见的 read_file 工作集。
 
-        read_file 的淘汰顺序是“旧读取先丢”，模型只有知道剩余预算才能主动
-        收敛。提示块很小，不参与降级；它放在消息末尾，不切断历史前缀。
+        read_file 的淘汰顺序是“旧读取先丢”，模型只有持续看到剩余预算和已读
+        文件，才能主动收敛。提示块很小，不参与降级；它放在消息末尾，不切断
+        历史前缀。
         """
         hard = self.config.hard_budget
         if hard <= 0:
             return ""
         used = self._measure(head, body, state, archive, plan, snapshots, instructions)
-        if not demoted and used < hard * 0.5:
-            return ""
 
         reads = 0
+        visible = 0
         read_tokens = 0
+        paths: list[str] = []
         for msg in body:
             if msg.get("role") != "tool":
                 continue
@@ -806,19 +807,42 @@ class ContextManager:
             if not isinstance(content, str):
                 continue
             reads += 1
-            if not content.startswith("["):
-                read_tokens += _count_text_tokens(content)
+            if content.startswith("["):
+                continue
+            visible += 1
+            read_tokens += _count_text_tokens(content)
+            path = id_to_args.get(tc_id, {}).get("path")
+            if isinstance(path, str) and path and path not in paths:
+                paths.append(path)
 
         remaining = max(hard - used, 0)
         if remaining:
             usage = f"Message budget: ~{used} / {hard} tokens used (~{remaining} left)."
         else:
-            usage = f"Message budget exhausted: ~{used} / {hard} tokens used."
+            usage = (
+                f"Message budget exhausted: ~{used} / {hard} tokens used. "
+                "New reads will push older read_file results into pointers."
+            )
+        if visible:
+            shown = ", ".join(paths[:6])
+            if len(paths) > 6:
+                shown += f" (+{len(paths) - 6} more)"
+            if shown:
+                files = (
+                    f"Visible read_file content: ~{read_tokens} tokens / "
+                    f"{visible} read(s) from {shown}."
+                )
+            else:
+                files = f"Visible read_file content: ~{read_tokens} tokens / {visible} read(s)."
+        else:
+            files = "Visible read_file content: none yet."
+        if reads > visible:
+            files += f" {reads - visible} older read(s) already compressed to pointers."
         return "\n".join(
             [
                 "[Context budget — system-maintained, not user input]",
                 usage,
-                f"read_file content: ~{read_tokens} tokens across {reads} read(s).",
+                files,
                 "When the limit is exceeded, the oldest read_file results become pointers first "
                 "and the newest reads stay. Plan reads accordingly: do not re-read unchanged "
                 "files, and read only the ranges you still need.",
