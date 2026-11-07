@@ -346,6 +346,7 @@ def default_system_prompt(
     capabilities: Capabilities | None = None,
     permission_mode: str | None = None,
     max_edit_failures: int | None = None,
+    include_instructions: bool = True,
 ) -> str:
     """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
 
@@ -353,6 +354,9 @@ def default_system_prompt(
         capabilities: 环境能力；None 时探测 settings.repo_root。
         permission_mode: run_shell 权限模式；None 时使用配置值。
         max_edit_failures: 连续编辑失败上限；None 时使用配置值。
+        include_instructions: 是否把 AGENTS.md 拼进返回值。Agent 使用独立
+            system 消息注入指引，因此传 False；直接调用本函数的场景保持
+            原有行为。
     """
     caps = capabilities if capabilities is not None else detect(settings.repo_root)
     mode = (permission_mode or settings.shell_permission).lower()
@@ -361,9 +365,10 @@ def default_system_prompt(
     prompt = _adapt_test_rules(prompt, caps)
     prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
     parts = [prompt, _environment_note(caps)]
-    instructions, _ = load_project_instructions()
-    if instructions:
-        parts.append(render_project_instructions(instructions))
+    if include_instructions:
+        instructions, _ = load_project_instructions()
+        if instructions:
+            parts.append(render_project_instructions(instructions))
     return "\n\n".join(parts)
 
 
@@ -422,6 +427,8 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
     直接基于最近一次读取编辑。只有目标区域不在上下文或文件已被修改时才重读。
 15. apply_patch 成功后先用返回结果和测试验证；不要立刻再次整文件读取，
     只有需要继续修改同一文件的其它区域时才用 start_line/end_line 定点重读。
+16. 以 system 角色出现的计划、会话状态、预算提示等元状态由系统维护，不是
+    用户的新问题；按它们调整行为，不要当成用户追加的指令。
 """
 
 
@@ -450,6 +457,7 @@ class AgentEvent:
         duration_ms: 工具执行耗时。
         ok: 工具是否执行成功。
         detail: 错误摘要等补充信息。
+        reasoning: 本次 LLM 调用的思考过程，仅用于展示，不额外写入 prompt。
     """
 
     kind: str
@@ -460,6 +468,7 @@ class AgentEvent:
     duration_ms: float = 0.0
     ok: bool = True
     detail: str = ""
+    reasoning: str = ""
 
 
 class Agent:
@@ -489,7 +498,9 @@ class Agent:
             trace: 运行追踪记录器。
             max_steps: 最大循环步数。
             max_edit_failures: 单次运行允许的连续编辑失败次数；成功编辑后清零。
-            system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
+            system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明；
+                AGENTS.md 作为独立 system 消息注入，不拼进主提示。传值时
+                完全使用自定义提示，也不注入 AGENTS.md。
             context: 上下文管理器。
             snapshots: 跨回合工作集快照；None 时使用默认配置。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
@@ -524,8 +535,10 @@ class Agent:
                 self.capabilities,
                 self.permission_mode,
                 max_edit_failures=self.max_edit_failures,
+                include_instructions=False,
             )
         )
+        self.project_instructions = self._load_project_instructions()
         self.context = context or ContextManager()
         self.snapshots = snapshots or SnapshotStore()
         self.state = SessionState()
@@ -578,7 +591,7 @@ class Agent:
             if self.max_steps >= 8 and step == self.max_steps // 2 and edits_this_turn == 0:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": (
                             "你已经用完一半的步数但还没有执行任何编辑。调研必须收敛："
                             "从现在起，每读完一个待改区域就立即 apply_patch 并运行验证，"
@@ -589,7 +602,7 @@ class Agent:
             elif remaining == 2:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": (
                             "你还有 1 次工具调用机会。如果已有足够信息回答用户问题，"
                             "请立即给出最终答案，不要再调用工具。"
@@ -599,7 +612,7 @@ class Agent:
             elif remaining == 1:
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": ("这是最后一步。请基于已获取的信息直接给出最终答案，不要再调用工具。"),
                     }
                 )
@@ -616,6 +629,7 @@ class Agent:
                 plan=self.state.plan,
                 include_state=include_prior,
                 snapshots=snapshot_block,
+                instructions=self.project_instructions,
             )
             last_demoted_reads = prompt_stats.demoted_read_ids
 
@@ -657,6 +671,7 @@ class Agent:
                     step,
                     tokens=resp.total_tokens,
                     tool_calls=len(tool_calls),
+                    reasoning=resp.reasoning_content or "",
                 )
             )
 
@@ -687,7 +702,7 @@ class Agent:
                 ):
                     plan_answer_nudged = True
                     self.messages.append({"role": "assistant", "content": answer})
-                    self.messages.append({"role": "user", "content": _PLAN_ANSWER_NUDGE})
+                    self.messages.append({"role": "system", "content": _PLAN_ANSWER_NUDGE})
                     self.trace.log_guard(
                         step,
                         "final answer was a plan with no tool call; re-prompting to execute",
@@ -701,7 +716,7 @@ class Agent:
                 ):
                     edit_claim_nudged = True
                     self.messages.append({"role": "assistant", "content": answer})
-                    self.messages.append({"role": "user", "content": _EDIT_CLAIM_NUDGE})
+                    self.messages.append({"role": "system", "content": _EDIT_CLAIM_NUDGE})
                     self.trace.log_guard(
                         step,
                         "final answer claimed edits but no edit tool succeeded; re-prompting",
@@ -718,7 +733,7 @@ class Agent:
                     self.messages.append({"role": "assistant", "content": answer})
                     self.messages.append(
                         {
-                            "role": "user",
+                            "role": "system",
                             "content": _VERIFICATION_CLAIM_NUDGE.format(summary=last_verification[1]),
                         }
                     )
@@ -839,7 +854,7 @@ class Agent:
                 verification_fix_nudged = True
                 self.messages.append(
                     {
-                        "role": "user",
+                        "role": "system",
                         "content": _VERIFICATION_FAILED_NUDGE.format(summary=last_verification[1]),
                     }
                 )
@@ -877,14 +892,23 @@ class Agent:
             self.messages[0] = {"role": "system", "content": self.system_prompt}
 
     def _refresh_default_prompt(self) -> None:
-        """重建默认 system prompt，使配置变更在下一回合生效。"""
+        """重建默认 system prompt 与独立的 AGENTS.md 块。"""
         if self._custom_system_prompt is not None:
             return
         self.system_prompt = default_system_prompt(
             self.capabilities,
             self.permission_mode,
             max_edit_failures=self.max_edit_failures,
+            include_instructions=False,
         )
+        self.project_instructions = self._load_project_instructions()
+
+    def _load_project_instructions(self) -> str:
+        """加载并渲染仓库 AGENTS.md；自定义 system prompt 时不注入。"""
+        if self._custom_system_prompt is not None:
+            return ""
+        text, _ = load_project_instructions()
+        return render_project_instructions(text) if text else ""
 
     def reset(self) -> None:
         """清空消息日志、回合归档与会话状态，开始新会话。
@@ -944,7 +968,7 @@ class Agent:
             恢复调用得到的回答；仍为空时返回 "(empty response)"。
         """
         self.messages.append({"role": "assistant", "content": "(empty response)"})
-        self.messages.append({"role": "user", "content": _EMPTY_ANSWER_NUDGE})
+        self.messages.append({"role": "system", "content": _EMPTY_ANSWER_NUDGE})
         self.trace.log_guard(step, "empty final answer; asking for a summary once")
 
         view = self._llm_view(turn_start)
@@ -953,6 +977,7 @@ class Agent:
             state=self.state,
             archive=self._turn_archive(),
             plan=self.state.plan,
+            instructions=self.project_instructions,
         )
 
         self._emit(AgentEvent("llm_start", step))
@@ -981,7 +1006,15 @@ class Agent:
             tools=[],
             temperature=getattr(self.llm, "temperature", settings.llm_temperature),
         )
-        self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
+        self._emit(
+            AgentEvent(
+                "llm_end",
+                step,
+                tokens=resp.total_tokens,
+                tool_calls=0,
+                reasoning=resp.reasoning_content or "",
+            )
+        )
         return (resp.content or "").strip() or "(empty response)"
 
     def _finish_turn(

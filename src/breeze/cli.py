@@ -7,11 +7,14 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -428,20 +431,37 @@ class _TurnProgress:
 
     只在交互式终端启用：重定向或测试环境下 is_terminal 为 False，
     不产生任何输出，因此不会改变 ask/chat 的既有输出格式。
+
+    等待模型时显示上一轮 ``reasoning_content`` 的尾部摘要与实时等待秒数；
+    新的思考返回后会替换旧摘要，不累积历史。
     """
+
+    _REASONING_CHARS = 700
+    _REASONING_LINES = 6
 
     def __init__(self, target: Console) -> None:
         self.console = target
         self.enabled = target.is_terminal
         self._status = None
+        self._last_reasoning = ""
+        self._wait_started = 0.0
+        self._timer_stop: threading.Event | None = None
+        self._generation = 0
+        self._lock = threading.Lock()
 
     def on_event(self, event: AgentEvent) -> None:
         if not self.enabled:
             return
         step = event.step + 1
         if event.kind == "llm_start":
-            text = f"[dim]step {step}: waiting for model[/dim]"
-        elif event.kind == "llm_end":
+            self._stop_timer()
+            self._set_status(self._waiting_text(step, 0.0))
+            self._start_timer(step)
+            return
+
+        self._stop_timer()
+        if event.kind == "llm_end":
+            self._last_reasoning = event.reasoning or ""
             if not event.ok:
                 text = f"[dim]step {step}: model error[/dim]"
             elif event.tool_calls:
@@ -455,17 +475,76 @@ class _TurnProgress:
             text = f"[dim]step {step}: {event.tool} {result} ({event.duration_ms:.0f}ms)[/dim]"
         else:
             return
+        self._set_status(text)
 
-        if self._status is None:
-            self._status = self.console.status(text, spinner="dots")
-            self._status.start()
-        else:
-            self._status.update(text)
+    def _waiting_text(self, step: int, elapsed: float) -> str:
+        """构造等待提示：上一轮思考摘要 + 当前等待秒数。"""
+        head = f"[dim]step {step}: waiting for model {elapsed:.0f}s[/dim]"
+        preview = self._reasoning_preview(self._last_reasoning)
+        if not preview:
+            return head
+        return f"{head}\n[dim]{escape(preview)}[/dim]"
+
+    @classmethod
+    def _reasoning_preview(cls, text: str) -> str:
+        """取思考过程尾部若干行，保留最新意图并限制高度。"""
+        if not text:
+            return ""
+        lines = [line.rstrip() for line in text.strip().splitlines()]
+        compact: list[str] = []
+        previous_blank = False
+        for line in lines:
+            blank = not line.strip()
+            if blank and previous_blank:
+                continue
+            compact.append(line)
+            previous_blank = blank
+        joined = "\n".join(compact).strip()
+        if not joined:
+            return ""
+        if len(joined) > cls._REASONING_CHARS:
+            joined = "…" + joined[-cls._REASONING_CHARS :]
+        return "\n".join(joined.splitlines()[-cls._REASONING_LINES :])
+
+    def _start_timer(self, step: int) -> None:
+        """后台每秒刷新等待秒数。"""
+        self._wait_started = time.monotonic()
+        stop = threading.Event()
+        self._timer_stop = stop
+        generation = self._generation
+
+        def tick() -> None:
+            while not stop.wait(1.0):
+                elapsed = time.monotonic() - self._wait_started
+                self._set_status(self._waiting_text(step, elapsed), generation=generation)
+
+        threading.Thread(target=tick, daemon=True).start()
+
+    def _stop_timer(self) -> None:
+        self._generation += 1
+        if self._timer_stop is not None:
+            self._timer_stop.set()
+            self._timer_stop = None
+
+    def _set_status(self, text: str, *, generation: int | None = None) -> None:
+        with self._lock:
+            # 计时线程可能在 stop() 之后才拿到锁；代际不匹配时丢弃，
+            # 避免退出后重新创建一个无人停止的 status。
+            if generation is not None and generation != self._generation:
+                return
+            if self._status is None:
+                self._status = self.console.status(text, spinner="dots")
+                self._status.start()
+            else:
+                self._status.update(text)
 
     def stop(self) -> None:
-        if self._status is not None:
-            self._status.stop()
-            self._status = None
+        self._stop_timer()
+        self._last_reasoning = ""
+        with self._lock:
+            if self._status is not None:
+                self._status.stop()
+                self._status = None
 
 
 def _answer_panel(answer: str) -> Panel:

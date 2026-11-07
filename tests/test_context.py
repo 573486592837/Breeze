@@ -253,7 +253,7 @@ def test_plan_appended_after_content_without_demotion() -> None:
 
     assert result[0]["content"] == "SYS"
     assert result[1]["content"] == "q"
-    assert result[-1]["role"] == "user"
+    assert result[-1]["role"] == "system"
     assert result[-1]["content"].startswith("[Current plan")
     assert "2. 改代码" in result[-1]["content"]
 
@@ -310,9 +310,10 @@ def test_state_block_injected_only_with_demotion() -> None:
     cm_low = ContextManager(ContextConfig(intra_turn_budget=200, hard_budget=200))
     spill = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(600))]
     result = cm_low.build(spill, state=state)
-    assert result[-1]["role"] == "user"
-    assert "[Session state" in result[-1]["content"]
-    assert "target: a.py:1" in result[-1]["content"]
+    state_msgs = [m for m in result if "[Session state" in str(m.get("content", ""))]
+    assert len(state_msgs) == 1
+    assert state_msgs[0]["role"] == "system"
+    assert "target: a.py:1" in state_msgs[0]["content"]
 
 
 def test_no_state_block_without_state() -> None:
@@ -388,7 +389,7 @@ def test_archive_injected_between_system_and_question() -> None:
     messages = [_system(), _user("current question")]
     result = cm.build(messages, state=_state(), archive="[Completed turns — 1 most recent of 1]\nTurn 1 Q: old")
 
-    assert [m["role"] for m in result] == ["system", "user", "user"]
+    assert [m["role"] for m in result] == ["system", "system", "user"]
     assert "Completed turns" in result[1]["content"]
     assert result[2]["content"] == "current question"
 
@@ -491,7 +492,7 @@ def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:
     state.symbols["other"] = "b.py:2"
     _, second = cm.build_with_stats(messages, state=state, archive="Turn 1 A: done")
 
-    assert second.cacheable_prefix_tokens == first.total_tokens - first.state_tokens
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.state_tokens - first.budget_tokens
     assert second.cacheable_prefix_tokens > first.system_tokens
 
 
@@ -883,7 +884,7 @@ def test_snapshot_block_injected_and_counted() -> None:
 
     result, stats = cm.build_with_stats([_system(), _user("继续")], snapshots=block)
 
-    assert result[-1] == {"role": "user", "content": block}
+    assert result[-1] == {"role": "system", "content": block}
     assert stats.snapshot_tokens > 0
     assert stats.breakdown()["snapshot"] == stats.snapshot_tokens
 
@@ -944,3 +945,90 @@ def test_hard_limit_keeps_latest_read_of_same_file() -> None:
     assert by_id["c_old"].startswith("[read_file superseded] a.py (lines 1-40)")
     assert "new119" in by_id["c_new"]
     assert stats.demoted_read_ids == frozenset({"c_old"})
+
+
+# ─── 元状态角色分离 ───
+
+
+def test_metadata_blocks_use_system_role() -> None:
+    """归档、快照、计划、状态、AGENTS.md 均以 system 注入，只有用户问题保留 user。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    messages = [_system("SYS"), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+
+    result = cm.build(
+        messages,
+        state=_state({"target": "a.py:1"}),
+        archive="Turn 1 A: done",
+        plan="1. a",
+        include_state=True,
+        snapshots="[Working set]",
+        instructions="[项目指引]",
+    )
+
+    assert [m["role"] for m in result] == [
+        "system",
+        "system",
+        "system",
+        "user",
+        "system",
+        "assistant",
+        "tool",
+        "system",
+        "system",
+    ]
+    user_msgs = [m for m in result if m["role"] == "user"]
+    assert [m["content"] for m in user_msgs] == ["q"]
+    metadata = "\n".join(m["content"] for m in result if m["role"] == "system")
+    for marker in ("[项目指引]", "Turn 1 A: done", "[Working set]", "[Current plan", "[Session state"):
+        assert marker in metadata
+
+
+def test_instructions_injected_as_separate_system_message() -> None:
+    """AGENTS.md 块单独成条 system 消息，不混进主 system prompt。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    block = "[项目指引 — AGENTS.md]\n总是先跑 tests"
+
+    result, stats = cm.build_with_stats([_system("SYS"), _user("q")], instructions=block)
+
+    assert result[0] == {"role": "system", "content": "SYS"}
+    assert result[1] == {"role": "system", "content": block}
+    assert stats.instructions_tokens > 0
+    assert stats.breakdown()["instructions"] == stats.instructions_tokens
+
+
+# ─── 显式预算状态 ───
+
+
+def test_budget_note_reports_remaining_and_eviction_order() -> None:
+    """接近硬上限时注入预算提示，说明剩余量与旧读取先被丢弃。"""
+    body = _code_lines(60)
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
+    probe = ContextManager(ContextConfig(intra_turn_budget=10**9, hard_budget=10**9))
+    _, before = probe.build_with_stats(messages)
+    used = before.total_tokens
+    hard = used * 2
+
+    cm = ContextManager(ContextConfig(intra_turn_budget=hard, hard_budget=hard))
+    result, stats = cm.build_with_stats(messages)
+
+    note = result[-1]
+    assert note["role"] == "system"
+    assert "[Context budget" in note["content"]
+    assert str(hard) in note["content"]
+    assert "oldest" in note["content"]
+    assert stats.budget_tokens > 0
+    assert stats.breakdown()["budget"] == stats.budget_tokens
+
+
+def test_budget_note_absent_when_far_from_limit() -> None:
+    """预算充裕且没有降级时不注入预算提示。"""
+    body = _code_lines(30)
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
+    probe = ContextManager(ContextConfig(intra_turn_budget=10**9, hard_budget=10**9))
+    _, before = probe.build_with_stats(messages)
+
+    hard = before.total_tokens * 4
+    cm = ContextManager(ContextConfig(intra_turn_budget=hard, hard_budget=hard))
+    result = cm.build(messages)
+
+    assert not any("[Context budget" in str(m.get("content", "")) for m in result)

@@ -562,7 +562,7 @@ def test_agent_injects_closing_hint_near_max_steps(trace: RunTrace, fake_tool: N
 
     # 第 1 步 (remaining=2) 的消息里应含提示
     step1_messages = llm.calls[1]["messages"]
-    hints = [m for m in step1_messages if m["role"] == "user" and "工具调用机会" in m.get("content", "")]
+    hints = [m for m in step1_messages if m["role"] == "system" and "工具调用机会" in m.get("content", "")]
     assert len(hints) == 1
 
 
@@ -615,6 +615,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
             *,
             include_state: bool = False,
             snapshots=None,
+            instructions=None,
         ):
             seen_state.append(state is not None)
             return super().build_with_stats(
@@ -624,6 +625,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
                 plan=plan,
                 include_state=include_state,
                 snapshots=snapshots,
+                instructions=instructions,
             )
 
     class RecordingLLM:
@@ -741,7 +743,7 @@ def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
     assert agent.state.plan == "1. inspect\n2. patch"
     assert not any("[Current plan" in str(m.get("content", "")) for m in llm.calls[0]["messages"])
     second = llm.calls[1]["messages"]
-    plan_msgs = [m for m in second if m["role"] == "user" and "[Current plan" in m["content"]]
+    plan_msgs = [m for m in second if m["role"] == "system" and "[Current plan" in m["content"]]
     assert len(plan_msgs) == 1
     assert "2. patch" in plan_msgs[0]["content"]
 
@@ -1178,7 +1180,7 @@ def test_agent_reprompts_when_claiming_edit_without_edits(
     assert executed == ["apply_patch"]
 
     roles = [m["role"] for m in llm.calls[1]["messages"]]
-    assert roles[-2:] == ["assistant", "user"]
+    assert roles[-2:] == ["assistant", "system"]
     nudge = llm.calls[1]["messages"][-1]["content"]
     assert "没有" in nudge
     assert "apply_patch" in nudge
@@ -1514,11 +1516,11 @@ def test_agent_second_turn_view_only_grows_within_turn(
 
     # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题
     roles = [m["role"] for m in llm.calls[2]["messages"]]
-    assert roles == ["system", "user", "user"]
+    assert roles == ["system", "system", "user"]
 
     # 第三次调用带上了本回合的工具轮
     roles = [m["role"] for m in llm.calls[3]["messages"]]
-    assert roles == ["system", "user", "user", "assistant", "tool"]
+    assert roles == ["system", "system", "user", "assistant", "tool"]
     assert "echo: two" in str(llm.calls[3]["messages"][-1]["content"])
     assert "echo: one" not in " ".join(str(m.get("content", "")) for m in llm.calls[3]["messages"])
 
@@ -2122,3 +2124,56 @@ def test_first_turn_does_not_inject_prior_state(trace: RunTrace) -> None:
     assert agent.run("hi") == "ok"
     text = "\n".join(str(msg.get("content")) for msg in llm.calls[0]["messages"])
     assert "[Session state" not in text
+
+
+def test_agent_injects_agents_md_as_separate_system_message(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AGENTS.md 单独注入，不再混进主 system prompt。"""
+    from breeze.config import settings
+
+    (tmp_path / "AGENTS.md").write_text("总是先跑 tests", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient([_text("ok")])
+
+    agent = Agent(llm=llm, trace=trace)
+    agent.run("hi")
+
+    messages = llm.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "总是先跑 tests" not in messages[0]["content"]
+    assert messages[1]["role"] == "system"
+    assert "总是先跑 tests" in messages[1]["content"]
+    assert messages[2] == {"role": "user", "content": "hi"}
+
+
+def test_agent_custom_system_prompt_skips_agents_md(
+    trace: RunTrace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式传入 system_prompt 时保持原有行为：不额外注入 AGENTS.md。"""
+    from breeze.config import settings
+
+    (tmp_path / "AGENTS.md").write_text("总是先跑 tests", encoding="utf-8")
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient([_text("ok")])
+
+    agent = Agent(llm=llm, trace=trace, system_prompt="CUSTOM")
+    agent.run("hi")
+
+    assert agent.project_instructions == ""
+    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user"]
+
+
+def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> None:
+    """每次 LLM 调用都通过事件回传思考内容，供展示层替换显示。"""
+    first = _tool_call("fake_echo", {"text": "one"}, call_id="c1")
+    first.reasoning_content = "先读文件"
+    second = _text("done")
+    second.reasoning_content = "再总结"
+    events: list[Any] = []
+
+    agent = Agent(llm=FakeLLMClient([first, second]), trace=trace, on_event=events.append)
+    assert agent.run("go") == "done"
+
+    reasonings = [e.reasoning for e in events if e.kind == "llm_end"]
+    assert reasonings == ["先读文件", "再总结"]

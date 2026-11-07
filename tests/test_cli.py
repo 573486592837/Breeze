@@ -868,7 +868,7 @@ def test_chat_resume_injects_archive_into_first_view(
     )
 
     resumed_view = views[-1]
-    assert [m["role"] for m in resumed_view] == ["system", "user", "user"]
+    assert [m["role"] for m in resumed_view] == ["system", "system", "user"]
     assert "[Completed turns" in resumed_view[1]["content"]
     assert "previous question" in resumed_view[1]["content"]
     assert "prior answer" in resumed_view[1]["content"]
@@ -1132,3 +1132,70 @@ def test_version_flag_without_api_key(repo: Path, monkeypatch: pytest.MonkeyPatc
 
     assert result.exit_code == 0
     assert __version__ in result.stdout
+
+
+# ─── 等待状态的思考摘要 ───
+
+
+class _FakeStatus:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.stopped = False
+
+    def start(self) -> None:
+        pass
+
+    def update(self, text: str) -> None:
+        self.text = text
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeConsole:
+    is_terminal = True
+
+    def __init__(self) -> None:
+        self.latest: _FakeStatus | None = None
+
+    def status(self, text: str, spinner: str | None = None) -> _FakeStatus:
+        self.latest = _FakeStatus(text)
+        return self.latest
+
+
+def test_turn_progress_shows_and_replaces_previous_reasoning() -> None:
+    """等待模型时显示上一轮思考；进入下一步后替换而不是累积。"""
+    from breeze.agent import AgentEvent
+    from breeze.cli import _TurnProgress
+
+    console = _FakeConsole()
+    progress = _TurnProgress(console)
+
+    progress.on_event(AgentEvent("llm_end", 0, tokens=10, tool_calls=1, reasoning="第一步：看 foo.py"))
+    progress.on_event(AgentEvent("llm_start", 1))
+    assert console.latest is not None
+    assert "step 2: waiting for model" in console.latest.text
+    assert "第一步：看 foo.py" in console.latest.text
+
+    progress.on_event(AgentEvent("llm_end", 1, tokens=10, tool_calls=1, reasoning="第二步：改 bar.py"))
+    progress.on_event(AgentEvent("llm_start", 2))
+    text = console.latest.text
+    assert "step 3: waiting for model" in text
+    assert "第二步：改 bar.py" in text
+    assert "第一步" not in text
+
+    progress.stop()
+    assert progress._status is None
+
+
+def test_reasoning_preview_keeps_tail_and_caps_lines() -> None:
+    """思考摘要只保留尾部若干行，避免多轮内容堆满状态栏。"""
+    from breeze.cli import _TurnProgress
+
+    text = "\n".join(f"line {i}" for i in range(30))
+
+    preview = _TurnProgress._reasoning_preview(text)
+
+    assert preview.splitlines()[-1] == "line 29"
+    assert len(preview.splitlines()) <= _TurnProgress._REASONING_LINES
+    assert not preview.startswith("line 0")

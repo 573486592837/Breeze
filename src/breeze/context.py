@@ -13,6 +13,11 @@
   总行数，避免模型因为看不到结果而反复调用同一工具。
 - 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
   截断为短摘录，既维持目标连贯，又避免提示词随步数线性膨胀。
+- 系统维护的元状态（AGENTS.md、回合归档、工作集快照、计划、SessionState、
+  预算提示）统一使用 ``system`` 角色；只有用户真正输入的问题保留 ``user``，
+  避免模型把状态索引当成新的用户指令。
+- 消息用量接近硬上限或已经降级时，末尾追加一条简短的预算提示，告诉模型已用/
+  剩余 Token 与“旧读取先变指针”的淘汰顺序，让模型自己决定是否继续调研。
 
 任何降级发生时，把 SessionState 状态块注入到消息末尾（body 之后），让模型基
 于索引定点重读；放在末尾也避免状态每次变化时切断前面历史的缓存前缀。
@@ -418,9 +423,11 @@ class PromptStats:
     """
 
     system_tokens: int = 0
+    instructions_tokens: int = 0
     plan_tokens: int = 0
     archive_tokens: int = 0
     snapshot_tokens: int = 0
+    budget_tokens: int = 0
     user_tokens: int = 0
     state_tokens: int = 0
     body_tokens: int = 0
@@ -432,9 +439,11 @@ class PromptStats:
         """返回按注入位置分类的 Token 组成。"""
         return {
             "system": self.system_tokens,
+            "instructions": self.instructions_tokens,
             "plan": self.plan_tokens,
             "archive": self.archive_tokens,
             "snapshot": self.snapshot_tokens,
+            "budget": self.budget_tokens,
             "user": self.user_tokens,
             "state": self.state_tokens,
             "body": self.body_tokens,
@@ -475,6 +484,7 @@ class ContextManager:
         *,
         include_state: bool = False,
         snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
@@ -486,6 +496,7 @@ class ContextManager:
                 避免计划更新切断历史缓存前缀。
             include_state: 回合启动时注入上一回合遗留的状态索引。
             snapshots: 回合启动时注入的工作集文件内容；不参与降级。
+            instructions: AGENTS.md 渲染块，作为独立 system 消息注入。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
@@ -497,6 +508,7 @@ class ContextManager:
             plan=plan,
             include_state=include_state,
             snapshots=snapshots,
+            instructions=instructions,
         )
         return result
 
@@ -509,6 +521,7 @@ class ContextManager:
         *,
         include_state: bool = False,
         snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> tuple[list[dict[str, Any]], PromptStats]:
         """构建消息列表，并返回本次提示词的组成与缓存复用量。
 
@@ -553,7 +566,7 @@ class ContextManager:
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
         soft_budget = self.config.intra_turn_budget
         counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan, snapshots) > soft_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > soft_budget:
             converted, spilled = self._spill(
                 head,
                 converted,
@@ -565,12 +578,13 @@ class ContextManager:
                 plan,
                 snapshots,
                 SPILL_TOOLS,
+                instructions=instructions,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
 
         hard_budget = self.config.hard_budget
-        if self._measure(head, converted, counted_state, archive, plan, snapshots) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > hard_budget:
             protected = self._latest_read_ids(body)
             converted, spilled = self._spill(
                 head,
@@ -583,13 +597,14 @@ class ContextManager:
                 plan,
                 snapshots,
                 READ_TOOLS,
+                instructions=instructions,
                 protect=protected,
                 min_chars=READ_SPILL_MIN_CHARS,
                 oldest_first=True,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan, snapshots) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots, instructions) > hard_budget:
             converted, spilled = self._spill(
                 head,
                 converted,
@@ -601,6 +616,7 @@ class ContextManager:
                 plan,
                 snapshots,
                 READ_TOOLS,
+                instructions=instructions,
                 oldest_first=True,
             )
             demoted = demoted or spilled
@@ -609,6 +625,17 @@ class ContextManager:
         # 模型重读整个范围——否则模型会追着旧指针反复读取。
         converted = self._annotate_superseded_reads(converted, id_to_name, id_to_args)
         demoted_read_ids = self._demoted_read_ids(converted)
+        budget_note = self._budget_note(
+            head,
+            converted,
+            counted_state,
+            archive,
+            plan,
+            snapshots,
+            instructions,
+            id_to_name,
+            demoted=demoted,
+        )
 
         # 批次头必须在降级之后加：否则 _shell_summary 会把 “[call 1/2 ...]”
         # 当成结果首行，丢掉 exit_code 与错误正文。
@@ -635,24 +662,28 @@ class ContextManager:
             result.append(msg)
 
         add(head[0], "system")
+        if instructions:
+            add({"role": "system", "content": instructions}, "instructions")
         if archive:
-            add({"role": "user", "content": archive}, "archive")
+            add({"role": "system", "content": archive}, "archive")
         add(head[1], "user")
         if snapshots:
-            add({"role": "user", "content": snapshots}, "snapshot")
+            add({"role": "system", "content": snapshots}, "snapshot")
         for msg in converted:
             add(msg, "body")
         plan_block = _render_plan(plan)
         if plan_block:
-            add({"role": "user", "content": plan_block}, "plan")
+            add({"role": "system", "content": plan_block}, "plan")
         if state is not None and (demoted or include_state):
             block = state.render(turn_start=include_state and not demoted)
             if block:
-                add({"role": "user", "content": block}, "state")
+                add({"role": "system", "content": block}, "state")
         if state is not None and not demoted and not include_state:
             repeated = state.render_repeated()
             if repeated:
-                add({"role": "user", "content": repeated}, "state")
+                add({"role": "system", "content": repeated}, "state")
+        if budget_note:
+            add({"role": "system", "content": budget_note}, "budget")
         return result, self._stats(result, segments, demoted_read_ids)
 
     def _spill(
@@ -668,6 +699,7 @@ class ContextManager:
         snapshots: str | None,
         classes: frozenset[str],
         *,
+        instructions: str | None = None,
         protect: frozenset[str] = frozenset(),
         min_chars: int = 0,
         oldest_first: bool = False,
@@ -692,6 +724,7 @@ class ContextManager:
             plan: 计划块文本，计入 head 开销，可为 None。
             snapshots: 工作集快照文本，计入 head 开销且不参与降级，可为 None。
             classes: 本次允许降级的工具类别。
+            instructions: AGENTS.md 块，计入 head 开销，可为 None。
             protect: 本轮不降级的 tool_call_id 集合。
             min_chars: 小于该字符数的结果不参与降级。
             oldest_first: True 时按消息顺序从旧到新降级，否则按结果大小降序。
@@ -700,7 +733,7 @@ class ContextManager:
             (新列表, 是否发生降级)。
         """
         out = list(converted)
-        if self._measure(head, out, state, archive, plan, snapshots) <= budget:
+        if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
             return out, False
 
         candidates: list[tuple[int, int]] = []
@@ -724,7 +757,7 @@ class ContextManager:
 
         changed = False
         for _, i in candidates:
-            if self._measure(head, out, state, archive, plan, snapshots) <= budget:
+            if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
                 break
             msg = out[i]
             tool = id_to_name.get(msg.get("tool_call_id", ""), "")
@@ -735,6 +768,62 @@ class ContextManager:
             out[i] = new_msg
             changed = True
         return out, changed
+
+    def _budget_note(
+        self,
+        head: list[dict[str, Any]],
+        body: list[dict[str, Any]],
+        state: Any | None,
+        archive: str | None,
+        plan: str | None,
+        snapshots: str | None,
+        instructions: str | None,
+        id_to_name: dict[str, str],
+        *,
+        demoted: bool,
+    ) -> str:
+        """接近硬上限或已发生降级时，告诉模型还剩多少读取预算。
+
+        read_file 的淘汰顺序是“旧读取先丢”，模型只有知道剩余预算才能主动
+        收敛。提示块很小，不参与降级；它放在消息末尾，不切断历史前缀。
+        """
+        hard = self.config.hard_budget
+        if hard <= 0:
+            return ""
+        used = self._measure(head, body, state, archive, plan, snapshots, instructions)
+        if not demoted and used < hard * 0.5:
+            return ""
+
+        reads = 0
+        read_tokens = 0
+        for msg in body:
+            if msg.get("role") != "tool":
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            if id_to_name.get(tc_id) != "read_file":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            reads += 1
+            if not content.startswith("["):
+                read_tokens += _count_text_tokens(content)
+
+        remaining = max(hard - used, 0)
+        if remaining:
+            usage = f"Message budget: ~{used} / {hard} tokens used (~{remaining} left)."
+        else:
+            usage = f"Message budget exhausted: ~{used} / {hard} tokens used."
+        return "\n".join(
+            [
+                "[Context budget — system-maintained, not user input]",
+                usage,
+                f"read_file content: ~{read_tokens} tokens across {reads} read(s).",
+                "When the limit is exceeded, the oldest read_file results become pointers first "
+                "and the newest reads stay. Plan reads accordingly: do not re-read unchanged "
+                "files, and read only the ranges you still need.",
+            ]
+        )
 
     @staticmethod
     def _annotate_superseded_reads(
@@ -914,9 +1003,12 @@ class ContextManager:
         archive: str | None = None,
         plan: str | None = None,
         snapshots: str | None = None,
+        instructions: str | None = None,
     ) -> int:
-        """估算 head+plan+archive+snapshot(+状态块)+body 的实际 Token 总量。"""
+        """估算 head+instructions+plan+archive+snapshot(+状态块)+body 的 Token 总量。"""
         total = self._count_messages(head) + self._count_messages(body)
+        if instructions:
+            total += _count_text_tokens(instructions) + 10
         plan_block = _render_plan(plan)
         if plan_block:
             total += _count_text_tokens(plan_block) + 10
@@ -953,9 +1045,11 @@ class ContextManager:
 
         return PromptStats(
             system_tokens=segment_tokens("system"),
+            instructions_tokens=segment_tokens("instructions"),
             plan_tokens=segment_tokens("plan"),
             archive_tokens=segment_tokens("archive"),
             snapshot_tokens=segment_tokens("snapshot"),
+            budget_tokens=segment_tokens("budget"),
             user_tokens=segment_tokens("user"),
             state_tokens=segment_tokens("state"),
             body_tokens=segment_tokens("body"),
