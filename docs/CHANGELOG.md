@@ -1092,3 +1092,16 @@ M3 试跑连续失败后回看完整提示词，定位到三类与任务难度�
   session id，并写回会话配置。`/trace auto` 仍可恢复每回合独立文件。
 - 验证：新增指针区分、错误保留、pytest 摘要、update_plan 确认、验证 guard、
   venv 解释器与 trace 追加的回归测试；677 passed / 2 skipped，ruff 全绿。
+
+### 工具错误归因修复（未发布）
+
+真实 M5 试跑中，模型对已存在的文件调用 `create_file`，工具返回
+`Error: file already exists...`，但 trace 的 `tool_call.error` 为 null、
+`run_summary.errors` 为 0，下游（如 Breeze Lens 的错误差异与
+`--fail-on-error-increase`）因此把失败记成成功。
+
+- `_execute_and_append` 在工具以文本返回失败时补充 `error`：仅异常路径继续
+  返回 None，字符串失败仍把完整结果交给模型与验证核对，只把错误首行写入
+  trace 与进度事件。工具失败前缀统一由 `_is_failure_result` 判定。
+- 验证：新增字符串失败必须计入 `tool_call.error`、`tool_end.ok=False` 与
+  `run_summary.errors` 的回归测试；全量 752 passed / 2 skipped，ruff 全绿。

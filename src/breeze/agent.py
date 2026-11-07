@@ -137,13 +137,21 @@ def _is_verification_call(name: str, arguments_json: str) -> bool:
     return isinstance(command, str) and bool(_VERIFICATION_COMMAND_RE.search(command))
 
 
+_FAILURE_PREFIXES = ("Error", "Tool execution failed", "Failed")
+
+
+def _is_failure_result(result: str) -> bool:
+    """工具以文本返回失败（而不是抛异常）时，统一按这些前缀识别。"""
+    return result.startswith(_FAILURE_PREFIXES)
+
+
 def _verification_ran(result: str) -> bool:
     """判断验证命令是否真的执行并产出了结果。
 
     参数/权限被拒绝时工具返回 ``Error: ...`` / ``Tool execution failed: ...``，
     这不是测试结论；把它当成“验证失败”会让模型去修一个并不存在的失败。
     """
-    return bool(result) and not result.startswith(("Error", "Tool execution failed", "Failed"))
+    return bool(result) and not _is_failure_result(result)
 
 
 def _verification_status(name: str, result: str) -> tuple[bool, str]:
@@ -154,7 +162,7 @@ def _verification_status(name: str, result: str) -> tuple[bool, str]:
         result: 工具返回的原始文本（不是压缩后的指针）。
     """
     first = result.splitlines()[0].strip() if result else ""
-    ok = not result.startswith(("Error", "Tool execution failed", "Failed"))
+    ok = not _is_failure_result(result)
 
     if name == "run_tests":
         ok = ok and first.replace(" ", "").startswith("exit_code=0")
@@ -879,9 +887,7 @@ class Agent:
                     continue
 
                 result = self._execute_and_append(tc, step)
-                succeeded = result is not None and not result.startswith(
-                    ("Error", "Tool execution failed", "Failed")
-                )
+                succeeded = result is not None and not _is_failure_result(result)
                 if succeeded:
                     read_suppressions.clear()
                 if tc.name == "read_file" and succeeded:
@@ -1533,11 +1539,18 @@ class Agent:
                 result = self._execute_shell(arguments, step)
             else:
                 result = registry.execute(tc.name, arguments)
-            error = None
+            exception_error = None
         except Exception as exc:
             result = f"Tool execution failed: {exc}"
-            error = str(exc)
+            exception_error = str(exc)
         latency_ms = (time.perf_counter() - start) * 1000
+
+        # 多数工具把失败写成 "Error: ..." 字符串而不是抛异常。若不在这里
+        # 归因，trace 与 run_summary 的 errors 会把失败记成成功，下游的
+        # Breeze Lens 错误指标与 --fail-on-error-increase 也会少计。
+        error = exception_error
+        if error is None and _is_failure_result(result):
+            error = result.splitlines()[0][:300]
 
         self.trace.log_tool(
             step=step,
@@ -1561,7 +1574,7 @@ class Agent:
         self.state.update(tc.name, arguments, result, step)
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        return None if error is not None else result
+        return None if exception_error is not None else result
 
     def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
         """按权限模式执行 run_shell。

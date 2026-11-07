@@ -818,10 +818,12 @@ def test_agent_stops_after_consecutive_edit_failures(
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
     assert len(apply_events) == 6
 
-    rejected = [e for e in apply_events if e["error"]]
+    rejected = [e for e in apply_events if "max_edit_failures" in (e["error"] or "")]
     assert len(rejected) == 3
-    assert all("max_edit_failures" in e["error"] for e in rejected)
     assert all("do not claim" in e["error"] for e in rejected)
+    failed = [e for e in apply_events if e["error"] and "max_edit_failures" not in e["error"]]
+    assert len(failed) == 3
+    assert all(e["error"].startswith("Error: old text not found") for e in failed)
 
 
 def test_agent_edit_failure_streak_resets_on_success(
@@ -863,7 +865,10 @@ def test_agent_edit_failure_streak_resets_on_success(
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
-    assert not [e for e in apply_events if e["error"]]
+    failed = [e for e in apply_events if e["error"]]
+    assert len(failed) == 4
+    assert all(e["error"].startswith("Error: old text not found") for e in failed)
+    assert sum(e["error"] is None for e in apply_events) == 2
 
 
 def test_agent_edit_failure_cap_resets_between_runs(
@@ -924,7 +929,9 @@ def test_agent_edit_failure_cap_ignores_read_tools(
 
     tool_events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
     apply_events = [e for e in tool_events if e["tool"] == "apply_patch"]
-    assert not [e for e in apply_events if e["error"]]
+    assert len(apply_events) == 1
+    assert apply_events[0]["error"]
+    assert "max_edit_failures" not in apply_events[0]["error"]
 
 
 # ─── 配置集成 ───
@@ -1988,6 +1995,32 @@ def test_rejected_verification_command_is_not_a_failed_check(
 
 
 # ─── 重复读取与跨回合状态 ───
+
+
+def test_tool_error_strings_are_recorded_as_errors(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """工具以 Error: 文本返回失败时，trace 与 run_summary 必须计入 errors。"""
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "Error: file already exists: x.py. Use apply_patch to modify it.",
+    )
+    llm = FakeLLMClient(
+        [_tool_call("create_file", {"path": "x.py", "content": "a"}), _text("done")]
+    )
+    events: list = []
+    agent = Agent(llm=llm, trace=trace, max_steps=4, on_event=events.append)
+
+    assert agent.run("go") == "done"
+
+    tool_event = [e for e in _events(trace.path) if e["event"] == "tool_call"][0]
+    assert tool_event["error"] == "Error: file already exists: x.py. Use apply_patch to modify it."
+    end_event = [e for e in events if e.kind == "tool_end"][0]
+    assert end_event.ok is False
+    assert trace.summary()["errors"] == 1
 
 
 def test_duplicate_read_is_suppressed_when_previous_copy_visible(
