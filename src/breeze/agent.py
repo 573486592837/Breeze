@@ -31,6 +31,9 @@ _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
 # 一次成功读取的覆盖信息：路径、文件版本、起始行、结束行、结果是否完整。
 # 行号为 None 表示未指定；完整读取以 1..∞ 参与覆盖判断。
 _ReadMeta = tuple[str, int, int | None, int | None, bool]
+# 同一路径的读取在副本仍可见时连续被抑制到第 3 次，说明模型没有在使用上下文，
+# 继续循环只会空耗步数；直接结束本回合并报告未完成。
+_MAX_DUPLICATE_READ_SUPPRESSIONS = 3
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -591,6 +594,8 @@ class Agent:
         read_call_ids: dict[tuple[str, int], list[str]] = {}
         read_retries: dict[tuple[str, int], int] = {}
         read_meta: dict[str, _ReadMeta] = {}
+        read_text: dict[str, str] = {}
+        read_suppressions: dict[str, int] = {}
         # 已成功的写操作：key = (工具名, 规范化参数)。同回合重复执行会把同一段
         # 代码插入多次，必须拦截。
         write_success: set[tuple[str, str]] = set()
@@ -803,7 +808,7 @@ class Agent:
                 assistant_message["reasoning_content"] = resp.reasoning_content
             self.messages.append(assistant_message)
 
-            for tc in tool_calls:
+            for call_index, tc in enumerate(tool_calls):
                 if tc.name in _WRITE_TOOLS and edit_failures >= self.max_edit_failures:
                     error_msg = (
                         f"Error: max_edit_failures ({self.max_edit_failures}) reached "
@@ -835,9 +840,37 @@ class Agent:
                     read_call_ids,
                     read_retries,
                     read_meta,
+                    read_text,
                     last_demoted_reads,
                     step,
                 ):
+                    arguments = _parsed_arguments(tc.arguments_json) or {}
+                    path = str(arguments.get("path") or "?")
+                    suppressed = read_suppressions.get(path, 0) + 1
+                    read_suppressions[path] = suppressed
+                    if suppressed >= _MAX_DUPLICATE_READ_SUPPRESSIONS:
+                        self.trace.log_guard(
+                            step,
+                            f"read loop stopped: {path} suppressed {suppressed} times",
+                        )
+                        # 其余 tool_call 必须补上结果，否则下一回合的请求会因
+                        # assistant tool_calls 缺少对应 tool 消息而被网关拒绝。
+                        for skipped in tool_calls[call_index:]:
+                            self.messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": skipped.id,
+                                    "content": "[skipped] turn stopped after repeated duplicate reads",
+                                }
+                            )
+                        return self._finish_turn(
+                            question,
+                            f"Stopped: read_file {path} was requested {suppressed} times "
+                            "while its content was already visible and unchanged. "
+                            "The task is not completed.",
+                            turn_start,
+                            edited_paths,
+                        )
                     continue
 
                 if tc.name in _WRITE_TOOLS and self._suppress_duplicate_write(
@@ -849,6 +882,8 @@ class Agent:
                 succeeded = result is not None and not result.startswith(
                     ("Error", "Tool execution failed", "Failed")
                 )
+                if succeeded:
+                    read_suppressions.clear()
                 if tc.name == "read_file" and succeeded:
                     arguments = _parsed_arguments(tc.arguments_json) or {}
                     path = arguments.get("path")
@@ -864,6 +899,7 @@ class Agent:
                         )
                         read_call_ids.setdefault(key, []).append(tc.id)
                         result_text = result or ""
+                        read_text[tc.id] = result_text
                         read_meta[tc.id] = (
                             path,
                             read_versions.get(path, 0),
@@ -1200,6 +1236,7 @@ class Agent:
         executed_ids: dict[tuple[str, int], list[str]],
         retries: dict[tuple[str, int], int],
         meta: dict[str, _ReadMeta],
+        texts: dict[str, str],
         demoted: frozenset[str],
         step: int,
     ) -> bool:
@@ -1217,6 +1254,7 @@ class Agent:
             executed_ids: (规范化参数, 文件版本) -> 实际执行过的 tool_call_id。
             retries: (规范化参数, 文件版本) -> 因副本不可见而放行的次数。
             meta: tool_call_id -> 本次读取覆盖的路径、版本、行范围与是否完整。
+            texts: tool_call_id -> 读取结果原文，用于在抑制时附带短预览。
             demoted: 上一份提示词中没有原文的 read tool_call_id。
             step: 当前步数，用于 trace。
 
@@ -1237,12 +1275,18 @@ class Agent:
 
         covered = self._covering_read(arguments, version, meta, demoted)
         if covered is not None:
+            cover_label, cover_id = covered
+            preview = self._read_preview(
+                texts.get(cover_id, ""),
+                start=start if isinstance(start, int) else None,
+                end=end if isinstance(end, int) else None,
+            )
             reason = (
-                f"is already covered by a visible earlier read ({covered}) this turn; "
+                f"is already covered by a visible earlier read ({cover_label}) this turn; "
                 "the file has not changed. Use that copy instead of re-reading; "
                 "if a specific fact is missing, say which fact."
             )
-            return self._emit_suppressed_read(tc, arguments, target, reason, step)
+            return self._emit_suppressed_read(tc, arguments, target, reason, step, preview)
 
         key = (
             json.dumps(arguments, sort_keys=True, ensure_ascii=False, separators=(",", ":")),
@@ -1254,13 +1298,15 @@ class Agent:
             return False
 
         prior = executed_ids.get(key, [])
-        if any(call_id not in demoted for call_id in prior):
+        visible_prior = [call_id for call_id in prior if call_id not in demoted]
+        if visible_prior:
             reason = (
                 "was already read with the same arguments this turn and that copy is still "
                 "visible; use it instead of re-reading."
             )
             requests[key] = count + 1
-            return self._emit_suppressed_read(tc, arguments, target, reason, step)
+            preview = self._read_preview(texts.get(visible_prior[0], ""))
+            return self._emit_suppressed_read(tc, arguments, target, reason, step, preview)
 
         if prior and retries.get(key, 0) < 1:
             retries[key] = retries.get(key, 0) + 1
@@ -1323,6 +1369,41 @@ class Agent:
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         return True
 
+    @staticmethod
+    def _read_preview(
+        text: str,
+        limit: int = 800,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> str:
+        """截取可见副本，避免模型收到抑制提示却看不到内容。
+
+        整文件副本覆盖行范围读取时，只挑出请求范围内的行；read_file 的结果
+        以 ``行号 | 内容`` 呈现，其余行对本次请求没有意义。
+        """
+        body = text.strip()
+        if body and start is not None:
+            lo = start
+            hi = end if end is not None else 10**9
+            picked: list[str] = []
+            for line in body.splitlines():
+                head, sep, _ = line.partition(" | ")
+                if not sep:
+                    continue
+                try:
+                    line_no = int(head.strip())
+                except ValueError:
+                    continue
+                if lo <= line_no <= hi:
+                    picked.append(line)
+            if picked:
+                body = "\n".join(picked)
+        if not body:
+            return ""
+        if len(body) <= limit:
+            return body
+        return f"{body[:limit]}\n... [truncated; {len(body) - limit} chars omitted]"
+
     def _emit_suppressed_read(
         self,
         tc: _ToolCall,
@@ -1330,9 +1411,15 @@ class Agent:
         target: str,
         reason: str,
         step: int,
+        preview: str = "",
     ) -> bool:
         """把被抑制的读取记录成一条工具消息，保证 tool_call 有对应结果。"""
         result = f"[duplicate read suppressed] read_file {target} {reason}"
+        if preview:
+            result += (
+                f"\n\nVisible earlier copy:\n{preview}\n\n"
+                "If this copy is sufficient, continue with the task without re-reading."
+            )
         self._emit(AgentEvent("tool_start", step, tool=tc.name))
         self.trace.log_tool(
             step=step,
@@ -1362,8 +1449,8 @@ class Agent:
         version: int,
         meta: dict[str, _ReadMeta],
         demoted: frozenset[str],
-    ) -> str | None:
-        """返回覆盖本次读取范围且仍可见的旧读取描述；没有则返回 None。"""
+    ) -> tuple[str, str] | None:
+        """返回覆盖本次读取范围且仍可见的旧读取 (描述, tool_call_id)；没有则返回 None。"""
         path = arguments.get("path")
         if not isinstance(path, str):
             return None
@@ -1376,11 +1463,11 @@ class Agent:
                 continue
             if prev_start is None and prev_end is None:
                 if full or complete:
-                    return "the full file"
+                    return ("the full file", call_id)
                 continue
             if full:
                 if complete and prev_start == 1 and prev_end is None:
-                    return "the full file"
+                    return ("the full file", call_id)
                 continue
             if not complete:
                 continue
@@ -1390,8 +1477,8 @@ class Agent:
             want_to = end if end is not None else 10**9
             if prev_from <= want_from and want_to <= prev_to:
                 if prev_end is None:
-                    return f"lines {prev_from}-end"
-                return f"lines {prev_from}-{prev_end}"
+                    return (f"lines {prev_from}-end", call_id)
+                return (f"lines {prev_from}-{prev_end}", call_id)
         return None
 
     def _execute_and_append(

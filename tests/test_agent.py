@@ -2024,6 +2024,68 @@ def test_duplicate_read_is_suppressed_when_previous_copy_visible(
     assert sum("duplicate read suppressed" in e["message"] for e in guards) == 2
 
 
+def test_suppressed_read_includes_visible_copy_preview(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抑制结果附带可见副本预览，避免模型因看不到内容而反复重读。"""
+    from breeze.tools import registry
+
+    monkeypatch.setattr(
+        registry,
+        "execute",
+        lambda _name, _arguments: "1 | def f():\n2 |     return 42\n--- (file has 2 lines total) ---",
+    )
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("read_file", {"path": "a.py"}, call_id="r1"),
+            _tool_call("read_file", {"path": "a.py"}, call_id="r2"),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("go") == "done"
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "[duplicate read suppressed]" in tool_messages[-1]
+    assert "Visible earlier copy:" in tool_messages[-1]
+    assert "return 42" in tool_messages[-1]
+
+
+def test_third_duplicate_read_suppression_stops_turn(
+    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一路径连续第 3 次被抑制时终止本回合，避免无限重读。"""
+    from breeze.tools import registry
+
+    executed: list[str] = []
+
+    def fake_execute(name, arguments):
+        if name == "read_file":
+            executed.append(str(arguments.get("path")))
+            return "1 | x"
+        return "ok"
+
+    monkeypatch.setattr(registry, "execute", fake_execute)
+
+    llm = FakeLLMClient(
+        [_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}") for i in range(1, 5)]
+        + [_text("done")]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=10)
+
+    result = agent.run("go")
+
+    assert result.startswith("Stopped: read_file a.py")
+    assert executed == ["a.py"]
+    guards = [e["message"] for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("read loop stopped: a.py suppressed 3 times" in g for g in guards)
+    tool_ids = {m["tool_call_id"] for m in agent.messages if m.get("role") == "tool"}
+    for message in agent.messages:
+        for call in message.get("tool_calls") or []:
+            assert call["id"] in tool_ids
+
+
 def test_range_read_covered_by_visible_full_read_is_suppressed(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2055,6 +2117,9 @@ def test_range_read_covered_by_visible_full_read_is_suppressed(
     assert executed == [("a.py", None)]
     tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
     assert "already covered by a visible earlier read (the full file)" in tool_messages[-1]
+    assert "10 | line 10" in tool_messages[-1]
+    assert "11 | line 11" in tool_messages[-1]
+    assert "100 | line 100" not in tool_messages[-1]
 
 
 def test_truncated_full_read_does_not_cover_range(
