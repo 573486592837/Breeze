@@ -419,6 +419,7 @@ class PromptStats:
     system_tokens: int = 0
     plan_tokens: int = 0
     archive_tokens: int = 0
+    snapshot_tokens: int = 0
     user_tokens: int = 0
     state_tokens: int = 0
     body_tokens: int = 0
@@ -431,6 +432,7 @@ class PromptStats:
             "system": self.system_tokens,
             "plan": self.plan_tokens,
             "archive": self.archive_tokens,
+            "snapshot": self.snapshot_tokens,
             "user": self.user_tokens,
             "state": self.state_tokens,
             "body": self.body_tokens,
@@ -470,6 +472,7 @@ class ContextManager:
         plan: str | None = None,
         *,
         include_state: bool = False,
+        snapshots: str | None = None,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
@@ -480,6 +483,7 @@ class ContextManager:
             plan: Agent 维护的短期计划；非空时追加在 body 之后、state 之前，
                 避免计划更新切断历史缓存前缀。
             include_state: 回合启动时注入上一回合遗留的状态索引。
+            snapshots: 回合启动时注入的工作集文件内容；不参与降级。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
@@ -490,6 +494,7 @@ class ContextManager:
             archive=archive,
             plan=plan,
             include_state=include_state,
+            snapshots=snapshots,
         )
         return result
 
@@ -501,6 +506,7 @@ class ContextManager:
         plan: str | None = None,
         *,
         include_state: bool = False,
+        snapshots: str | None = None,
     ) -> tuple[list[dict[str, Any]], PromptStats]:
         """构建消息列表，并返回本次提示词的组成与缓存复用量。
 
@@ -545,15 +551,24 @@ class ContextManager:
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
         soft_budget = self.config.intra_turn_budget
         counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan) > soft_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots) > soft_budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, soft_budget, state, archive, plan, SPILL_TOOLS
+                head,
+                converted,
+                id_to_name,
+                id_to_args,
+                soft_budget,
+                state,
+                archive,
+                plan,
+                snapshots,
+                SPILL_TOOLS,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
 
         hard_budget = self.config.hard_budget
-        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots) > hard_budget:
             protected = self._latest_read_ids(body)
             converted, spilled = self._spill(
                 head,
@@ -564,15 +579,25 @@ class ContextManager:
                 state,
                 archive,
                 plan,
+                snapshots,
                 READ_TOOLS,
                 protect=protected,
                 min_chars=READ_SPILL_MIN_CHARS,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
-        if self._measure(head, converted, counted_state, archive, plan) > hard_budget:
+        if self._measure(head, converted, counted_state, archive, plan, snapshots) > hard_budget:
             converted, spilled = self._spill(
-                head, converted, id_to_name, id_to_args, hard_budget, state, archive, plan, READ_TOOLS
+                head,
+                converted,
+                id_to_name,
+                id_to_args,
+                hard_budget,
+                state,
+                archive,
+                plan,
+                snapshots,
+                READ_TOOLS,
             )
             demoted = demoted or spilled
 
@@ -604,6 +629,8 @@ class ContextManager:
         if archive:
             add({"role": "user", "content": archive}, "archive")
         add(head[1], "user")
+        if snapshots:
+            add({"role": "user", "content": snapshots}, "snapshot")
         for msg in converted:
             add(msg, "body")
         plan_block = _render_plan(plan)
@@ -629,6 +656,7 @@ class ContextManager:
         state: Any | None,
         archive: str | None,
         plan: str | None,
+        snapshots: str | None,
         classes: frozenset[str],
         *,
         protect: frozenset[str] = frozenset(),
@@ -649,6 +677,7 @@ class ContextManager:
             state: 用于计入状态块开销，可为 None。
             archive: 回合归档文本，计入 head 开销，可为 None。
             plan: 计划块文本，计入 head 开销，可为 None。
+            snapshots: 工作集快照文本，计入 head 开销且不参与降级，可为 None。
             classes: 本次允许降级的工具类别。
             protect: 本轮不降级的 tool_call_id 集合。
             min_chars: 小于该字符数的结果不参与降级。
@@ -657,7 +686,7 @@ class ContextManager:
             (新列表, 是否发生降级)。
         """
         out = list(converted)
-        if self._measure(head, out, state, archive, plan) <= budget:
+        if self._measure(head, out, state, archive, plan, snapshots) <= budget:
             return out, False
 
         candidates: list[tuple[int, int]] = []
@@ -678,7 +707,7 @@ class ContextManager:
 
         changed = False
         for _, i in candidates:
-            if self._measure(head, out, state, archive, plan) <= budget:
+            if self._measure(head, out, state, archive, plan, snapshots) <= budget:
                 break
             msg = out[i]
             tool = id_to_name.get(msg.get("tool_call_id", ""), "")
@@ -801,14 +830,17 @@ class ContextManager:
         state: Any | None,
         archive: str | None = None,
         plan: str | None = None,
+        snapshots: str | None = None,
     ) -> int:
-        """估算 head+plan+archive(+状态块)+body 的实际 Token 总量。"""
+        """估算 head+plan+archive+snapshot(+状态块)+body 的实际 Token 总量。"""
         total = self._count_messages(head) + self._count_messages(body)
         plan_block = _render_plan(plan)
         if plan_block:
             total += _count_text_tokens(plan_block) + 10
         if archive:
             total += _count_text_tokens(archive) + 10
+        if snapshots:
+            total += _count_text_tokens(snapshots) + 10
         if state is not None:
             block = state.render()
             if block:
@@ -835,6 +867,7 @@ class ContextManager:
             system_tokens=segment_tokens("system"),
             plan_tokens=segment_tokens("plan"),
             archive_tokens=segment_tokens("archive"),
+            snapshot_tokens=segment_tokens("snapshot"),
             user_tokens=segment_tokens("user"),
             state_tokens=segment_tokens("state"),
             body_tokens=segment_tokens("body"),

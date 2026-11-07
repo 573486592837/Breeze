@@ -224,6 +224,8 @@ def test_defaults_context_fields() -> None:
         "cross_turn",
         "intra_turn_budget",
         "hard_budget",
+        "snapshot_max_files",
+        "snapshot_max_chars",
         "state_max_entries",
         "tool_result_max_bytes",
         "tool_result_head_bytes",
@@ -239,6 +241,8 @@ def test_defaults_context_v2_values() -> None:
     ctx = DEFAULTS["context"]
     assert ctx["intra_turn_budget"] == 24000
     assert ctx["hard_budget"] == 24000
+    assert ctx["snapshot_max_files"] == 4
+    assert ctx["snapshot_max_chars"] == 32000
     assert ctx["state_max_entries"] == 8
 
 

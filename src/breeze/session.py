@@ -7,6 +7,9 @@ resume 时同时重建 TurnLedger 与 SessionState：前者提供上一回合的
 后者提供符号索引与读取范围。只恢复问答结论会让接续后的第一句追问
 重新通读文件——那正是单回合内已验证过的失忆成本。
 
+工作集快照单独存放在 `<session>.snapshots.json` sidecar：它体积大、
+可整体失效，和 append-only 的事件流分开写更安全，也不会进入 --list。
+
 选择 JSONL 而非 pickle/SQLite：与 trace 同族、零依赖、人可读，
 损坏也只坏一行。
 """
@@ -102,6 +105,7 @@ class SessionStore:
         self.session_dir = _resolve_dir(session_dir)
         self.session_id = session_id or _new_session_id()
         self.path = self.session_dir / f"{self.session_id}.jsonl"
+        self.snapshots_path = self.session_dir / f"{self.session_id}.snapshots.json"
         self._repo_root = str(repo_root)
         self._model = model
         self._pending_config: dict[str, Any] = {}
@@ -184,10 +188,37 @@ class SessionStore:
     def record_reset(self) -> None:
         """记录 /new：resume 时该事件之前的回合与状态不参与恢复。
 
-        会话还没有落盘过任何回合时不写文件——空会话不留痕。
+        会话还没有落盘过任何回合时不写文件——空会话不留痕；工作集快照
+        sidecar 一并删除。
         """
+        self.snapshots_path.unlink(missing_ok=True)
         if self.path.exists():
             self._append({"event": "reset", "ts": _now_iso()})
+
+    def load_snapshots(self) -> dict[str, Any]:
+        """读回工作集快照 sidecar；不存在或损坏时返回空 dict。"""
+        if not self.snapshots_path.is_file():
+            return {}
+        try:
+            data = json.loads(self.snapshots_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_snapshots(self, data: dict[str, Any]) -> None:
+        """原子写入工作集快照 sidecar；没有文件时删除旧 sidecar。
+
+        Args:
+            data: SnapshotStore.to_dict() 的结果。
+        """
+        files = data.get("files") if isinstance(data, dict) else None
+        if not files:
+            self.snapshots_path.unlink(missing_ok=True)
+            return
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.snapshots_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.snapshots_path)
 
     def load(self) -> tuple[TurnLedger, SessionState]:
         """读回会话，重建回合归档与会话状态。

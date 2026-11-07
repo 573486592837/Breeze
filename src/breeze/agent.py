@@ -16,6 +16,7 @@ from breeze.config import PERMISSION_MODES, settings
 from breeze.context import ContextManager
 from breeze.instructions import load_project_instructions, render_project_instructions
 from breeze.llm import LLMClient, LLMResponse
+from breeze.snapshots import SnapshotStore
 from breeze.state import SessionState, TurnLedger
 from breeze.tools import registry, shell
 from breeze.trace import RunTrace
@@ -65,6 +66,25 @@ _EDIT_CLAIM_NUDGE = (
 _EMPTY_ANSWER_NUDGE = (
     "你刚才的回复没有内容。请用简洁的中文直接给出最终答案："
     "准确说明已经完成和尚未完成的部分，不要再调用工具。"
+)
+
+# 真实试跑中出现过：模型没有调用工具，而是用“Let me / 我将先”这类计划作最终回答。
+# 只匹配句首的第一人称意图或明确的步骤引导，避免把最终报告里的
+# “建议下一步：……”误判成计划。
+_PLAN_ANSWER_RE = re.compile(
+    r"(?:^|\n)\s*(?:let me\b(?!\s+know)|i'll\b|i\s+will\b|i'm\s+going\s+to\b|"
+    r"i\s+am\s+going\s+to\b)\s*(?:add|create|fix|update|implement|modify|edit|write|run|read|check|"
+    r"apply|patch|change|refactor|remove|delete|test|now\b)"
+    r"|(?:^|\n)\s*(?:让我|我将|我会|我准备|我打算|我先)(?:先|来|直接|再|现在)?"
+    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)"
+    r"|(?:^|\n)\s*(?:首先|接下来|下一步)[，,:：]?\s*(?:我)?(?:将|会|要|先)?"
+    r"(?:添加|创建|修复|修改|更新|实现|运行|读取|检查|写|改|补|重跑|查看|调整)",
+    re.IGNORECASE,
+)
+_PLAN_ANSWER_NUDGE = (
+    "你的最终回答给出的是接下来要执行的计划（例如“Let me ...”“我将先...”），"
+    "但本轮没有继续调用工具，计划并未执行。请现在真正执行计划中的工具调用；"
+    "如果任务已经完成或无法继续，请直接给出结果和原因，不要以计划结尾。"
 )
 
 _VERIFICATION_CLAIM_RE = re.compile(
@@ -166,6 +186,15 @@ def _claims_completed_edit(text: str) -> bool:
             continue
         return True
     return False
+
+
+def _is_plan_answer(text: str) -> bool:
+    """判断最终回答是否只是“接下来要做什么”的计划。
+
+    只在句首匹配第一人称意图或明确的步骤引导；最终报告末尾的
+    “建议下一步：……”不会命中。调用方只在没有工具调用时使用。
+    """
+    return bool(text) and bool(_PLAN_ANSWER_RE.search(text))
 
 
 def _parsed_arguments(arguments_json: str) -> dict[str, Any] | None:
@@ -447,6 +476,7 @@ class Agent:
         max_edit_failures: int | None = None,
         system_prompt: str | None = None,
         context: ContextManager | None = None,
+        snapshots: SnapshotStore | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
         capabilities: Capabilities | None = None,
         permission_mode: str | None = None,
@@ -461,6 +491,7 @@ class Agent:
             max_edit_failures: 单次运行允许的连续编辑失败次数；成功编辑后清零。
             system_prompt: 系统提示。None 时使用默认提示并附当前运行环境说明。
             context: 上下文管理器。
+            snapshots: 跨回合工作集快照；None 时使用默认配置。
             on_event: 进度回调，仅用于展示；不影响 prompt 与 trace。
             capabilities: 环境能力；None 时探测 settings.repo_root。
             permission_mode: run_shell 权限模式（strict / confirm / open）。
@@ -496,6 +527,7 @@ class Agent:
             )
         )
         self.context = context or ContextManager()
+        self.snapshots = snapshots or SnapshotStore()
         self.state = SessionState()
         self.ledger = TurnLedger()
         self.messages: list[dict[str, Any]] = []
@@ -526,10 +558,12 @@ class Agent:
         edits_this_turn = 0
         edit_failures = 0
         edit_claim_nudged = False
+        plan_answer_nudged = False
         last_verification: tuple[bool, str] | None = None
         verification_fix_nudged = False
         verification_claim_nudged = False
         last_final_answer: str | None = None
+        edited_paths: list[str] = []
         # read_file 去重：key = (规范化参数, 文件版本)，值为本回合执行次数。
         read_requests: dict[tuple[str, int], int] = {}
         read_versions: dict[str, int] = {}
@@ -569,12 +603,15 @@ class Agent:
             tools = registry.schemas(self.tool_names)
             tool_choice = None if remaining > 1 else "none"
             view = self._llm_view(turn_start)
+            include_prior = step == 0 and self._has_prior_turn()
+            snapshot_block = self.snapshots.render() if include_prior else None
             llm_messages, prompt_stats = self.context.build_with_stats(
                 view,
                 state=self.state,
                 archive=self._turn_archive(),
                 plan=self.state.plan,
-                include_state=step == 0 and self._has_prior_turn(),
+                include_state=include_prior,
+                snapshots=snapshot_block,
             )
 
             self._emit(AgentEvent("llm_start", step))
@@ -625,17 +662,32 @@ class Agent:
                 if answer:
                     answer = self._guard_missing_edits(step, answer, edits_this_turn)
                     answer = self._guard_failed_verification(step, answer, last_verification)
-                    return self._finish_turn(question, answer, turn_start)
+                    return self._finish_turn(question, answer, turn_start, edited_paths)
                 return self._finish_turn(
                     question,
                     f"Reached max steps ({self.max_steps}), task not completed.",
                     turn_start,
+                    edited_paths,
                 )
 
             if not tool_calls:
                 answer = resp.content or ""
                 if not answer.strip():
                     answer = self._recover_empty_answer(step, turn_start)
+                if (
+                    _is_plan_answer(answer)
+                    and not _claims_completed_edit(answer)
+                    and not plan_answer_nudged
+                    and remaining > 1
+                ):
+                    plan_answer_nudged = True
+                    self.messages.append({"role": "assistant", "content": answer})
+                    self.messages.append({"role": "user", "content": _PLAN_ANSWER_NUDGE})
+                    self.trace.log_guard(
+                        step,
+                        "final answer was a plan with no tool call; re-prompting to execute",
+                    )
+                    continue
                 if (
                     _claims_completed_edit(answer)
                     and edits_this_turn == 0
@@ -673,7 +725,7 @@ class Agent:
                 answer = self._guard_missing_edits(step, answer, edits_this_turn)
                 answer = self._guard_failed_verification(step, answer, last_verification)
                 last_final_answer = answer
-                return self._finish_turn(question, answer, turn_start)
+                return self._finish_turn(question, answer, turn_start, edited_paths)
 
             assistant_message: dict[str, Any] = {
                 "role": "assistant",
@@ -743,6 +795,9 @@ class Agent:
                     path = arguments.get("path")
                     if isinstance(path, str):
                         read_versions[path] = read_versions.get(path, 0) + 1
+                        self.snapshots.invalidate(path)
+                        if path not in edited_paths:
+                            edited_paths.append(path)
                 if tc.name in _WRITE_TOOLS:
                     if succeeded:
                         edit_failures = 0
@@ -766,7 +821,7 @@ class Agent:
                 self.trace.log_guard(step, "verification failed; asking to fix before final answer")
 
         answer = last_final_answer or f"Reached max steps ({self.max_steps}), task not completed."
-        return self._finish_turn(question, answer, turn_start)
+        return self._finish_turn(question, answer, turn_start, edited_paths)
 
     def _refresh_capabilities(self) -> bool:
         """重新探测环境能力；变化时同步工具集。"""
@@ -814,6 +869,7 @@ class Agent:
         self.messages = []
         self.ledger = TurnLedger()
         self.state = SessionState()
+        self.snapshots.clear()
         self.context.reset()
         self._refresh_default_prompt()
 
@@ -903,13 +959,20 @@ class Agent:
         self._emit(AgentEvent("llm_end", step, tokens=resp.total_tokens, tool_calls=0))
         return (resp.content or "").strip() or "(empty response)"
 
-    def _finish_turn(self, question: str, answer: str, turn_start: int) -> str:
-        """把本回合的问答结论与触碰文件归档，返回答案。
+    def _finish_turn(
+        self,
+        question: str,
+        answer: str,
+        turn_start: int,
+        edited_paths: list[str] | None = None,
+    ) -> str:
+        """把本回合的问答结论、触碰文件与工作集快照归档，返回答案。
 
         Args:
             question: 本回合的用户问题。
             answer: 本回合最终答案。
             turn_start: 本回合在消息日志中的起始下标。
+            edited_paths: 本回合成功编辑的路径。
 
         Returns:
             答案原文（便于调用点直接 return）。
@@ -930,8 +993,24 @@ class Agent:
                 if isinstance(path, str) and path not in touched:
                     touched.append(path)
 
+        self._capture_snapshots(touched, edited_paths or [], len(self.ledger.records) + 1)
         self.ledger.record(question, answer, touched)
         return answer
+
+    def _capture_snapshots(self, touched: list[str], edited: list[str], turn: int) -> None:
+        """按本回合的工作集捕获少量文件的当前内容，供下一回合注入。"""
+        if not self.context.config.enable or not self.snapshots.enabled:
+            return
+        if not touched and not edited:
+            return
+        with contextlib.suppress(Exception):
+            self.snapshots.capture(
+                touched,
+                turn=turn,
+                edited=edited,
+                plan=self.state.plan,
+                read_hits=self.state.read_hits,
+            )
 
     def _llm_view(self, turn_start: int) -> list[dict[str, Any]]:
         """选择发给上下文管理器的消息视图。
@@ -948,7 +1027,11 @@ class Agent:
         if self.ledger.records:
             return True
         return bool(
-            self.state.reads or self.state.edits or self.state.symbols or self.state.tests
+            self.state.reads
+            or self.state.edits
+            or self.state.symbols
+            or self.state.tests
+            or self.snapshots
         )
 
     def _turn_archive(self) -> str | None:

@@ -49,6 +49,50 @@ def test_empty_session_writes_no_file(tmp_path: Path) -> None:
     store.record_reset()
 
     assert not store.path.exists()
+    assert not store.snapshots_path.exists()
+
+
+def test_snapshots_sidecar_round_trip(tmp_path: Path) -> None:
+    """工作集快照写入独立 sidecar，并可读回。"""
+    store = _store(tmp_path)
+    data = {
+        "version": 1,
+        "files": [{"path": "a.py", "content": "x = 1\n", "captured_turn": 1}],
+    }
+
+    store.save_snapshots(data)
+
+    assert store.snapshots_path.exists()
+    assert SessionStore(tmp_path / "sessions", "s1").load_snapshots() == data
+
+
+def test_snapshots_sidecar_removed_when_empty(tmp_path: Path) -> None:
+    """没有快照时删除旧 sidecar，避免恢复过期内容。"""
+    store = _store(tmp_path)
+    store.save_snapshots({"version": 1, "files": [{"path": "a.py", "content": "x"}]})
+
+    store.save_snapshots({"version": 1, "files": []})
+
+    assert not store.snapshots_path.exists()
+
+
+def test_reset_removes_snapshots_sidecar(tmp_path: Path) -> None:
+    """/new 后 resume 不应带回旧工作集。"""
+    store = _store(tmp_path)
+    store.save_snapshots({"version": 1, "files": [{"path": "a.py", "content": "x"}]})
+
+    store.record_reset()
+
+    assert not store.snapshots_path.exists()
+
+
+def test_corrupt_snapshots_sidecar_returns_empty(tmp_path: Path) -> None:
+    """损坏的 sidecar 按空处理。"""
+    store = _store(tmp_path)
+    store.session_dir.mkdir(parents=True)
+    store.snapshots_path.write_text("{not json", encoding="utf-8")
+
+    assert store.load_snapshots() == {}
 
 
 def test_first_turn_writes_start_event_then_turn(tmp_path: Path) -> None:

@@ -874,3 +874,30 @@ def test_repeated_reads_injected_without_compression() -> None:
     text = "\n".join(str(msg.get("content")) for msg in result)
     assert "[Repeated reads this turn" in text
     assert stats.state_tokens > 0
+
+
+def test_snapshot_block_injected_and_counted() -> None:
+    """工作集快照作为独立 user 消息注入，并计入组成统计。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    block = "[Working set — file contents]\nvalue = 1"
+
+    result, stats = cm.build_with_stats([_system(), _user("继续")], snapshots=block)
+
+    assert result[-1] == {"role": "user", "content": block}
+    assert stats.snapshot_tokens > 0
+    assert stats.breakdown()["snapshot"] == stats.snapshot_tokens
+
+
+def test_snapshot_survives_budget_spill() -> None:
+    """快照不可降级：预算紧张时仍保留完整内容。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=1))
+    block = "[Working set — file contents]\nkeep_me = True"
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "run_shell", '{"command": "git status"}', "exit_code: 0\n" + "x" * 4000),
+    ]
+
+    result = cm.build(messages, snapshots=block)
+
+    assert any(msg.get("content") == block for msg in result)

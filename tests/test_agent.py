@@ -614,6 +614,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
             plan=None,
             *,
             include_state: bool = False,
+            snapshots=None,
         ):
             seen_state.append(state is not None)
             return super().build_with_stats(
@@ -622,6 +623,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
                 archive=archive,
                 plan=plan,
                 include_state=include_state,
+                snapshots=snapshots,
             )
 
     class RecordingLLM:
@@ -1329,6 +1331,66 @@ def test_agent_empty_answer_recovery_runs_once(trace: RunTrace) -> None:
     assert len(llm.calls) == 2
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Both failures are clear.\n\nLet me fix the test file. First add the pytest import:",
+        "我将先修改 cli.py，然后补测试。",
+        "首先添加 `get_run_tools`。",
+        "让我直接修复 `tests/test_diff.py`。",
+    ],
+)
+def test_is_plan_answer_detects_intent(text: str) -> None:
+    """句首的第一人称意图或步骤引导视为计划式回答。"""
+    from breeze.agent import _is_plan_answer
+
+    assert _is_plan_answer(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "建议下一步：在 query.py 末尾追加 get_run_tools。",
+        "已完成实现：新增了 diff 命令，57 passed。",
+        "Let me know if you need anything else.",
+        "下一步 | 在 cli.py 注册 diff 命令。",
+    ],
+)
+def test_is_plan_answer_ignores_reports(text: str) -> None:
+    """最终报告里的建议与完成声明不算计划。"""
+    from breeze.agent import _is_plan_answer
+
+    assert not _is_plan_answer(text)
+
+
+def test_agent_reprompts_when_answer_is_a_plan(trace: RunTrace, fake_tool: None) -> None:
+    """无工具调用的计划式回答应触发一次纠正，而不是直接归档。"""
+    llm = FakeLLMClient(
+        [
+            _text("Both failures are clear.\n\nLet me fix the test. First add the import:"),
+            _tool_call("fake_echo", {"text": "done"}),
+            _text("已修复并验证。"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("修复测试") == "已修复并验证。"
+    assert len(llm.calls) == 3
+    assert "计划" in llm.calls[1]["messages"][-1]["content"]
+    guards = [e for e in _events(trace.path) if e["event"] == "guard"]
+    assert any("final answer was a plan" in e["message"] for e in guards)
+
+
+def test_agent_plan_answer_repropted_once(trace: RunTrace, fake_tool: None) -> None:
+    """连续给计划时只纠正一次，第二次计划作为最终答案返回。"""
+    plan = "Let me fix the test file."
+    llm = FakeLLMClient([_text(plan), _text(plan)])
+    agent = Agent(llm=llm, trace=trace, max_steps=6)
+
+    assert agent.run("修复测试") == plan
+    assert len(llm.calls) == 2
+
+
 # ─── 多回合会话 ───
 
 
@@ -1337,7 +1399,7 @@ def test_agent_archives_completed_turns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """第二回合的 LLM 视图应含上一回合问答，且不含其工具结果原文。"""
+    """第二回合的 LLM 视图应含上一回合问答，并注入工作集而不是工具结果原文。"""
     from breeze.config import settings
 
     root = tmp_path.resolve()
@@ -1361,7 +1423,10 @@ def test_agent_archives_completed_turns(
     assert "[Completed turns" in joined
     assert "where is target defined?" in joined
     assert "turn1 conclusion" in joined
-    assert "def target():" not in joined
+    # L2：上一回合触碰过的文件内容以工作集快照注入，而不是原始 tool 消息。
+    assert "[Working set" in joined
+    assert "def target():" in joined
+    assert not any(m.get("role") == "tool" for m in turn2_view)
 
     # 归档的触碰文件来自真实工具参数
     assert agent.ledger.records[0].touched == ["a.py"]
@@ -1369,6 +1434,65 @@ def test_agent_archives_completed_turns(
 
     # 完整消息日志仍在 self.messages 里供调试
     assert any("def target():" in str(m.get("content", "")) for m in agent.messages)
+
+
+def test_agent_injects_post_edit_snapshot_next_turn(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上一回合创建/编辑的文件内容应作为工作集注入下一回合。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "new.py", "content": "value = 42\n"}),
+            _text("created"),
+            _text("answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("create new.py") == "created"
+    assert agent.run("what is the value?") == "answer"
+
+    turn2_view = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in turn2_view)
+    assert "[Working set" in joined
+    assert "value = 42" in joined
+
+
+def test_agent_skips_snapshot_changed_between_turns(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件在回合间被外部修改后，旧快照不得注入。"""
+    from breeze.config import settings
+
+    root = tmp_path.resolve()
+    monkeypatch.setattr(settings, "repo_root", root)
+
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "new.py", "content": "value = 1\n"}),
+            _text("created"),
+            _text("answer"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace)
+
+    assert agent.run("create new.py") == "created"
+    target = root / "new.py"
+    target.write_text("value = 2\n", encoding="utf-8")
+    assert agent.run("what is the value?") == "answer"
+
+    turn2_view = llm.calls[2]["messages"]
+    joined = " ".join(str(m.get("content", "")) for m in turn2_view)
+    assert "value = 1" not in joined
 
 
 def test_agent_second_turn_view_only_grows_within_turn(

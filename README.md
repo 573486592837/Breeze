@@ -300,7 +300,8 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
   写工具仍限制在仓库内）
 - `[context]`：enable、cross_turn（archive / append，默认 archive；append 保留全部
   历史，用于成本对照）、profile（压缩档位）、intra_turn_budget（回合软预算）、
-  hard_budget（回合硬上限）、state_max_entries、tool_result_max/head/tail_bytes
+  hard_budget（回合硬上限）、snapshot_max_files / snapshot_max_chars（跨回合
+  工作集快照；max_files=0 关闭）、state_max_entries、tool_result_max/head/tail_bytes
 - `[chat]`：answer_preview、max_records、max_chars（跨回合归档预算）
 - `[sessions]`：dir（会话文件目录，默认 `~/.breeze/sessions`）
 - `[trace]`：dir、capture_messages（调试开关，默认 false；开启后把每次发送给 LLM
@@ -360,6 +361,13 @@ Agent 会记录本回合最后一次 `run_tests` / `run_shell` 中的 pytest、r
 达到步数上限时保留模型最后一条文本答案；若它声称完成了编辑而本轮没有成功的
 编辑，则在答案前标注 `[未检测到成功的编辑]`。
 
+### 计划式回答
+
+模型有时不调用工具，而是用“Let me fix ...”“我将先修改 ...”“首先添加 ...”
+这类下一步计划作为最终回答。Agent 在句首识别第一人称意图与步骤引导（不匹配
+最终报告里的“建议下一步：”或完成声明），发现本轮没有再调用工具时追加一次
+纠正提示，要求真正执行计划；只纠正一次，仍以计划结尾则按原样归档。
+
 ### 推理模型的思考过程
 
 当 provider 返回 `reasoning_content`（如 DeepSeek reasoner）时，Agent 会把它
@@ -373,10 +381,18 @@ Agent 会记录本回合最后一次 `run_tests` / `run_shell` 中的 pytest、r
 tests），而不是等到压缩发生才注入。这些事实来自真实工具结果，并且：
 
 - `apply_patch` / `create_file` / `delete_path` / `git_restore` 成功后，该文件的
-  读取范围、符号位置与重复读取计数立即失效，避免模型用旧行号编辑；
+  读取范围、符号位置、重复读取计数与工作集快照立即失效，避免模型用旧行号编辑；
 - 编辑过后，上一次测试结果标记为 stale，提醒重新验证；
-- 状态块有条目上限并放在消息末尾，不切断回合内前缀；
-- 文件内容本身不跨回合保留，模型仍按需读取，但不必重新探索已索引的文件。
+- 状态块有条目上限并放在消息末尾，不切断回合内前缀。
+
+回合结束时还会从磁盘捕获**有界的工作集快照**：最多 `snapshot_max_files`
+（默认 4）个文件的当前内容，整块不超过 `snapshot_max_chars`（默认 32000
+字符，约 8K Token），下一回合第一次请求时作为不可降级的 user 消息注入。
+入选顺序是“本回合编辑 > 计划提及 > 跨回合读取频次 > 最近触碰”，因此刚改过
+的文件和反复查看的测试文件不必重新读取。注入前用 mtime + size 校验，文件
+在回合间被外部改动或删除时旧快照直接丢弃；快照存放在会话旁的
+`<session>.snapshots.json`，`--resume` 时恢复，`/new` 时删除。`max_files=0`
+可关闭该功能。
 
 ### 仓库虚拟环境
 

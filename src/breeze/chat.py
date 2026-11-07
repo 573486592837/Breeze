@@ -111,6 +111,9 @@ def run_chat(
                 agent = agent_factory(trace)
                 if session is not None:
                     agent.ledger, agent.state = session.load()
+                    snapshots = getattr(agent, "snapshots", None)
+                    if snapshots is not None:
+                        snapshots.restore(session.load_snapshots())
                 if agent_setup_fn is not None:
                     agent_setup_fn(agent)
             else:
@@ -133,6 +136,9 @@ def run_chat(
         turns += 1
         if session is not None and ledger is not None and not turn_aborted:
             session.record_turn(ledger.records[-1], agent.state, trace.summary())
+            snapshots = getattr(agent, "snapshots", None)
+            if snapshots is not None:
+                session.save_snapshots(snapshots.to_dict())
 
         answer_fn(answer)
         summary_fn(trace.summary(), turns)

@@ -43,6 +43,7 @@ class SessionState:
         symbols: 符号名 -> "file:line"，来自 grep 命中与 read 内容。
         reads: 文件路径 -> 最近读取描述，按最近一次读取排序。
         read_counts: 本回合内的读取次数，用于重复读取提示，不跨回合持久化。
+        read_hits: 文件路径 -> 跨回合读取次数，用于工作集快照选择。
         edits: 文件路径 -> 最近一次编辑结果描述。
         tests: 最近一次 run_tests 的一行摘要。
         plan: Agent 通过 update_plan 维护的短期计划。
@@ -58,6 +59,7 @@ class SessionState:
         self.symbols: dict[str, str] = {}
         self.reads: dict[str, str] = {}
         self.read_counts: dict[tuple[str, Any, Any], int] = {}
+        self.read_hits: dict[str, int] = {}
         self.edits: dict[str, str] = {}
         self.tests: str = ""
         self.tests_stale = False
@@ -119,6 +121,11 @@ class SessionState:
             for key, count in self.read_counts.items()
             if not _same_or_under(key[0], path)
         }
+        self.read_hits = {
+            candidate: count
+            for candidate, count in self.read_hits.items()
+            if not _same_or_under(candidate, path)
+        }
         if self.tests:
             self.tests_stale = True
 
@@ -131,6 +138,7 @@ class SessionState:
         total = total_match.group(1) if total_match else "?"
 
         self.read_counts[(path, start, end)] = self.read_counts.get((path, start, end), 0) + 1
+        self.read_hits[path] = self.read_hits.get(path, 0) + 1
 
         if start and end:  # noqa: SIM108
             desc = f"lines {start}-{end} of {total} (step {step})"
@@ -173,6 +181,7 @@ class SessionState:
         return {
             "symbols": dict(self.symbols),
             "reads": dict(self.reads),
+            "read_hits": dict(self.read_hits),
             "edits": dict(self.edits),
             "tests": self.tests,
             "tests_stale": self.tests_stale,
@@ -192,6 +201,7 @@ class SessionState:
         st = cls()
         st.symbols.update(data.get("symbols") or {})
         st.reads.update(data.get("reads") or {})
+        st.read_hits.update(data.get("read_hits") or {})
         st.edits.update(data.get("edits") or {})
         st.tests = data.get("tests") or ""
         st.tests_stale = bool(data.get("tests_stale"))
