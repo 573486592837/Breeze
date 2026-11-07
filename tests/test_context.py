@@ -901,3 +901,45 @@ def test_snapshot_survives_budget_spill() -> None:
     result = cm.build(messages, snapshots=block)
 
     assert any(msg.get("content") == block for msg in result)
+
+
+def test_hard_limit_drops_oldest_read_before_newest() -> None:
+    """硬上限兜底时先丢旧读取，刚读到的内容不能被更大的旧结果挤掉。"""
+    old = _code_lines(40, prefix="old")
+    new = _code_lines(120, prefix="new")
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c_old", "read_file", '{"path": "old.py"}', old),
+        *_round("c_new", "read_file", '{"path": "new.py"}', new),
+    ]
+    probe = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=10**9))
+    total = probe._measure(messages[:2], messages[2:], None)
+    cm = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=total - 1))
+
+    result = cm.build(messages)
+
+    by_id = {msg.get("tool_call_id"): msg.get("content") for msg in result if msg.get("role") == "tool"}
+    assert by_id["c_old"].startswith("[read_file compressed] old.py")
+    assert "new119" in by_id["c_new"]
+
+
+def test_hard_limit_keeps_latest_read_of_same_file() -> None:
+    """同一文件多次读取时，只降级更早的范围，最新一次保持原文。"""
+    old = _code_lines(40, prefix="old")
+    new = _code_lines(120, prefix="new")
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c_old", "read_file", '{"path": "a.py", "start_line": 1, "end_line": 40}', old),
+        *_round("c_new", "read_file", '{"path": "a.py", "start_line": 1, "end_line": 120}', new),
+    ]
+    probe = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=10**9))
+    total = probe._measure(messages[:2], messages[2:], None)
+    cm = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=total - 1))
+
+    result = cm.build(messages)
+
+    by_id = {msg.get("tool_call_id"): msg.get("content") for msg in result if msg.get("role") == "tool"}
+    assert by_id["c_old"].startswith("[read_file compressed] a.py (lines 1-40)")
+    assert "new119" in by_id["c_new"]

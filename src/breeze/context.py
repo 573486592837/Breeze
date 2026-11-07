@@ -5,9 +5,10 @@
 - 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
   git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
   模型只能重读；改写历史还会切断前缀缓存。
-- 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：优先降级最大
-  的结果，并保护每个路径最近一次读取；仍超限时才放开保护。被降级的范围只剩
-  指针，模型仍可能重读；这是硬上限的兜底代价，不是没有代价的保留策略。
+- 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：保护每个路径最近
+  一次读取，并按消息顺序从旧到新降级更早的读取，保证刚读到的新内容优先留在
+  上下文里；仍超限时才放开保护。被降级的范围只剩指针，模型仍可能重读；这是
+  硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
 - 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
@@ -583,6 +584,7 @@ class ContextManager:
                 READ_TOOLS,
                 protect=protected,
                 min_chars=READ_SPILL_MIN_CHARS,
+                oldest_first=True,
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
@@ -598,6 +600,7 @@ class ContextManager:
                 plan,
                 snapshots,
                 READ_TOOLS,
+                oldest_first=True,
             )
             demoted = demoted or spilled
 
@@ -661,10 +664,14 @@ class ContextManager:
         *,
         protect: frozenset[str] = frozenset(),
         min_chars: int = 0,
+        oldest_first: bool = False,
     ) -> tuple[list[dict[str, Any]], bool]:
         """预算溢出时把指定类别的工具结果降级为指针。
 
-        从最大的结果开始降级：小结果换出省不下多少 Token，却会迫使模型重读。
+        默认从最大的结果开始降级：小结果换出省不下多少 Token，却会迫使模型重读。
+        ``oldest_first`` 用于 read_file：按消息顺序从旧到新降级，保证刚读到的新
+        内容优先留在上下文里。否则模型会陷入“读取→被压缩→立刻重读”的循环；
+        m5_v4 中 step 16 读的 cli.py 1-190 在后续请求里一直被压成指针。
         ``protect`` 中的 tool_call_id 先跳过（通常是每个文件最近一次读取），
         仍超限时再由调用方放开保护重试。
 
@@ -681,6 +688,7 @@ class ContextManager:
             classes: 本次允许降级的工具类别。
             protect: 本轮不降级的 tool_call_id 集合。
             min_chars: 小于该字符数的结果不参与降级。
+            oldest_first: True 时按消息顺序从旧到新降级，否则按结果大小降序。
 
         Returns:
             (新列表, 是否发生降级)。
@@ -703,7 +711,10 @@ class ContextManager:
             if len(content) < min_chars:
                 continue
             candidates.append((len(content), i))
-        candidates.sort(key=lambda item: (-item[0], item[1]))
+        if oldest_first:
+            candidates.sort(key=lambda item: item[1])
+        else:
+            candidates.sort(key=lambda item: (-item[0], item[1]))
 
         changed = False
         for _, i in candidates:

@@ -1112,8 +1112,8 @@ class Agent:
         result = (
             f"[duplicate read suppressed] read_file {target} was already called with the same "
             f"arguments {count} times this turn (attempt {attempts}); the file has not changed "
-            "since. Use the result already in this conversation. If that copy is no longer "
-            "visible, read a specific line range or state which fact is missing."
+            "since. If the earlier copy is still visible, use it; if it was compressed away, "
+            "read a specific line range or state which fact is missing."
         )
         requests[key] = attempts
 
