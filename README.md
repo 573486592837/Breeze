@@ -154,7 +154,7 @@ DeepSeek-V3.2 能力限制——P3 手测中它报告"已完成收紧符号链�
 
 - Python 3.11
 - Miniconda 或类似环境管理工具
-- 硅基流动 API Key
+- 任意 OpenAI 兼容服务的 API Key（默认配置示例为硅基流动）
 - Git（长任务评估需要）
 
 ### 安装
@@ -586,7 +586,7 @@ breeze/
 ## 技术栈
 
 - **CLI**：Typer + Rich
-- **LLM**：LiteLLM（路由至硅基流动 OpenAI 兼容端点）
+- **LLM**：LiteLLM（路由至 OpenAI 兼容端点，默认配置为硅基流动）
 - **代码解析**：Python `ast`
 - **Token 计量**：tiktoken（cl100k_base 实测，编码器不可用时回退字符估算）
 - **配置**：TOML（`tomllib`）+ python-dotenv
