@@ -2,6 +2,8 @@
 # 运行产物（trace、报告）不进发行包。
 include README.md
 include CONTRIBUTING.md
+include SECURITY.md
+include LICENSE
 include breeze.toml.example
 
 graft tasks
