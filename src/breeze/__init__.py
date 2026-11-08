@@ -4,4 +4,4 @@
 [tool.setuptools.dynamic] 读取它，构建产物与运行时保持一致。
 """
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
