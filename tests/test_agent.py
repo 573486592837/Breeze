@@ -365,13 +365,12 @@ def _tool_names(llm: FakeLLMClient) -> set[str]:
 
 
 def test_agent_hides_git_tools_outside_git_repo(trace: RunTrace) -> None:
-    """非 git 工作区不下发 git_diff / git_restore。"""
+    """非 git 工作区不下发 git_restore。"""
     llm = FakeLLMClient([_text("ok")])
     agent = Agent(llm=llm, trace=trace, capabilities=_caps(git_repo=False))
     agent.run("hi")
 
     names = _tool_names(llm)
-    assert "git_diff" not in names
     assert "git_restore" not in names
     assert "apply_patch" in names
 
@@ -391,7 +390,7 @@ def test_agent_keeps_capability_tools_when_available(trace: RunTrace) -> None:
     agent = Agent(llm=llm, trace=trace, capabilities=_caps())
     agent.run("hi")
 
-    assert {"git_diff", "git_restore", "run_tests"} <= _tool_names(llm)
+    assert {"git_restore", "run_tests"} <= _tool_names(llm)
 
 
 def test_default_system_prompt_adapts_git_rules() -> None:
@@ -675,7 +674,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
 
     prompt = DEFAULT_SYSTEM_PROMPT
     assert "apply_patch" in prompt
-    assert "git_diff" in prompt
+    assert "run_shell 执行 git diff" in prompt
     assert "git_restore" in prompt
     assert "run_tests" in prompt
     assert "不要删除或弱化测试" in prompt
@@ -824,6 +823,28 @@ def test_agent_stops_after_consecutive_edit_failures(
     failed = [e for e in apply_events if e["error"] and "max_edit_failures" not in e["error"]]
     assert len(failed) == 3
     assert all(e["error"].startswith("Error: old text not found") for e in failed)
+
+
+def test_argument_errors_do_not_consume_edit_failure_budget(trace: RunTrace) -> None:
+    """漏传参数是模型手误，不应触发连续编辑失败上限。"""
+    responses = [
+        _tool_call("apply_patch", {"old": "a", "new": "b"}, call_id=f"c{i}") for i in range(4)
+    ] + [_text("done")]
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=1)
+    result = agent.run("patch")
+
+    assert result == "done"
+
+    events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    patch_events = [e for e in events if e["tool"] == "apply_patch"]
+    assert len(patch_events) == 4
+    assert not [e for e in patch_events if "max_edit_failures" in (e["error"] or "")]
+    assert all("missing required argument 'path'" in (e["error"] or "") for e in patch_events)
+    assert all(
+        "No changes were written" in (e["result_preview"] or "") for e in patch_events
+    )
 
 
 def test_agent_edit_failure_streak_resets_on_success(

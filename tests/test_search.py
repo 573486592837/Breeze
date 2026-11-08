@@ -110,9 +110,13 @@ def test_grep_rg_output_normalized(
 
 
 def test_grep_invalid_regex(sample: Path) -> None:
-    """非法正则应抛 ValueError。"""
-    with pytest.raises(ValueError):
+    """非法正则应抛 ValueError，并带上 re 给出的具体原因。"""
+    with pytest.raises(ValueError) as excinfo:
         registry.execute("grep", {"pattern": "[unclosed", "path": "."})
+
+    message = str(excinfo.value)
+    assert "Invalid regex pattern '[unclosed'" in message
+    assert "unterminated" in message
 
 
 def test_grep_escape_path(sample: Path) -> None:

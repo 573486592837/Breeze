@@ -22,7 +22,6 @@ from breeze.tools.shell import run_command
 MAX_PATCH_BYTES = 20_000
 MAX_PATCH_LINES = 200
 MAX_CREATE_BYTES = 50_000
-MAX_DIFF_BYTES = 8_000
 MAX_TESTS_OUTPUT_BYTES = 8_000
 # 全量测试通常比单文件慢得多（本仓库约 90 秒），60 秒会让 Agent 误判超时。
 TESTS_TIMEOUT_SECONDS = 240
@@ -70,71 +69,6 @@ def _is_protected(rel_path: str) -> bool:
     if trace_prefix is not None:
         prefixes = (*prefixes, trace_prefix)
     return any(normalized.startswith(p) for p in prefixes)
-
-
-@register(
-    name="git_diff",
-    description=(
-        "返回工作区未提交的改动。适用于查看多次修改后的整体变化，或回滚前确认当前状态。可指定单个文件缩小范围。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "可选，限制到单个文件，相对于仓库根目录。",
-            },
-        },
-        "required": [],
-    },
-)
-def git_diff(path: str | None = None) -> str:
-    """返回工作区未提交的改动。
-
-    Args:
-        path: 可选，限制到单个文件。
-
-    Returns:
-        成功时返回 unified diff 文本或以 ``(working tree clean)`` 开头。
-        失败时以 ``Error:`` 开头。
-    """
-    root = settings.repo_root.resolve()
-
-    if not is_git_repo(root):
-        return "Error: not a git repository"
-
-    tokens = ["git", "diff", "--no-color", "--no-ext-diff", "--"]
-
-    if path is not None:
-        try:
-            target = safe_path(path)
-        except ValueError as exc:
-            return f"Error: {exc}"
-
-        try:
-            rel = target.relative_to(root).as_posix()
-        except ValueError:
-            return f"Error: path escapes repository: {path}"
-
-        tokens.append(rel)
-
-    returncode, stdout, stderr = run_command(tokens, root, timeout=15)
-
-    if returncode == -1:
-        return f"Error: {stderr}"
-
-    if returncode != 0:
-        return f"Error: git diff failed: {stderr.strip()[:500]}"
-
-    if not stdout.strip():
-        return "(working tree clean)"
-
-    encoded = stdout.encode("utf-8")
-    if len(encoded) > MAX_DIFF_BYTES:
-        truncated = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore")
-        return truncated + f"\n... (diff truncated at {MAX_DIFF_BYTES} bytes)"
-
-    return stdout
 
 
 @register(
@@ -199,7 +133,10 @@ def git_resotre(path: str) -> str:
         return f"Error: git ls-files failed: {exc}"
 
     if proc.returncode != 0:
-        return f"Error: file is not tracked by git: {rel}"
+        return (
+            f"Error: file is not tracked by git: {rel}. "
+            "git_restore only reverts tracked files; use apply_patch or create_file instead."
+        )
 
     returncode, stdout, stderr = run_command(["git", "checkout", "--", rel], root, timeout=10)
 
@@ -254,9 +191,15 @@ def apply_patch(path: str, old: str, new: str) -> str:
     if old == new:
         return "Error: old and new are identical"
     if len(old.encode("utf-8")) > MAX_PATCH_BYTES:
-        return f"Error: old text exceeds {MAX_PATCH_BYTES} bytes"
+        return (
+            f"Error: old text exceeds {MAX_PATCH_BYTES} bytes. "
+            "Split the change into smaller patches that target one region each."
+        )
     if len(new.encode("utf-8")) > MAX_PATCH_BYTES:
-        return f"Error: new text exceeds {MAX_PATCH_BYTES} bytes"
+        return (
+            f"Error: new text exceeds {MAX_PATCH_BYTES} bytes. "
+            "Split the change into smaller patches that target one region each."
+        )
 
     old_lines = len(old.splitlines())
     new_lines = len(new.splitlines())
@@ -362,7 +305,10 @@ def create_file(path: str, content: str) -> str:
         所有失败均为字符串返回，不抛异常。
     """
     if len(content.encode("utf-8")) > MAX_CREATE_BYTES:
-        return f"Error: content exceeds {MAX_CREATE_BYTES} bytes"
+        return (
+            f"Error: content exceeds {MAX_CREATE_BYTES} bytes. "
+            "Create a smaller initial file, then add the remaining content with apply_patch."
+        )
 
     try:
         target = safe_path(path)
@@ -381,7 +327,14 @@ def create_file(path: str, content: str) -> str:
     if target.exists():
         return f"Error: file already exists: {path}. Use apply_patch to modify it."
     if target.parent.exists() and not target.parent.is_dir():
-        return f"Error: parent path is not a directory: {target.parent.name}"
+        try:
+            parent_rel = target.parent.relative_to(root).as_posix()
+        except ValueError:
+            parent_rel = str(target.parent)
+        return (
+            f"Error: parent path is not a directory: {parent_rel}. "
+            "Choose a different path or delete the conflicting file first."
+        )
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -465,7 +418,10 @@ def delete_path(path: str, recursive: bool = False) -> str:
         return f"Error: path is protected: {rel}"
 
     if not target.exists():
-        return f"Error: no such file or directory: {path}"
+        return (
+            f"Error: no such file or directory: {path}. "
+            "Use list_files or grep to confirm the path before deleting."
+        )
 
     try:
         if target.is_dir():

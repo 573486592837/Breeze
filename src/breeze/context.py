@@ -2,8 +2,8 @@
 
 压缩单位仍是"用户回合"，但降级时机改为两级：
 
-- 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
-  git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
+- 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests
+  等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
   模型只能重读；改写历史还会切断前缀缓存。
 - 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：保护每个路径最近
   一次读取，并按消息顺序从旧到新降级更早的读取，保证刚读到的新内容优先留在
@@ -11,8 +11,8 @@
   硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
-- 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
-  截断为短摘录，既维持目标连贯，又避免提示词随步数线性膨胀。
+- 推理模型的 ``reasoning_content`` 随工具调用回传；只有最新一步保留全文，更早的
+  截断为短摘录。被截断的消息只有一个，缓存失配范围也就限制在最近一步。
 - 系统维护的元状态（AGENTS.md、回合归档、工作集快照、计划、SessionState、
   预算提示）统一使用 ``system`` 角色；只有用户真正输入的问题保留 ``user``，
   避免模型把状态索引当成新的用户指令。
@@ -42,12 +42,6 @@ from breeze.config import settings
 
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(Path.home() / ".breeze" / "tiktoken_cache"))
 
-# Deprecated: values come from settings via ContextConfig.__post_init__.
-DEFAULT_INTRA_TURN_BUDGET = 24_000
-DEFAULT_TOOL_RESULT_MAX_BYTES = 16_000
-DEFAULT_TOOL_RESULT_HEAD_BYTES = 8_000
-DEFAULT_TOOL_RESULT_TAIL_BYTES = 8_000
-
 POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
 # 部分 OpenAI-compatible 网关（例如 SJTU 的 deepseek-reasoner）在最后一条消息
 # 是 system 时会直接 finish_reason=stop 并返回空内容。元状态之后补一条不含新
@@ -61,12 +55,16 @@ POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 # 写操作结果不是可再生产出：压缩成“re-run for more”会诱导模型重复 apply_patch，
 # 把同一段代码插入多次。写结果本身很短，始终保留原文。
-SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff"})
+SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests"})
 # 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
 READ_SPILL_MIN_CHARS = 512
+# 一次软降级多留余量：只腾出刚好够的空间，下一步新增结果又会触发改写，
+# 反复切断 body 中部的缓存前缀。降到 85% 可减少降级次数。
+SOFT_SPILL_TARGET_RATIO = 0.85
 # 推理模型的思考过程要随工具结果回传，但完整保留每一步会迅速撑爆上下文。
-# 最近两次思考保留全文，更早的只留开头摘录：既维持目标连贯，又限制开销。
-REASONING_KEEP_MESSAGES = 2
+# 只保留最新一步全文：每步最多截断一条旧消息，前缀缓存失配被限制在最近一步；
+# 保留两步会让上一步的思考在下一步也被改写，失配范围翻倍。
+REASONING_KEEP_MESSAGES = 1
 REASONING_PREVIEW_CHARS = 600
 _REASONING_TRUNCATED_MARK = "\n…[earlier reasoning truncated]"
 
@@ -289,24 +287,12 @@ def _tests_summary(result: str) -> str:
     return " | ".join(keep[:6])
 
 
-def _git_diff_summary(result: str) -> str:
-    """保留 diff 的首尾行；末行通常是 diffstat 合计。"""
-    lines = [line.strip() for line in result.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    first = _one_line(lines[0])
-    last = _one_line(lines[-1])
-    return first if first == last else f"{first} | {last}"
-
-
 def _summarize_spill_result(tool: str, result: str) -> str:
     """按工具保留降级后仍然有用的结果摘要。"""
     if tool == "run_tests":
         return _tests_summary(result)
     if tool == "run_shell":
         return _shell_summary(result)
-    if tool == "git_diff":
-        return _git_diff_summary(result)
     first = next((line.strip() for line in result.splitlines() if line.strip()), "")
     return _one_line(first, 160)
 
@@ -480,10 +466,14 @@ class ContextManager:
         """
         self.config = config or ContextConfig()
         self._last_prefix: tuple[tuple[str, int], ...] | None = None
+        # 已降级的 tool_call_id。后续 build 先原样复用这些指针，避免预算
+        # 一时回落时把旧结果还原成原文——那会让整段前缀缓存失效。
+        self._spilled_ids: set[str] = set()
 
     def reset(self) -> None:
         """清空前缀复用基线（新会话时调用）。"""
         self._last_prefix = None
+        self._spilled_ids.clear()
 
     def build(
         self,
@@ -575,6 +565,9 @@ class ContextManager:
             else:
                 converted.append(self._compact_tool_result(msg))
 
+        # 之前已降级的结果保持指针形态，即使本轮总量暂时低于预算也不再还原。
+        demoted = self._apply_frozen_spills(converted, id_to_name, id_to_args) or demoted
+
         # 状态块只在发生降级时注入；未降级的回合里原始工具结果都还在，
         # 注入跨回合索引既占预算，又会把历史的读取计数误当成当前事实。
         soft_budget = self.config.intra_turn_budget
@@ -592,6 +585,7 @@ class ContextManager:
                 snapshots,
                 SPILL_TOOLS,
                 instructions=instructions,
+                target=int(soft_budget * SOFT_SPILL_TARGET_RATIO),
             )
             demoted = demoted or spilled
             counted_state = state if demoted else None
@@ -701,6 +695,44 @@ class ContextManager:
             add({"role": "user", "content": _CONTINUATION_PROMPT}, "continuation")
         return result, self._stats(result, segments, demoted_read_ids)
 
+    def _apply_frozen_spills(
+        self,
+        converted: list[dict[str, Any]],
+        id_to_name: dict[str, str],
+        id_to_args: dict[str, dict[str, Any]],
+    ) -> bool:
+        """把之前已降级的结果重新压成指针。
+
+        预算随新增消息上下浮动时，如果旧结果被还原成原文，它之后的所有
+        消息都会失去前缀缓存；保持它已降级的形态更稳定，也省 Token。
+
+        Args:
+            converted: 当前消息列表，原地替换。
+            id_to_name: tool_call_id -> 工具名。
+            id_to_args: tool_call_id -> 参数 dict。
+
+        Returns:
+            是否有消息被重新压成指针。
+        """
+        if not self._spilled_ids:
+            return False
+        changed = False
+        for i, msg in enumerate(converted):
+            if msg.get("role") != "tool":
+                continue
+            tc_id = str(msg.get("tool_call_id", ""))
+            if tc_id not in self._spilled_ids:
+                continue
+            tool = id_to_name.get(tc_id, "")
+            content = msg.get("content")
+            if not isinstance(content, str) or content.startswith(f"[{tool} compressed]"):
+                continue
+            new_msg = dict(msg)
+            new_msg["content"] = _render_pointer(tool, id_to_args.get(tc_id, {}), content)
+            converted[i] = self._compact_tool_result(new_msg)
+            changed = True
+        return changed
+
     def _spill(
         self,
         head: list[dict[str, Any]],
@@ -718,6 +750,7 @@ class ContextManager:
         protect: frozenset[str] = frozenset(),
         min_chars: int = 0,
         oldest_first: bool = False,
+        target: int | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """预算溢出时把指定类别的工具结果降级为指针。
 
@@ -743,6 +776,8 @@ class ContextManager:
             protect: 本轮不降级的 tool_call_id 集合。
             min_chars: 小于该字符数的结果不参与降级。
             oldest_first: True 时按消息顺序从旧到新降级，否则按结果大小降序。
+            target: 降级目标 Token 数，None 时等于 budget。取小于 budget 的值
+                可一次腾出余量，减少后续步骤再次改写 body 的次数。
 
         Returns:
             (新列表, 是否发生降级)。
@@ -750,6 +785,7 @@ class ContextManager:
         out = list(converted)
         if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
             return out, False
+        limit = min(budget, max(1, target)) if target is not None else budget
 
         candidates: list[tuple[int, int]] = []
         for i, msg in enumerate(out):
@@ -772,7 +808,7 @@ class ContextManager:
 
         changed = False
         for _, i in candidates:
-            if self._measure(head, out, state, archive, plan, snapshots, instructions) <= budget:
+            if self._measure(head, out, state, archive, plan, snapshots, instructions) <= limit:
                 break
             msg = out[i]
             tool = id_to_name.get(msg.get("tool_call_id", ""), "")
@@ -781,6 +817,9 @@ class ContextManager:
                 tool, id_to_args.get(msg.get("tool_call_id", ""), {}), msg.get("content", "")
             )
             out[i] = new_msg
+            tc_id = str(msg.get("tool_call_id", ""))
+            if tc_id:
+                self._spilled_ids.add(tc_id)
             changed = True
         return out, changed
 

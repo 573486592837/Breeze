@@ -28,7 +28,7 @@ max_retries = 2
 
 [agent]
 # Maximum agent loop steps per run.
-max_steps = 15
+max_steps = 25
 # Consecutive failed edit attempts per run before further edits are rejected.
 max_edit_failures = 3
 

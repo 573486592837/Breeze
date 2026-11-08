@@ -264,7 +264,7 @@ def test_ask_missing_api_key(repo: Path, tmp_path: Path, monkeypatch: pytest.Mon
 
     class FailingLLM:
         def __init__(self, *args, **kwargs):
-            raise ValueError("SILICONFLOW_API_KEY 未设置")
+            raise ValueError("BREEZE_API_KEY 未设置")
 
     monkeypatch.setattr(cli_module, "LLMClient", FailingLLM)
     result = runner.invoke(
@@ -1125,7 +1125,7 @@ def test_version_flag_without_api_key(repo: Path, monkeypatch: pytest.MonkeyPatc
 
     class ExplodingLLM:
         def __init__(self, *args, **kwargs):
-            raise ValueError("SILICONFLOW_API_KEY 未设置，请检查 .env 文件或环境变量")
+            raise ValueError("BREEZE_API_KEY 未设置，请检查 .env 文件或环境变量")
 
     monkeypatch.setattr(cli_module, "LLMClient", ExplodingLLM)
     result = runner.invoke(app, ["--version"])

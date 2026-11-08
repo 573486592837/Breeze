@@ -97,6 +97,95 @@ def test_execute_unknown_tool_raises() -> None:
         registry.execute("_test_not_exist", {})
 
 
+def _register_echo() -> None:
+    registry.register(
+        name="_test_echo",
+        description="Echo the input string.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    )(lambda text: text)
+
+
+def test_execute_reports_missing_required_argument() -> None:
+    """漏传必填参数应给出可修正的说明，而不是裸 TypeError。"""
+    _register_echo()
+
+    with pytest.raises(registry.ToolArgumentError) as excinfo:
+        registry.execute("_test_echo", {})
+
+    message = str(excinfo.value)
+    assert "missing required argument 'text'" in message
+    assert "Expected: text (string, required)" in message
+
+
+def test_execute_reports_unknown_argument() -> None:
+    """拼错参数名应指出未知键，并列出可用参数。"""
+    _register_echo()
+
+    with pytest.raises(registry.ToolArgumentError) as excinfo:
+        registry.execute("_test_echo", {"text": "x", "txt": "y"})
+
+    assert "unknown argument 'txt'" in excinfo.value.args[0]
+
+
+def test_execute_reports_argument_type_mismatch() -> None:
+    """类型不符时说明期望类型与实际类型。"""
+    registry.register(
+        name="_test_double",
+        description="Double a number.",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+        },
+    )(lambda value: str(value * 2))
+
+    with pytest.raises(registry.ToolArgumentError) as excinfo:
+        registry.execute("_test_double", {"value": "3"})
+
+    message = str(excinfo.value)
+    assert "must be integer, got string" in message
+
+
+def test_execute_treats_null_optional_as_omitted() -> None:
+    """可选项显式传 null 时按未传处理，让函数默认值生效。"""
+    registry.register(
+        name="_test_optional",
+        description="Echo with an optional limit.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["text"],
+        },
+    )(lambda text, limit=5: f"{text}:{limit}")
+
+    assert registry.execute("_test_optional", {"text": "x", "limit": None}) == "x:5"
+    with pytest.raises(registry.ToolArgumentError, match="got null"):
+        registry.execute("_test_optional", {"text": None})
+
+
+def test_execute_rejects_bool_for_integer() -> None:
+    """bool 是 int 的子类，但不能当作 integer 参数。"""
+    registry.register(
+        name="_test_double",
+        description="Double a number.",
+        parameters={
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+        },
+    )(lambda value: str(value * 2))
+
+    with pytest.raises(registry.ToolArgumentError, match="got boolean"):
+        registry.execute("_test_double", {"value": True})
+
+
 def test_schemas_returns_new_list() -> None:
     """schemas 每次返回新的列表对象，避免外部修改影响内部状态。"""
     first = registry.schemas()

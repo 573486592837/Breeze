@@ -1,7 +1,7 @@
 """运行环境能力探测。
 
 Agent 启动时探测一次，用于两件事：
-- 只把当前环境可用的工具下发给模型，避免对 git_diff / run_tests 的无谓尝试；
+- 只把当前环境可用的工具下发给模型，避免对 git_restore / run_tests 的无谓尝试；
 - 让系统提示只描述真实可用的能力。
 """
 
@@ -25,7 +25,7 @@ class Capabilities:
 
     @property
     def git_tools(self) -> bool:
-        """git_diff / git_restore 是否可用。"""
+        """git_restore 是否可用。"""
         return self.git and self.git_repo
 
 

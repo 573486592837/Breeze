@@ -16,7 +16,7 @@
 +    for key in list(os.environ):
 +        if key.startswith("BREEZE_"):
 +            monkeypatch.delenv(key, raising=False)
-+    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
++    monkeypatch.setenv("BREEZE_API_KEY", "test-key")
 +    (tmp_path / "breeze.toml").write_text("[eval]\ndefault_repeat = 3\n", encoding="utf-8")
 +
 +    s = Settings(repo_root=tmp_path)

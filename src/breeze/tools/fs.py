@@ -197,15 +197,22 @@ def list_files(
 
     entries: list[str] = []
     truncated = False
+    unreadable: list[str] = []
+    unreadable_total = 0
 
     def walk(current: Path, depth: int) -> None:
-        nonlocal truncated
+        nonlocal truncated, unreadable_total
         if truncated or depth > max_depth:
             return
 
         try:
             children = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-        except (PermissionError, OSError):
+        except (PermissionError, OSError) as exc:
+            # 静默跳过会让模型误以为目录为空，随后反复换路径探索。
+            unreadable_total += 1
+            if len(unreadable) < 3:
+                reason = exc.strerror or type(exc).__name__
+                unreadable.append(f"{display(current)} ({reason})")
             return
 
         dirs = [c for c in children if c.is_dir()]
@@ -249,6 +256,12 @@ def list_files(
     result = "\n".join(entries) if entries else "(empty)"
     if truncated:
         result += f"\n... (truncated to {max_entries} entries)"
+    if unreadable_total:
+        detail = "; ".join(unreadable)
+        hidden = unreadable_total - len(unreadable)
+        if hidden:
+            detail += f"; {hidden} more"
+        result += f"\n... (unreadable directories: {detail}; contents may be missing)"
     return result
 
 
@@ -362,7 +375,7 @@ def read_file(
     try:
         text = target.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise ValueError(f"Failed to read file: {path}") from exc
+        raise ValueError(f"Failed to read file: {path} ({exc})") from exc
 
     lines = text.splitlines()
     total_lines = len(lines)
