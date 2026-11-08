@@ -19,11 +19,8 @@ from breeze.llm import LLMClient, LLMResponse
 from breeze.snapshots import SnapshotStore
 from breeze.state import SessionState, TurnLedger
 from breeze.tools import registry, shell
+from breeze.tools.registry import ToolArgumentError
 from breeze.trace import RunTrace
-
-# Deprecated: use settings.agent_max_steps instead.
-# Kept for backward compatibility with code that imports this constant.
-DEFAULT_MAX_STEPS = 10
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})
@@ -138,6 +135,10 @@ def _is_verification_call(name: str, arguments_json: str) -> bool:
 
 
 _FAILURE_PREFIXES = ("Error", "Tool execution failed", "Failed")
+
+# apply_patch / create_file 都是原子写入或先校验后写入，失败时目标文件
+# 一定没变。明确告诉模型这一点，避免它为了确认而重读文件。
+_NO_CHANGES_NOTE = " No changes were written to the target path."
 
 
 def _is_failure_result(result: str) -> bool:
@@ -886,7 +887,7 @@ class Agent:
                 ):
                     continue
 
-                result = self._execute_and_append(tc, step)
+                result, argument_error = self._execute_and_append(tc, step)
                 succeeded = result is not None and not _is_failure_result(result)
                 if succeeded:
                     read_suppressions.clear()
@@ -947,7 +948,9 @@ class Agent:
                     if succeeded:
                         edit_failures = 0
                         self._refresh_capabilities_after_write()
-                    else:
+                    elif not argument_error:
+                        # 参数写错（漏 path、拼错键名）不是文件冲突，模型改对
+                        # 参数即可重试；计入上限会让一次手误锁死整个回合。
                         edit_failures += 1
 
             if (
@@ -1491,7 +1494,7 @@ class Agent:
         self,
         tc: _ToolCall,
         step: int,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
         """执行单个工具调用并把结果追加到 self.messages。
 
         Args:
@@ -1499,51 +1502,58 @@ class Agent:
             step: Agent 循环步数。
 
         Returns:
-            工具结果文本；参数解析失败或执行抛异常时返回 None。
+            ``(工具结果文本, 是否为参数错误)``。参数解析失败或执行抛异常时
+            结果文本为 None；参数错误单独标出，调用方不应把它计入连续
+            编辑失败次数。
         """
         self._emit(AgentEvent("tool_start", step, tool=tc.name))
+
+        def finish(result: str, error: str | None, *, argument_error: bool) -> tuple[None, bool]:
+            if argument_error and tc.name in ("apply_patch", "create_file"):
+                result = f"{result.rstrip()}{_NO_CHANGES_NOTE}"
+            self.trace.log_tool(
+                step=step,
+                tool=tc.name,
+                arguments={"raw": tc.arguments_json} if argument_error else {},
+                result=result,
+                latency_ms=0.0,
+                error=error,
+            )
+            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail=error or ""))
+            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            return None, argument_error
 
         try:
             arguments = json.loads(tc.arguments_json) if tc.arguments_json else {}
         except json.JSONDecodeError as exc:
-            result = f"Failed to parse tool arguments: {exc}"
-            self.trace.log_tool(
-                step=step,
-                tool=tc.name,
-                arguments={"raw": tc.arguments_json},
-                result=result,
-                latency_ms=0.0,
-                error=str(exc),
-            )
-            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail=str(exc)))
-            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            return None
+            return finish(f"Failed to parse tool arguments: {exc}", str(exc), argument_error=True)
 
         if not isinstance(arguments, dict):
-            result = f"Tool arguments must be a JSON object, got: {type(arguments).__name__}"
-            self.trace.log_tool(
-                step=step,
-                tool=tc.name,
-                arguments={"raw": tc.arguments_json},
-                result=result,
-                latency_ms=0.0,
-                error="invalid arguments type",
+            return finish(
+                f"Tool arguments must be a JSON object, got: {type(arguments).__name__}",
+                "invalid arguments type",
+                argument_error=True,
             )
-            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail="invalid arguments type"))
-            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-            return None
 
         start = time.perf_counter()
+        argument_error = False
         try:
             if tc.name == "run_shell":
                 result = self._execute_shell(arguments, step)
             else:
                 result = registry.execute(tc.name, arguments)
             exception_error = None
+        except ToolArgumentError as exc:
+            result = f"Error: {exc}"
+            exception_error = str(exc)
+            argument_error = True
         except Exception as exc:
             result = f"Tool execution failed: {exc}"
             exception_error = str(exc)
         latency_ms = (time.perf_counter() - start) * 1000
+
+        if argument_error and tc.name in ("apply_patch", "create_file"):
+            result = f"{result.rstrip()}{_NO_CHANGES_NOTE}"
 
         # 多数工具把失败写成 "Error: ..." 字符串而不是抛异常。若不在这里
         # 归因，trace 与 run_summary 的 errors 会把失败记成成功，下游的
@@ -1574,7 +1584,7 @@ class Agent:
         self.state.update(tc.name, arguments, result, step)
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-        return None if exception_error is not None else result
+        return (None if exception_error is not None else result), argument_error
 
     def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
         """按权限模式执行 run_shell。

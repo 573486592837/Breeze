@@ -462,8 +462,8 @@ tests），而不是等到压缩发生才注入。这些事实来自真实工具
 API Key 只从环境变量读取，永不写入配置文件；变量名默认是
 `BREEZE_API_KEY`，可用 `[llm] api_key_env` 或 `BREEZE_API_KEY_ENV`
 改成其他服务商的变量名（如 `OPENAI_API_KEY`），同时用 `model` 与
-`api_base` 指向对应服务。旧变量名 `SILICONFLOW_API_KEY` 仍会作为回退
-读取，已有 `.env` 无需立即修改。
+`api_base` 指向对应服务。旧变量名 `SILICONFLOW_API_KEY` 已不再读取，
+仍在使用的 `.env` 需要改名为 `BREEZE_API_KEY`。
 
 ### 断网与超时
 

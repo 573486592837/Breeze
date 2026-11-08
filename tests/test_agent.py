@@ -826,6 +826,28 @@ def test_agent_stops_after_consecutive_edit_failures(
     assert all(e["error"].startswith("Error: old text not found") for e in failed)
 
 
+def test_argument_errors_do_not_consume_edit_failure_budget(trace: RunTrace) -> None:
+    """漏传参数是模型手误，不应触发连续编辑失败上限。"""
+    responses = [
+        _tool_call("apply_patch", {"old": "a", "new": "b"}, call_id=f"c{i}") for i in range(4)
+    ] + [_text("done")]
+
+    llm = FakeLLMClient(responses)
+    agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=1)
+    result = agent.run("patch")
+
+    assert result == "done"
+
+    events = [e for e in _events(trace.path) if e["event"] == "tool_call"]
+    patch_events = [e for e in events if e["tool"] == "apply_patch"]
+    assert len(patch_events) == 4
+    assert not [e for e in patch_events if "max_edit_failures" in (e["error"] or "")]
+    assert all("missing required argument 'path'" in (e["error"] or "") for e in patch_events)
+    assert all(
+        "No changes were written" in (e["result_preview"] or "") for e in patch_events
+    )
+
+
 def test_agent_edit_failure_streak_resets_on_success(
     trace: RunTrace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

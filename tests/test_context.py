@@ -4,7 +4,12 @@ from typing import Any
 
 import pytest
 
-from breeze.context import ContextConfig, ContextManager, _count_text_tokens
+from breeze.context import (
+    SPILL_TOOLS,
+    ContextConfig,
+    ContextManager,
+    _count_text_tokens,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1114,6 +1119,58 @@ def test_disabled_context_still_avoids_system_tail() -> None:
     result = cm.build([_system(), _user("q"), {"role": "system", "content": "系统提醒"}])
 
     assert result[-1] == {"role": "user", "content": "继续当前任务。"}
+
+
+def test_demoted_result_stays_compressed_after_budget_recovers() -> None:
+    """预算放宽后不回退已降级结果，避免改写 body 中部使前缀缓存失效。"""
+    big = _code_lines(600)
+    messages = [
+        _system(),
+        _user("q"),
+        *_round("c1", "read_file", '{"path": "a.py"}', big),
+        *_round("c2", "read_file", '{"path": "b.py"}', big),
+    ]
+    cm = ContextManager(ContextConfig(intra_turn_budget=4_500, hard_budget=4_500))
+    first = cm.build(list(messages))
+    by_id = {m.get("tool_call_id"): m["content"] for m in first if m["role"] == "tool"}
+    assert by_id["c1"].startswith("[read_file compressed] a.py")
+    assert by_id["c2"] == big
+
+    cm.config.intra_turn_budget = 100_000
+    cm.config.hard_budget = 100_000
+    second = cm.build(list(messages))
+
+    by_id = {m.get("tool_call_id"): m["content"] for m in second if m["role"] == "tool"}
+    assert by_id["c1"].startswith("[read_file compressed] a.py")
+    assert by_id["c2"] == big
+
+
+def test_soft_spill_batches_to_target_headroom() -> None:
+    """软降级一次腾出余量，而不是每步只挤掉刚好超出的部分。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
+    head = [_system(), _user("q")]
+    body: list[dict[str, Any]] = []
+    names: dict[str, str] = {}
+    args: dict[str, dict[str, Any]] = {}
+    for i, lines in enumerate((80, 70, 60, 50, 40, 30)):
+        call_id = f"c{i}"
+        content = "exit_code: 0\n" + "\n".join(
+            f"line {j}: " + "word " * 40 for j in range(lines)
+        )
+        body.extend(_round(call_id, "run_shell", '{"command": "git status"}', content))
+        names[call_id] = "run_shell"
+        args[call_id] = {"command": "git status"}
+
+    total = cm._measure(head, body, None)
+    budget = int(total * 0.8)
+    target = int(budget * 0.85)
+
+    out, changed = cm._spill(
+        head, body, names, args, budget, None, None, None, None, SPILL_TOOLS, target=target
+    )
+
+    assert changed
+    assert cm._measure(head, out, None) <= target
 
 
 def test_write_result_not_compressed_by_budget() -> None:

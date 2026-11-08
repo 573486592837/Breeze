@@ -70,41 +70,16 @@ def test_defaults_api_key_env_is_breeze() -> None:
     assert DEFAULTS["llm"]["api_key_env"] == "BREEZE_API_KEY"
 
 
-def test_legacy_siliconflow_key_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """新变量名未设置时，回退读取旧的 SILICONFLOW_API_KEY。"""
+def test_legacy_siliconflow_key_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧变量名不再作为回退：只能用 BREEZE_API_KEY 或配置的变量名。"""
     monkeypatch.delenv("BREEZE_API_KEY", raising=False)
     monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
 
     s = Settings(repo_root=tmp_path)
 
     assert s.api_key_env == "BREEZE_API_KEY"
-    assert s.api_key == "legacy-secret"
-
-
-def test_primary_key_wins_over_legacy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """BREEZE_API_KEY 优先于旧变量名。"""
-    monkeypatch.setenv("BREEZE_API_KEY", "new-secret")
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
-
-    s = Settings(repo_root=tmp_path)
-
-    assert s.api_key == "new-secret"
-
-
-def test_legacy_fallback_only_for_default_env_name(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """显式指定其他变量名时，不回退到 SILICONFLOW_API_KEY。"""
-    (tmp_path / "breeze.toml").write_text(
-        '[llm]\napi_key_env = "CUSTOM_API_KEY"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.delenv("CUSTOM_API_KEY", raising=False)
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")
-
-    s = Settings(repo_root=tmp_path)
-
-    assert s.api_key_env == "CUSTOM_API_KEY"
     assert s.api_key == ""
 
 
@@ -115,7 +90,6 @@ def test_settings_reads_key_from_named_env(tmp_path: Path, monkeypatch: pytest.M
         encoding="utf-8",
     )
     monkeypatch.setenv("CUSTOM_API_KEY", "custom-secret")
-    monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
 
     s = Settings(repo_root=tmp_path)
 
@@ -614,7 +588,6 @@ def test_settings_repo_root_resolved(tmp_path: Path) -> None:
 def test_settings_missing_api_key_does_not_raise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """缺 key 时配置仍可用：校验属于 LLMClient，import 期不能抛。"""
     monkeypatch.delenv("BREEZE_API_KEY", raising=False)
-    monkeypatch.delenv("SILICONFLOW_API_KEY", raising=False)
 
     s = Settings(repo_root=tmp_path)
 
@@ -631,11 +604,7 @@ def test_config_import_without_api_key(tmp_path: Path) -> None:
     import subprocess
     import sys
 
-    env = {
-        k: v
-        for k, v in os.environ.items()
-        if k not in ("SILICONFLOW_API_KEY", "BREEZE_API_KEY") and not k.startswith("BREEZE_")
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BREEZE_")}
     proc = subprocess.run(
         [sys.executable, "-c", "from breeze.config import settings; print(repr(settings.api_key))"],
         cwd=tmp_path,
@@ -689,7 +658,7 @@ def test_dotenv_is_loaded_from_cwd_when_installed(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    env = {k: v for k, v in os.environ.items() if k != "SILICONFLOW_API_KEY" and not k.startswith("BREEZE_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BREEZE_")}
     env["PYTHONPATH"] = str(site_dir)
     proc = subprocess.run(
         [sys.executable, str(probe)],

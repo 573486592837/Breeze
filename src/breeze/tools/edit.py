@@ -199,7 +199,10 @@ def git_resotre(path: str) -> str:
         return f"Error: git ls-files failed: {exc}"
 
     if proc.returncode != 0:
-        return f"Error: file is not tracked by git: {rel}"
+        return (
+            f"Error: file is not tracked by git: {rel}. "
+            "git_restore only reverts tracked files; use apply_patch or create_file instead."
+        )
 
     returncode, stdout, stderr = run_command(["git", "checkout", "--", rel], root, timeout=10)
 
@@ -254,9 +257,15 @@ def apply_patch(path: str, old: str, new: str) -> str:
     if old == new:
         return "Error: old and new are identical"
     if len(old.encode("utf-8")) > MAX_PATCH_BYTES:
-        return f"Error: old text exceeds {MAX_PATCH_BYTES} bytes"
+        return (
+            f"Error: old text exceeds {MAX_PATCH_BYTES} bytes. "
+            "Split the change into smaller patches that target one region each."
+        )
     if len(new.encode("utf-8")) > MAX_PATCH_BYTES:
-        return f"Error: new text exceeds {MAX_PATCH_BYTES} bytes"
+        return (
+            f"Error: new text exceeds {MAX_PATCH_BYTES} bytes. "
+            "Split the change into smaller patches that target one region each."
+        )
 
     old_lines = len(old.splitlines())
     new_lines = len(new.splitlines())
@@ -362,7 +371,10 @@ def create_file(path: str, content: str) -> str:
         所有失败均为字符串返回，不抛异常。
     """
     if len(content.encode("utf-8")) > MAX_CREATE_BYTES:
-        return f"Error: content exceeds {MAX_CREATE_BYTES} bytes"
+        return (
+            f"Error: content exceeds {MAX_CREATE_BYTES} bytes. "
+            "Create a smaller initial file, then add the remaining content with apply_patch."
+        )
 
     try:
         target = safe_path(path)
@@ -381,7 +393,14 @@ def create_file(path: str, content: str) -> str:
     if target.exists():
         return f"Error: file already exists: {path}. Use apply_patch to modify it."
     if target.parent.exists() and not target.parent.is_dir():
-        return f"Error: parent path is not a directory: {target.parent.name}"
+        try:
+            parent_rel = target.parent.relative_to(root).as_posix()
+        except ValueError:
+            parent_rel = str(target.parent)
+        return (
+            f"Error: parent path is not a directory: {parent_rel}. "
+            "Choose a different path or delete the conflicting file first."
+        )
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -465,7 +484,10 @@ def delete_path(path: str, recursive: bool = False) -> str:
         return f"Error: path is protected: {rel}"
 
     if not target.exists():
-        return f"Error: no such file or directory: {path}"
+        return (
+            f"Error: no such file or directory: {path}. "
+            "Use list_files or grep to confirm the path before deleting."
+        )
 
     try:
         if target.is_dir():

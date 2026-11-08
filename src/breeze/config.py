@@ -50,7 +50,6 @@ if _dotenv_path is not None:
     load_dotenv(_dotenv_path)
 
 DEFAULT_API_KEY_ENV = "BREEZE_API_KEY"
-LEGACY_API_KEY_ENV = "SILICONFLOW_API_KEY"
 PERMISSION_MODES = ("strict", "confirm", "open")
 CROSS_TURN_MODES = ("archive", "append")
 
@@ -366,9 +365,6 @@ class Settings:
         self.llm_connect_timeout: float = float(cfg["llm"]["connect_timeout"])
         self.llm_max_retries: int = int(cfg["llm"]["max_retries"])
         self.api_key: str = os.getenv(self.api_key_env, "")
-        if not self.api_key and self.api_key_env == DEFAULT_API_KEY_ENV:
-            # 旧版默认变量名；保留回退，老 .env 无需立即改名。
-            self.api_key = os.getenv(LEGACY_API_KEY_ENV, "")
 
         self.agent_max_steps: int = int(cfg["agent"]["max_steps"])
         self.agent_max_edit_failures: int = int(cfg["agent"]["max_edit_failures"])

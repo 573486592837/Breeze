@@ -61,6 +61,28 @@ def test_list_files_empty_dir(repo: Path) -> None:
     assert "(empty)" in out
 
 
+def test_list_files_reports_unreadable_directory(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """无法读取的目录应明确提示，而不是让模型以为目录为空。"""
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("x", encoding="utf-8")
+    original = Path.iterdir
+
+    def fake_iterdir(self: Path):
+        if self.name == "src":
+            raise PermissionError(13, "Permission denied")
+        return original(self)
+
+    monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+
+    assert "unreadable directories" in out
+    assert "src" in out
+    assert "Permission denied" in out
+
+
 # ─── read_file ───
 
 
@@ -117,6 +139,21 @@ def test_read_file_long_line_preserves_utf8(repo: Path) -> None:
 
     assert "中" in out
     assert "\ufffd" not in out
+
+
+def test_read_file_error_includes_os_reason(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """底层 OSError 原因应出现在错误信息里，便于模型判断下一步。"""
+    (repo / "x.py").write_text("x", encoding="utf-8")
+
+    def fake_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    with pytest.raises(ValueError, match="Input/output error"):
+        registry.execute("read_file", {"path": "x.py"})
 
 
 def test_read_file_rejects_dir(repo: Path) -> None:

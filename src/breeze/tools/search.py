@@ -117,7 +117,7 @@ def grep(
     try:
         regex = re.compile(pattern)
     except re.error as exc:
-        raise ValueError(f"Invalid regex pattern: {pattern}") from exc
+        raise ValueError(f"Invalid regex pattern {pattern!r}: {exc}") from exc
 
     if shutil.which("rg"):
         lines = _grep_with_rg(pattern, target, glob, max_results, explicit_scope)

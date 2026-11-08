@@ -139,9 +139,9 @@ def test_client_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from breeze.config import settings
 
     monkeypatch.setattr(settings, "api_key", "")
-    monkeypatch.setattr(settings, "api_key_env", "SILICONFLOW_API_KEY")
+    monkeypatch.setattr(settings, "api_key_env", "CUSTOM_API_KEY")
 
-    with pytest.raises(ValueError, match="SILICONFLOW_API_KEY"):
+    with pytest.raises(ValueError, match="CUSTOM_API_KEY"):
         LLMClient(model="test/model")
 
 
