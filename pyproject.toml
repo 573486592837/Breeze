@@ -41,6 +41,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # packaging 测试直接调用运行环境里的 setuptools 构建 wheel/sdist；
+    # PEP 639 的 license/license-files 字段需要 77 及以上。
+    "setuptools>=77",
     "ruff>=0.6",
     "pytest>=8.0",
 ]
