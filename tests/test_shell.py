@@ -535,11 +535,17 @@ def test_run_shell_rejects_absolute_paths(repo: Path, whitelisted_which: None) -
 
 def test_run_shell_rejects_git_rev_with_absolute_path(repo: Path, whitelisted_which: None) -> None:
     """git 的 rev:path 语法中嵌入绝对路径应被拒。"""
-    for cmd in [
+    import os
+
+    cmds = [
         "git show HEAD:C:/Windows/System32",
-        "git show HEAD:C:\\Windows\\System32",
         "git show HEAD:/etc/passwd",
-    ]:
+    ]
+    if os.name == "nt":
+        # POSIX 的 shlex 会把反斜杠当转义符吃掉，该写法在 Linux 上会变成
+        # 相对路径 HEAD:C:WindowsSystem32，因此只在 Windows 断言。
+        cmds.append("git show HEAD:C:\\Windows\\System32")
+    for cmd in cmds:
         with pytest.raises(ValueError, match="Absolute paths"):
             registry.execute("run_shell", {"command": cmd})
 

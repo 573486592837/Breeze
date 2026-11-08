@@ -1,6 +1,7 @@
 """CLI 的单元测试。"""
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,13 @@ from breeze.cli import app
 from breeze.llm import LLMResponse
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """去掉 ANSI 并折叠空白，避免帮助文本换行受终端宽度影响。"""
+    return " ".join(_ANSI_RE.sub("", text).split())
 
 
 class FakeLLMClient:
@@ -151,7 +159,7 @@ def test_help_lists_current_options() -> None:
     chat_help = runner.invoke(app, ["chat", "--help"])
 
     assert top.exit_code == 0
-    assert "breeze ask --help" in top.stdout
+    assert "breeze ask --help" in _plain(top.stdout)
     assert "--trace-name" in ask_help.stdout
     assert "--trace-name" in chat_help.stdout
     assert "--permission" in ask_help.stdout
