@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/573486592837/Breeze/security/advisories/new
+    about: 请私下报告，不要在公开 Issue 中粘贴密钥或漏洞细节。
+  - name: 使用文档
+    url: https://github.com/573486592837/Breeze#快速开始
+    about: 安装、配置、命令与已知限制。

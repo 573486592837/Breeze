@@ -1,10 +1,13 @@
 # Breeze
 
+[![CI](https://github.com/573486592837/Breeze/actions/workflows/ci.yml/badge.svg)](https://github.com/573486592837/Breeze/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > 面向代码场景的 Token 高效 Agent。
 
 Breeze 是一个面向代码仓库的 CLI Agent，目标是在代码问答、检索、编辑、测试等任务中，以更少的 Token 完成同等或更好的任务。它不追求成为通用聊天助手，也不急于构建多 Agent 平台，而是聚焦代码场景，通过上下文压缩、按环境裁剪的工具集与可重复的固定评估集，降低 LLM 调用成本，并让 Agent 的行为可观测、可评估、可迭代。
 
-当前状态：v1.6.0 — 工具系统、ReAct Loop、多回合会话、持久指引、命令权限模式与固定评估集已可用。
+当前状态：v1.6.0（早期公开测试版）— 工具系统、ReAct Loop、多回合会话、持久指引、命令权限模式与固定评估集已可用。接口与行为仍可能变化，试用请优先安装 tag。
 
 ---
 
@@ -153,19 +156,45 @@ DeepSeek-V3.2 能力限制——P3 手测中它报告"已完成收紧符号链�
 
 ### 环境要求
 
-- Python 3.11
-- Miniconda 或类似环境管理工具
+- Python 3.11+（CI 在 3.11 上验证）
+- Python 虚拟环境（`venv`、Miniconda 或 `uv` 均可）
 - 任意 OpenAI 兼容服务的 API Key（默认配置示例为硅基流动）
-- Git（长任务评估需要）
+- Git（仓库操作与长任务评估需要）
 
 ### 安装
 
+公开试用建议固定到 tag，避免 `main` 持续变化：
+
 ```bash
-git clone https://github.com/573486592837/breeze.git
-cd breeze
+git clone https://github.com/573486592837/Breeze.git
+cd Breeze
+git checkout v1.6.0
+python -m venv .venv
+```
+
+激活虚拟环境：
+
+```bash
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+
+# Linux / macOS
+source .venv/bin/activate
+```
+
+安装并验证：
+
+```bash
+pip install -e .
+breeze --version
+```
+
+也可以使用 Miniconda：
+
+```bash
 conda create -n breeze python=3.11 -y
 conda activate breeze
-pip install -e ".[dev]"
+pip install -e .
 ```
 
 `pip install` 会解析到 `litellm<1.106`：1.106.0 起带 `tools` 的调用会 import 未声明的
@@ -275,6 +304,36 @@ CLI 参数（`--model`、`--max-steps`、`--trace-name`）> 会话内保存的�
   每完成一步或方向变化后用完整的新计划覆盖。计划存放在会话状态里，每次
   调用 LLM 前追加到消息末尾（body 之后），同样不会被压缩掉；随回合状态写入
   会话文件，`--resume` 后可恢复。`/plan` 可随时查看。
+
+---
+
+## 安全与隐私
+
+Breeze 是本地 CLI Agent，会在当前仓库内读写文件并执行白名单命令。它不是沙箱，
+请只在受版本控制的仓库中使用，并在每次运行后检查 diff。
+
+- **模型服务**：提示词、文件内容与工具输出会发送到你配置的 LLM 服务商。不要在
+  敏感仓库上使用不可信的端点；API Key 只放在环境变量或 `.env` 中，不要写进
+  `breeze.toml`、trace 或 Issue。
+- **命令执行**：`run_shell` 有白名单与路径边界，但权限模式不是安全边界。使用
+  `strict` / `confirm` 模式，或直接不调用该工具。
+- **本地数据**：会话保存在 `~/.breeze/sessions`，trace 默认写入 `traces/`。
+  trace 可能包含代码、提示词与模型输出，分享或提交前请先脱敏。
+- **费用**：每次运行都会消耗你自己的 API 额度，建议先用较小的 `--max-steps`
+  和 `short` 压缩档位试跑。
+
+发现问题请按 [`SECURITY.md`](SECURITY.md) 私下报告，不要在公开 Issue 中粘贴密钥。
+
+---
+
+## 已知限制
+
+- 目前主要在 Windows + DeepSeek 系列模型上验证；Linux 由 CI 覆盖，macOS 尚未系统验证。
+- 编辑正确性受模型能力限制，Agent 可能报告“已完成”但实际未生效；请以测试与
+  diff 为准。
+- `litellm<1.106` 是规避上游未声明依赖的临时上界，升级前请先跑全量测试。
+- 工具参数校验只覆盖必填项、未知键与基础类型，不校验语义合法性。
+- 没有沙箱、网络隔离或权限提升机制；不要在不受信任的仓库上无人值守运行。
 
 ---
 
@@ -597,6 +656,15 @@ breeze/
 
 ---
 
+## 反馈与支持
+
+- Bug 与改进建议：使用 [Issue 模板](https://github.com/573486592837/Breeze/issues/new/choose)。
+- 提供 trace 时请先删除 API Key、私有代码与个人信息；只保留复现所需的最小片段。
+- 当前是早期测试版，不承诺响应时间或向后兼容；重要变更会记录在
+  [`docs/CHANGELOG.md`](docs/CHANGELOG.md)。
+
+---
+
 ## 开发规范
 
 - 遵循 Conventional Commits 提交格式。
@@ -609,3 +677,10 @@ breeze/
 - 发布流程、打包边界（哪些代码进 wheel）与版本 bump 规则见
   [`CONTRIBUTING.md`](CONTRIBUTING.md)；逐版本数据见
   [`docs/CHANGELOG.md`](docs/CHANGELOG.md)。
+
+---
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。你可以自由使用、修改与分发，但需保留版权与
+许可声明；软件按“现状”提供，不附带任何担保。
