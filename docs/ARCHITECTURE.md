@@ -79,7 +79,7 @@ flowchart TB
 | `cli.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
 | `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘 | 与 CLI 解耦，依赖可注入 |
 | `chat_commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
-| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复 | 默认 15 步、连续编辑失败 3 次 |
+| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复 | 默认 25 步、连续编辑失败 3 次 |
 | `context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
 | `state.py` | `SessionState` / `TurnLedger` | 从真实工具结果提取事实；跨回合归档问答结论 | 不采信模型自述 |
 | `session.py` | `SessionStore` | append-only JSONL，恢复 ledger/state/config | 空会话不落盘 |
@@ -449,7 +449,7 @@ flowchart TD
 
 | 项 | 默认值 | 位置 |
 |---|---:|---|
-| 最大循环步数 | 15 | `config.DEFAULTS.agent.max_steps` |
+| 最大循环步数 | 25 | `config.DEFAULTS.agent.max_steps` |
 | 连续编辑失败上限 | 3 | `config.DEFAULTS.agent.max_edit_failures` |
 | 回合软预算 | 24000 tokens | `config.DEFAULTS.context.intra_turn_budget` |
 | 回合硬上限 | 24000 tokens | `config.DEFAULTS.context.hard_budget` |

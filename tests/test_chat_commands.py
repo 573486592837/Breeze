@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from breeze.chat_commands import ChatController
+from breeze.config import settings
 from breeze.state import SessionState, TurnLedger
 
 
@@ -312,7 +313,7 @@ def test_set_rejects_invalid_values() -> None:
     assert "需要整数" in controller.handle("/set max_steps abc", None)
     assert "1 到 50" in controller.handle("/set max_steps 0", None)
     assert "0 到 2" in controller.handle("/set temperature 3", None)
-    assert controller.max_steps == 15
+    assert controller.max_steps == settings.agent_max_steps
 
 
 # ─── /plan ───

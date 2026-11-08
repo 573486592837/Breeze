@@ -64,7 +64,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "max_retries": 2,
     },
     "agent": {
-        "max_steps": 15,
+        "max_steps": 25,
         "max_edit_failures": 3,
     },
     "shell": {
