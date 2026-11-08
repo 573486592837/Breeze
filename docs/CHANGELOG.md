@@ -645,7 +645,7 @@ CLI 参数测试。
 
 ---
 
-## 成本与缓存可观测性（未发布）
+## 成本与缓存可观测性（v1.6.0）
 
 此前只优化 prompt tokens，没有记录 provider 的缓存命中与单次调用费用；而 prompt
 变小不一定等于成本下降，缓存命中与固定开销同样决定账单。本阶段先补测量，不改
@@ -787,7 +787,7 @@ turn 2 miss 来自 archive 模式丢弃历史、重写前缀，而不是 provide
 
 589 passed / 2 skipped，ruff check 全绿。
 
-## 默认步数预算上调到 15（未发布）
+## 默认步数预算上调到 15（v1.6.0）
 
 Python 试跑里，任务在 10 步预算下于收尾阶段耗尽步数，只能跨回合续跑。用同一
 基线提交（`trial-python-baseline`）建两个 worktree，同提示、temperature=0，仅
@@ -872,8 +872,10 @@ packaging 测试同步到 1.5.1。
   拒绝），6 个文件均正确更新。原《撤销功能》场景复跑只打了 1 个补丁便步数用尽，
   未触及上限，因此不作为该改动的证据。
 
+## 工具与上下文可靠性（v1.6.0）
 
-
+v1.5.1 之后的发布批次：缓存成本可观测性、能力探测与工具边界、回合内上下文
+降级策略、LLM 网络重试与工具错误归因。
 
 ### 完整 prompt 捕获（2026-11-03）
 
@@ -886,7 +888,7 @@ packaging 测试同步到 1.5.1。
 - 文件可能很大且包含代码与工具输出，默认关闭，也不应提交到仓库。
 - CLI 摘要在开启时显示 `messages_path`；`RunTrace(capture_messages=...)` 可显式覆盖。
 
-### 工具访问边界修正（未发布）
+### 工具访问边界修正
 
 真实试跑暴露了两个问题：通用 prompt 写死了 Breeze 自己的 `traces/reports` 目录，
 而在 Breeze-Lens 这类项目中 `traces/` 正是需要读取的输入；同时工具只能访问仓库根，
@@ -905,7 +907,7 @@ packaging 测试同步到 1.5.1。
   `list_files('traces')`、`read_file('../Breeze/src/breeze/trace.py')`、
   `grep(..., path='../Breeze/src/breeze')` 均可用，写工具仍拒绝参考目录。
 
-### 能力探测与读保护（未发布）
+### 能力探测与读保护
 
 - Agent 在每个用户回合开始时重新探测环境能力；成功写操作后如果仍缺少
   Python 项目能力，会立即重探。这样 M0 创建 `pyproject.toml` 后，同一回合
@@ -918,7 +920,7 @@ packaging 测试同步到 1.5.1。
   测试文件规则改为“不要删除或弱化测试”，允许新增测试覆盖新行为。
 - 验证：616 passed / 2 skipped，ruff 全绿。
 
-### capture 元数据与提示词去重（未发布）
+### capture 元数据与提示词去重
 
 - `*.messages.jsonl` 的每条记录新增 `temperature` 与完整 `response`
   （`content` + `tool_calls`）；常规 trace 的 `llm_call` 事件也记录 temperature。
@@ -931,7 +933,7 @@ packaging 测试同步到 1.5.1。
   每次调用少约 206 Token；环境说明与 AGENTS.md 不计入此数。
 - 验证：616 passed / 2 skipped，ruff 全绿。
 
-### chat 多行粘贴（未发布）
+### chat 多行粘贴
 
 - `breeze chat` 的输入改用 prompt_toolkit 的 bracketed paste：粘贴的多行文本
   整块留在缓冲区，按一次回车才作为一个回合提交，不再逐行发送（也不会因为
@@ -942,7 +944,7 @@ packaging 测试同步到 1.5.1。
   `PipeInput` 模拟 `ESC[200~ ... ESC[201~` 粘贴，确认回车后得到单个
   `"line1\nline2"` 输入。
 
-### 定位类工具结果可见性（未发布）
+### 定位类工具结果可见性
 
 - 修复 `grep` / `list_files` 结果在模型看到之前就被替换成一行指针的问题：
   ≤ 1,000 字符时原样保留；更大时保留前 1,500 字符预览与总行数，并提示
@@ -953,7 +955,7 @@ packaging 测试同步到 1.5.1。
   才看到文件列表。
 - 验证：626 passed / 2 skipped，ruff 全绿。
 
-### 长行文件与引号内分隔符（未发布）
+### 长行文件与引号内分隔符
 
 - `read_file`：单行超过 `max_bytes` 时按 UTF-8 安全截断并保留头部，附
   `[line truncated: N bytes total]`；不再返回误导性的 `(empty)`。Breeze Lens
@@ -964,7 +966,7 @@ packaging 测试同步到 1.5.1。
   仍按安全白名单禁用，错误信息改为提示 `read_file` / `grep`。
 - 验证：629 passed / 2 skipped，ruff 全绿。
 
-### 固定 trace 文件（未发布）
+### 固定 trace 文件
 
 - `/trace <name>` 从“设置每回合文件名前缀”改为“固定文件名”：首个回合创建
   `traces/<name>.jsonl`（开启捕获时为 `<name>.messages.jsonl`），同一会话的
@@ -981,7 +983,7 @@ packaging 测试同步到 1.5.1。
 - 验证：639 passed / 2 skipped，ruff 全绿；CLI 测试覆盖多回合追加、捕获文件
   配对、`--resume` 恢复与已存在文件拒绝。
 
-### 回合内不再压缩 read_file（未发布）
+### 回合内不再压缩 read_file
 
 真实 M2 trace 里出现同文件多轮重复读取：24K 软预算一超限，`_spill` 就把最旧的
 `read_file` 换成“re-read and edit immediately”指针；模型据此重读，新增内容又
@@ -1005,7 +1007,7 @@ packaging 测试同步到 1.5.1。
 - 验证：642 passed / 2 skipped，ruff 全绿；新增软预算保留原文、硬上限大结果优先、
   最近读取保护、软预算前缀可复用与 hard >= soft 的回归测试。
 
-### 状态块与硬上限默认值（未发布）
+### 状态块与硬上限默认值
 
 回合内不压缩 read_file 的首轮真实 M2 A/B 暴露了状态块自身的误导：跨回合持久化
 的 `read_counts` 把上一回合的读取次数带进新回合，状态块在仅存在跨回合归档时也会
@@ -1037,7 +1039,7 @@ packaging 测试同步到 1.5.1。
 - 验证：状态块仅在降级时注入、回合切换清零、计数不落盘、重读排序与措辞的回归
   测试；配置与 `/profile` 断言同步更新。
 
-### LLM 断网超时与重试（未发布）
+### LLM 断网超时与重试
 
 M2 试跑中网络中断后 `breeze chat` 停在 `step 9: waiting for model`，因为
 `litellm.completion` 没有超时配置，请求可以无限等待；异常时又会一次性把
@@ -1059,7 +1061,7 @@ M2 试跑中网络中断后 `breeze chat` 停在 `step 9: waiting for model`，�
 - 验证：新增超时/重试参数、网络错误不触发参数回退、失败回合不落盘与不重复
   写上一回合的测试；全量测试与 ruff 结果见提交。
 
-### 工具结果自描述与验证核对（未发布）
+### 工具结果自描述与验证核对
 
 M3 试跑连续失败后回看完整提示词，定位到三类与任务难度无关的损耗：并行工具结果
 缺少工具名/参数、降级只剩 `exit_code`、以及最终回答可以在验证失败时声称通过。
@@ -1093,7 +1095,7 @@ M3 试跑连续失败后回看完整提示词，定位到三类与任务难度�
 - 验证：新增指针区分、错误保留、pytest 摘要、update_plan 确认、验证 guard、
   venv 解释器与 trace 追加的回归测试；677 passed / 2 skipped，ruff 全绿。
 
-### 工具错误归因修复（未发布）
+### 工具错误归因修复
 
 真实 M5 试跑中，模型对已存在的文件调用 `create_file`，工具返回
 `Error: file already exists...`，但 trace 的 `tool_call.error` 为 null、
@@ -1105,3 +1107,70 @@ M3 试跑连续失败后回看完整提示词，定位到三类与任务难度�
   trace 与进度事件。工具失败前缀统一由 `_is_failure_result` 判定。
 - 验证：新增字符串失败必须计入 `tool_call.error`、`tool_end.ok=False` 与
   `run_summary.errors` 的回归测试；全量 752 passed / 2 skipped，ruff 全绿。
+
+### 工具参数校验与错误可诊断性
+
+真实 trace 里，缺失 `path` 的 `apply_patch` 只得到工具的文本报错，却仍被计入
+连续编辑失败次数，几次参数笔误就能锁死本回合的写操作；同时参数错误与真正的
+执行失败在 trace 里无法区分。
+
+- `ToolRegistry.execute` 在调用前校验 JSON Schema：缺少必填键、未知键、基础
+  类型不匹配（含 bool 与 integer 的区分）都抛出 `ToolArgumentError`，错误信息
+  附带期望的参数名与类型；可选参数传 `null` 视为省略。
+- 参数错误单独归因，不计入 `max_edit_failures`；`apply_patch` / `create_file`
+  失败时补充 “No changes were written to the target path”，`delete_path` 因可能
+  部分删除而不加此声明。
+- `read_file` 的 OSError、`grep` 的非法正则保留底层原因；`list_files` 报告
+  不可读目录，避免模型把权限问题误判为“文件不存在”。
+- 验证：新增必填/未知键/类型/bool/可选 null 的校验测试，以及参数错误不消耗
+  编辑预算的回归测试。
+
+### 上下文降级冻结与批量降级
+
+降级结果会改写 body 中部消息，其后的前缀缓存全部失效。此前预算回落或多次
+超限时，同一批工具结果会在“原文 ↔ 指针”之间反复切换，每切一次就多一次
+全量缓存未命中。
+
+- 已降级的工具结果在本回合内保持指针形态（`_spilled_ids`），预算回落也不还原，
+  避免抖动；回合结束时清空。
+- 软预算超限时批量降级到目标的 85%，而不是逐条降到刚好压线，减少后续步骤反复
+  触发降级；仍超过硬上限时才按既有规则保护最近读取、从旧到新处理 `read_file`。
+- 验证：预算回落后不还原、批量降级到目标比例的回归测试；真实 M5 trace 中
+  第 14–17 步的读结果来回切换消失。
+
+### 思考只保留最新一步并移除 git_diff
+
+- `reasoning_content` 只保留最新一步全文，更早的截断为 600 字符预览。截断仍会
+  使该位置之后的前缀失效，但影响范围从每两步一次收敛为每回合一次。
+- 移除 `git_diff` 工具：22 份真实 trace 中仅出现 2 次，模型更常用
+  `run_shell` 的 `git diff`，且 shell 输出更可控；`git_restore` 保留，因为
+  shell 白名单禁止 `checkout` / `restore`，它是唯一的安全回滚入口。
+- 提示词中的 diff 规则改为引导 `run_shell git diff`，非 git 工作区改读文件；
+  能力裁剪只移除 `git_restore`。
+- 验证：上下文截断边界、工具集与提示词断言同步更新；移除 7 个 `git_diff`
+  测试。
+
+### 清理旧密钥回退与文档校正
+
+- 删除 `SILICONFLOW_API_KEY` 回退：API Key 只从 `BREEZE_API_KEY` 或配置的
+  `api_key_env` 读取，不再隐式兼容旧环境变量。
+- 删除上下文模块中已废弃的默认值常量；`docs/ARCHITECTURE.md` 修正为实际注入
+  顺序 `system → instructions → archive → user → snapshot → body → plan →
+  state → budget → continuation`，并更新降级、思考截断与步数说明。
+- README 删除 `git_diff` 现状描述与“仅支持硅基流动”的过时表述，改为任意
+  OpenAI 兼容端点。
+
+### 默认 max_steps 上调到 25
+
+M5 真实试跑中，`m5_deepseek` 两次分别用了 18 / 21 步（最大 prompt 40,235 /
+32,434），`m5_v6` 用满 25 步（最大 prompt 44,074）；15 步预算会在收尾阶段
+触顶，迫使跨回合续跑并重发完整上下文。
+
+- `[agent] max_steps` 默认值 15 → 25，`breeze.toml.example` 与相关测试同步；
+  chat 内仍可用 `/set max_steps` 覆盖（上限 50）。
+- 其余档位（`short/medium/long` 的上下文预算）与 `hard_budget` 不变。
+
+### 验证
+
+全量 753 passed / 2 skipped，ruff check 全绿；`breeze.__version__` 与
+packaging 测试同步到 1.6.0。
