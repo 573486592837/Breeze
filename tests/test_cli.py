@@ -154,18 +154,20 @@ def test_ask_renders_markdown(repo: Path, tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_help_lists_current_options() -> None:
     """帮助文案应覆盖持久化与 trace 命名等新参数。"""
-    top = runner.invoke(app, ["--help"])
-    ask_help = runner.invoke(app, ["ask", "--help"])
-    chat_help = runner.invoke(app, ["chat", "--help"])
+    # 固定宽终端，避免 CI 的窄列宽把 --trace-name 截断成 --trace。
+    wide = {"COLUMNS": "200"}
+    top = runner.invoke(app, ["--help"], env=wide)
+    ask_help = runner.invoke(app, ["ask", "--help"], env=wide)
+    chat_help = runner.invoke(app, ["chat", "--help"], env=wide)
 
     assert top.exit_code == 0
     assert "breeze ask --help" in _plain(top.stdout)
-    assert "--trace-name" in ask_help.stdout
-    assert "--trace-name" in chat_help.stdout
-    assert "--permission" in ask_help.stdout
-    assert "--permission" in chat_help.stdout
-    assert "--resume" in chat_help.stdout
-    assert "--list" in chat_help.stdout
+    assert "--trace-name" in _plain(ask_help.stdout)
+    assert "--trace-name" in _plain(chat_help.stdout)
+    assert "--permission" in _plain(ask_help.stdout)
+    assert "--permission" in _plain(chat_help.stdout)
+    assert "--resume" in _plain(chat_help.stdout)
+    assert "--list" in _plain(chat_help.stdout)
 
 
 def test_ask_custom_max_steps_and_permission(repo: Path, tmp_path: Path) -> None:
