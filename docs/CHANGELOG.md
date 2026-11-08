@@ -1174,3 +1174,37 @@ M5 真实试跑中，`m5_deepseek` 两次分别用了 18 / 21 步（最大 promp
 
 全量 753 passed / 2 skipped，ruff check 全绿；`breeze.__version__` 与
 packaging 测试同步到 1.6.0。
+
+## 公开试用准备 (v1.6.1)
+
+v1.6.0 之后的仓库公开准备，不改变 Agent 运行时行为。目标是让朋友可以从 GitHub
+固定 tag 安装、了解安全边界，并通过 Issue 反馈问题。
+
+### 许可证与发行元数据
+
+- 新增 MIT `LICENSE`，版权人为仓库维护者。
+- `pyproject.toml` 补齐 `license`、`license-files`、`readme`、`authors`、
+  `keywords`、`classifiers` 与项目链接，采用 PEP 639 的 SPDX 写法；
+  build-system 与 dev 依赖的 setuptools 下限提升到 77。
+
+### 公开文档与反馈入口
+
+- README 顶部标注早期公开测试版，安装方式改为固定 tag + `venv`（保留 conda），
+  新增安全与隐私、已知限制、反馈与支持、许可证小节。
+- 新增 `SECURITY.md`：支持范围、私下报告渠道、属于/不属于安全问题的边界。
+- 新增 Issue 表单（bug / feature）与 PR 模板，要求提交前删除密钥、私有代码和
+  个人信息。
+
+### CI 与跨平台测试
+
+- 新增 GitHub Actions：Ubuntu + Windows、Python 3.11，运行 `ruff check` 与
+  `pytest`；只读 `contents` 权限。
+- 修正两个依赖环境/平台的测试：帮助文本固定宽终端后再断言选项名；带反斜杠的
+  `rev:path` 只在 Windows 断言，因为 POSIX 的 shlex 会吞掉反斜杠。
+
+### 验证
+
+本地 753 passed / 2 skipped，ruff check 全绿；CI 双平台 754 passed / 1 skipped。
+wheel 的 METADATA 为 `License-Expression: MIT`，并包含
+`dist-info/licenses/LICENSE`。`breeze.__version__` 与 packaging 测试同步到
+1.6.1。
