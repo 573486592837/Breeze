@@ -252,14 +252,19 @@ def _environment_note(capabilities: Capabilities) -> str:
     else:
         lines.append(f"外部命令可用：{'、'.join(available)}。")
     if not capabilities.git_tools:
-        lines.append("当前目录不是 git 工作区：git_diff / git_restore 不可用，不要尝试调用。")
+        lines.append("当前目录不是 git 工作区：git_restore 不可用，不要尝试调用。")
     if not capabilities.python_project:
         lines.append("未检测到 Python 项目：run_tests 不可用；测试请用 run_shell（如 node --test）。")
     return "运行环境：\n" + "\n".join(f"- {line}" for line in lines)
 
 
-_GIT_DIFF_RULE = "3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。"
-_GIT_DIFF_FALLBACK = "3. 需要确认整体改动时重新读取相关文件；当前目录不是 git 工作区，git_diff 不可用。"
+_GIT_DIFF_RULE = (
+    "3. 需要确认整体改动时用 run_shell 执行 git diff，例如多次修改后或回滚前。"
+    "单次修改可直接继续。"
+)
+_GIT_DIFF_FALLBACK = (
+    "3. 需要确认整体改动时重新读取相关文件；当前目录不是 git 工作区，不要执行 git diff。"
+)
 _GIT_RESTORE_RULE = "5. 如果修改有误，用 git_restore 回滚单个文件后重试。"
 _GIT_RESTORE_FALLBACK = (
     "5. 如果修改有误，重新读取文件后用 apply_patch 修正；当前目录不是 git 工作区，"
@@ -300,7 +305,7 @@ def _enabled_tool_names(capabilities: Capabilities) -> frozenset[str]:
     """按环境能力裁剪工具集。"""
     names = set(registry.TOOLS)
     if not capabilities.git_tools:
-        names -= {"git_diff", "git_restore"}
+        names.discard("git_restore")
     if not capabilities.python_project:
         names.discard("run_tests")
     return frozenset(names)
@@ -412,7 +417,7 @@ DEFAULT_SYSTEM_PROMPT = """你是 Breeze，一个代码仓库 Agent。
 2. 修改已存在的文件用 apply_patch，old 必须逐字来自最近一次 read_file 的输出
    并唯一匹配文件中的原文；目标区域已不在上下文或不确定时先重新读取，
    禁止凭记忆编写 old。创建新文件用 create_file。
-3. 需要确认整体改动时用 git_diff，例如多次修改后或回滚前。单次修改可直接继续。
+3. 需要确认整体改动时用 run_shell 执行 git diff，例如多次修改后或回滚前。单次修改可直接继续。
 4. 如果需要运行测试：Python 项目优先使用 run_tests（需要特殊 pytest 参数时
    改用 run_shell 的 'python -m pytest'）；JS 项目用 run_shell 的 'node --test'。
    不要用 npm / npx / yarn 等包管理器。

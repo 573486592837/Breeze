@@ -284,7 +284,7 @@ def _commit_setup(worktree: Path, task_id: str) -> None:
     """提交 setup 产生的改动，使 HEAD 反映注入 bug 后的状态。
 
     这样 agent 的修复会产生 working tree 与 HEAD 的差异，
-    git_diff 能正确显示。
+    run_shell 的 git diff 能正确显示。
 
     Args:
         worktree: worktree 路径。

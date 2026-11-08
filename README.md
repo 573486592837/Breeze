@@ -75,7 +75,7 @@ Agent Loop  (ReAct；步数预算、半程收敛提醒、连续编辑失败上�
   +-- Context Manager  策略 v3：回合内只追加，硬上限兜底
   |     +-- 定位类结果小体积透传、大体积保留预览 (grep/list_files)   (已实现)
   |     +-- read_file 原文回合内保留，避免重读并维持前缀缓存          (已实现)
-  |     +-- 软预算只降级可再生输出 (run_shell/run_tests/git_diff…)    (已实现)
+  |     +-- 软预算只降级可再生输出 (run_shell/run_tests…)            (已实现)
   |     +-- 硬上限才降级 read_file：大结果优先、保护最近读取           (已实现)
   |     +-- Tool Result Compaction（工具端上限 + 兜底裁剪）        (已实现)
   |     +-- Hybrid Retriever                                     (计划中)
@@ -92,7 +92,7 @@ Agent Loop  (ReAct；步数预算、半程收敛提醒、连续编辑失败上�
   +-- Tool System
   |     +-- list_files / read_file / grep                         (已实现)
   |     +-- run_shell（可执行文件与子命令白名单、shell=False）        (已实现)
-  |     +-- apply_patch / create_file / delete_path / git_diff / git_restore / run_tests  (已实现)
+  |     +-- apply_patch / create_file / delete_path / git_restore / run_tests  (已实现)
   |
   +-- Trace      每回合一个 JSONL（run_start/llm_call/tool_call/run_summary）(已实现)
   +-- Eval       包外的 breeze_eval/ + worktree 隔离，不进发行包     (已实现)
@@ -338,11 +338,11 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 
 回合内压缩分两级：
 
-- 超过 `intra_turn_budget` 时先降级 `run_shell`、`run_tests`、`git_diff` 等
+- 超过 `intra_turn_budget` 时先降级 `run_shell`、`run_tests` 等
   可再生输出；`read_file` 原文尽量保留，避免模型为了 `apply_patch` 重新读取。
 - 降级不再只留一行 `exit_code`：每条结果带上工具名与关键参数（如命令、测试
   范围），并保留该工具的有效摘要——`run_shell` 保留 stderr 首行与 stdout 首尾，
-  `run_tests` 保留 pytest 汇总和失败项，`git_diff` 保留 diffstat。并行调用超过
+  `run_tests` 保留 pytest 汇总和失败项。并行调用超过
   一条时，结果前再加 `[call i/n 工具: 参数]`，避免多条匿名结果互相混淆。
 - 工具错误（`Error`、`Tool execution failed`、拒绝执行等）保留完整错误正文，
   方便模型改正参数，而不是被压成一行后盲目重试。
@@ -408,7 +408,7 @@ Agent 会记录本回合最后一次 `run_tests` / `run_shell` 中的 pytest、r
 ### 推理模型的思考过程
 
 当 provider 返回 `reasoning_content`（如 DeepSeek reasoner）时，Agent 会把它
-随工具调用一起回传到后续请求，避免模型在多步工具循环中忘记目标。最近两步的
+随工具调用一起回传到后续请求，避免模型在多步工具循环中忘记目标。最新一步的
 思考保留全文，更早的截断为短摘录，防止提示词随步数线性膨胀；思考内容会计入
 上下文预算统计。交互式终端在等待模型时显示的思考摘要只做展示，不改变消息内容。
 
@@ -477,7 +477,7 @@ LLM 请求默认使用 `timeout=600s`、`connect_timeout=15s`、`max_retries=2`�
 ### 工具集裁剪
 
 Agent 启动时会探测环境，只向模型下发当前可用的工具：非 git 工作区不会出现
-`git_diff` / `git_restore`，未检测到 Python 项目时不会出现 `run_tests`。
+`git_restore`，未检测到 Python 项目时不会出现 `run_tests`。
 系统提示会同步给出替代做法，减少注定失败的工具调用。
 
 ### 命令权限模式
@@ -553,7 +553,7 @@ breeze/
 │       ├── fs.py
 │       ├── search.py
 │       ├── shell.py
-│       └── edit.py       # apply_patch, create_file, delete_path, git_diff, git_restore, run_tests
+│       └── edit.py       # apply_patch, create_file, delete_path, git_restore, run_tests
 ├── breeze_eval/
 │   └── harness.py        # 评估框架（包外的开发面，不进 wheel）
 ├── scripts/

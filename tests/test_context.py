@@ -813,8 +813,11 @@ def test_update_plan_error_result_is_preserved() -> None:
     assert "Error: plan is 9000 chars" in joined
 
 
-def test_recent_reasoning_kept_and_older_trimmed() -> None:
-    """最近两步思考保留全文，更早的只留摘录，控制提示词膨胀。"""
+def test_latest_reasoning_kept_and_older_trimmed() -> None:
+    """只保留最新一步思考全文，更早的截断为摘录。
+
+    每步最多改写一条旧消息，前缀缓存失配范围因此限制在最近一步。
+    """
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
     messages = [_system(), _user("q")]
     for i in range(5):
@@ -828,8 +831,7 @@ def test_recent_reasoning_kept_and_older_trimmed() -> None:
     assert assistants[-1]["reasoning_content"].startswith("step 4")
     assert "truncated" not in assistants[-1]["reasoning_content"]
     assert assistants[-2]["reasoning_content"].startswith("step 3")
-    assert "truncated" not in assistants[-2]["reasoning_content"]
-    assert assistants[0]["reasoning_content"].startswith("step 0")
+    assert assistants[-2]["reasoning_content"].endswith("[earlier reasoning truncated]")
     assert assistants[0]["reasoning_content"].endswith("[earlier reasoning truncated]")
 
 

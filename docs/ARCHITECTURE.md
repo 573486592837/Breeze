@@ -90,7 +90,7 @@ flowchart TB
 | `tools/fs.py` | `list_files` / `read_file` | 目录浏览、带行号读取、`start_line/end_line` 定点读 | 忽略缓存/构建目录与 `.gitignore` |
 | `tools/search.py` | `grep` | `文件:行号:内容`；rg 优先，Python 回退 | 结果行数与字节双上限 |
 | `tools/shell.py` | `run_shell` | `shell=False`、可执行文件/子命令/选项白名单 | 拒绝未加引号的串联/管道/重定向 |
-| `tools/edit.py` | 6 个工具 | 单点替换、建文件、删路径、diff/回滚、pytest | 补丁大小、受保护路径、原子写入 |
+| `tools/edit.py` | 5 个工具 | 单点替换、建文件、删路径、回滚、pytest | 补丁大小、受保护路径、原子写入 |
 | `tools/plan.py` | `update_plan` | 计划写入 `SessionState.plan` | 最多 2000 字符 |
 | `capabilities.py` | `detect` | 按环境裁剪工具集与提示词 | 写操作后可能重新探测 |
 | `instructions.py` | AGENTS.md | 仓库级指引作为独立 system 消息注入 | 最多 8000 字符，不能放宽安全规则 |
@@ -226,7 +226,7 @@ flowchart TD
     H --> J[单条结果超过 16KB：<br/>保留头 8KB + 尾 8KB]
     I --> J
     J --> K{消息 Token 超过软预算<br/>默认 24000?}
-    K -- 是 --> L[按体积从大到小降级可再生输出<br/>run_shell / run_tests / git_diff]
+    K -- 是 --> L[按体积从大到小降级可再生输出<br/>run_shell / run_tests]
     K -- 否 --> M{消息 Token 超过硬上限<br/>默认 24000?}
     L --> M
     M -- 否 --> Q[补读取指针说明与批次头]
@@ -373,7 +373,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     A[detect 仓库根] --> B{git 可执行且<br/>在 git 工作区?}
-    B -- 否 --> C[移除 git_diff / git_restore<br/>提示词改写为替代做法]
+    B -- 否 --> C[移除 git_restore<br/>提示词改写为替代做法]
     B -- 是 --> D[保留 git 工具]
     A --> E{检测到 Python 项目?}
     E -- 否 --> F[移除 run_tests<br/>提示词改写为项目自带测试命令]
@@ -458,7 +458,7 @@ flowchart TD
 | list_files 条目 / 单目录文件 | 200 / 20 | `fs.DEFAULT_MAX_ENTRIES` / `DEFAULT_MAX_FILES_PER_DIR` |
 | 补丁 old/new | 20000 bytes、200 行差 | `edit.MAX_PATCH_BYTES` / `MAX_PATCH_LINES` |
 | create_file 内容 | 50000 bytes | `edit.MAX_CREATE_BYTES` |
-| git_diff / 测试输出 | 8000 bytes | `edit.MAX_DIFF_BYTES` / `MAX_TESTS_OUTPUT_BYTES` |
+| run_tests 测试输出 | 8000 bytes | `edit.MAX_TESTS_OUTPUT_BYTES` |
 | run_shell 超时 | 180 s | `shell.DEFAULT_TIMEOUT_SECONDS` |
 | run_tests 超时 | 240 s | `edit.TESTS_TIMEOUT_SECONDS` |
 | LLM 超时 / 连接超时 / 重试 | 600 s / 15 s / 2 | `config.DEFAULTS.llm` |
@@ -485,8 +485,9 @@ flowchart TD
 - 降级会改写 body 中部消息，被改写位置之后的前缀缓存全部失效；因此压缩回合的
   缓存命中率会低于 append-only，这是用预算换正确性的代价。已降级结果在后续
   build 中保持指针形态，避免预算回落时又还原成原文。
-- `reasoning_content` 只保留最近两步全文，第三步及更早的会被截断；截断发生在
-  旧消息上，同样会使该位置之后的前缀失效。真实 trace 中这是主要的缓存失分来源。
+- `reasoning_content` 只保留最新一步全文，更早的会被截断；截断发生在旧消息上，
+  会使该位置之后的前缀失效。真实 trace 中这是主要的缓存失分来源，限制为一条
+  已把失配范围缩到最近一步。
 - 参数校验只覆盖必填项、未知键与 JSON 基础类型，不校验取值范围或语义合法性。
 - `append` 模式只用于成本对照，上下文会持续增长。
 - 多回合只保留问答结论与结构化索引，不保留完整工具过程；需要精确原文时

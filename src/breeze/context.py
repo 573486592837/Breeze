@@ -2,8 +2,8 @@
 
 压缩单位仍是"用户回合"，但降级时机改为两级：
 
-- 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests、
-  git_diff 等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
+- 软预算 ``intra_turn_budget`` 只降级可再生的工具输出（run_shell、run_tests
+  等），**不降级 read_file**。文件原文是 apply_patch 的依据，换出后
   模型只能重读；改写历史还会切断前缀缓存。
 - 只有超过 ``hard_budget``（默认与软预算相同）才动 read_file：保护每个路径最近
   一次读取，并按消息顺序从旧到新降级更早的读取，保证刚读到的新内容优先留在
@@ -11,8 +11,8 @@
   硬上限的兜底代价，不是没有代价的保留策略。
 - 定位类工具（grep、list_files）结果较小时原样保留；较大时保留有界预览与
   总行数，避免模型因为看不到结果而反复调用同一工具。
-- 推理模型的 ``reasoning_content`` 随工具调用回传；最近两步保留全文，更早的
-  截断为短摘录，既维持目标连贯，又避免提示词随步数线性膨胀。
+- 推理模型的 ``reasoning_content`` 随工具调用回传；只有最新一步保留全文，更早的
+  截断为短摘录。被截断的消息只有一个，缓存失配范围也就限制在最近一步。
 - 系统维护的元状态（AGENTS.md、回合归档、工作集快照、计划、SessionState、
   预算提示）统一使用 ``system`` 角色；只有用户真正输入的问题保留 ``user``，
   避免模型把状态索引当成新的用户指令。
@@ -55,15 +55,16 @@ POINTER_PREVIEW_CHARS = 1_500
 READ_TOOLS: frozenset[str] = frozenset({"read_file"})
 # 写操作结果不是可再生产出：压缩成“re-run for more”会诱导模型重复 apply_patch，
 # 把同一段代码插入多次。写结果本身很短，始终保留原文。
-SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests", "git_diff"})
+SPILL_TOOLS: frozenset[str] = frozenset({"run_shell", "run_tests"})
 # 硬上限兜底时，小文件换出省不下多少 Token，却要模型额外重读，收益为负。
 READ_SPILL_MIN_CHARS = 512
 # 一次软降级多留余量：只腾出刚好够的空间，下一步新增结果又会触发改写，
 # 反复切断 body 中部的缓存前缀。降到 85% 可减少降级次数。
 SOFT_SPILL_TARGET_RATIO = 0.85
 # 推理模型的思考过程要随工具结果回传，但完整保留每一步会迅速撑爆上下文。
-# 最近两次思考保留全文，更早的只留开头摘录：既维持目标连贯，又限制开销。
-REASONING_KEEP_MESSAGES = 2
+# 只保留最新一步全文：每步最多截断一条旧消息，前缀缓存失配被限制在最近一步；
+# 保留两步会让上一步的思考在下一步也被改写，失配范围翻倍。
+REASONING_KEEP_MESSAGES = 1
 REASONING_PREVIEW_CHARS = 600
 _REASONING_TRUNCATED_MARK = "\n…[earlier reasoning truncated]"
 
@@ -286,24 +287,12 @@ def _tests_summary(result: str) -> str:
     return " | ".join(keep[:6])
 
 
-def _git_diff_summary(result: str) -> str:
-    """保留 diff 的首尾行；末行通常是 diffstat 合计。"""
-    lines = [line.strip() for line in result.splitlines() if line.strip()]
-    if not lines:
-        return ""
-    first = _one_line(lines[0])
-    last = _one_line(lines[-1])
-    return first if first == last else f"{first} | {last}"
-
-
 def _summarize_spill_result(tool: str, result: str) -> str:
     """按工具保留降级后仍然有用的结果摘要。"""
     if tool == "run_tests":
         return _tests_summary(result)
     if tool == "run_shell":
         return _shell_summary(result)
-    if tool == "git_diff":
-        return _git_diff_summary(result)
     first = next((line.strip() for line in result.splitlines() if line.strip()), "")
     return _one_line(first, 160)
 

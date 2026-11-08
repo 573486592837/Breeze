@@ -22,7 +22,6 @@ from breeze.tools.shell import run_command
 MAX_PATCH_BYTES = 20_000
 MAX_PATCH_LINES = 200
 MAX_CREATE_BYTES = 50_000
-MAX_DIFF_BYTES = 8_000
 MAX_TESTS_OUTPUT_BYTES = 8_000
 # 全量测试通常比单文件慢得多（本仓库约 90 秒），60 秒会让 Agent 误判超时。
 TESTS_TIMEOUT_SECONDS = 240
@@ -70,71 +69,6 @@ def _is_protected(rel_path: str) -> bool:
     if trace_prefix is not None:
         prefixes = (*prefixes, trace_prefix)
     return any(normalized.startswith(p) for p in prefixes)
-
-
-@register(
-    name="git_diff",
-    description=(
-        "返回工作区未提交的改动。适用于查看多次修改后的整体变化，或回滚前确认当前状态。可指定单个文件缩小范围。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "可选，限制到单个文件，相对于仓库根目录。",
-            },
-        },
-        "required": [],
-    },
-)
-def git_diff(path: str | None = None) -> str:
-    """返回工作区未提交的改动。
-
-    Args:
-        path: 可选，限制到单个文件。
-
-    Returns:
-        成功时返回 unified diff 文本或以 ``(working tree clean)`` 开头。
-        失败时以 ``Error:`` 开头。
-    """
-    root = settings.repo_root.resolve()
-
-    if not is_git_repo(root):
-        return "Error: not a git repository"
-
-    tokens = ["git", "diff", "--no-color", "--no-ext-diff", "--"]
-
-    if path is not None:
-        try:
-            target = safe_path(path)
-        except ValueError as exc:
-            return f"Error: {exc}"
-
-        try:
-            rel = target.relative_to(root).as_posix()
-        except ValueError:
-            return f"Error: path escapes repository: {path}"
-
-        tokens.append(rel)
-
-    returncode, stdout, stderr = run_command(tokens, root, timeout=15)
-
-    if returncode == -1:
-        return f"Error: {stderr}"
-
-    if returncode != 0:
-        return f"Error: git diff failed: {stderr.strip()[:500]}"
-
-    if not stdout.strip():
-        return "(working tree clean)"
-
-    encoded = stdout.encode("utf-8")
-    if len(encoded) > MAX_DIFF_BYTES:
-        truncated = encoded[:MAX_DIFF_BYTES].decode("utf-8", errors="ignore")
-        return truncated + f"\n... (diff truncated at {MAX_DIFF_BYTES} bytes)"
-
-    return stdout
 
 
 @register(

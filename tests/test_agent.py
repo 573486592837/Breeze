@@ -365,13 +365,12 @@ def _tool_names(llm: FakeLLMClient) -> set[str]:
 
 
 def test_agent_hides_git_tools_outside_git_repo(trace: RunTrace) -> None:
-    """非 git 工作区不下发 git_diff / git_restore。"""
+    """非 git 工作区不下发 git_restore。"""
     llm = FakeLLMClient([_text("ok")])
     agent = Agent(llm=llm, trace=trace, capabilities=_caps(git_repo=False))
     agent.run("hi")
 
     names = _tool_names(llm)
-    assert "git_diff" not in names
     assert "git_restore" not in names
     assert "apply_patch" in names
 
@@ -391,7 +390,7 @@ def test_agent_keeps_capability_tools_when_available(trace: RunTrace) -> None:
     agent = Agent(llm=llm, trace=trace, capabilities=_caps())
     agent.run("hi")
 
-    assert {"git_diff", "git_restore", "run_tests"} <= _tool_names(llm)
+    assert {"git_restore", "run_tests"} <= _tool_names(llm)
 
 
 def test_default_system_prompt_adapts_git_rules() -> None:
@@ -675,7 +674,7 @@ def test_agent_system_prompt_contains_edit_guidance() -> None:
 
     prompt = DEFAULT_SYSTEM_PROMPT
     assert "apply_patch" in prompt
-    assert "git_diff" in prompt
+    assert "run_shell 执行 git diff" in prompt
     assert "git_restore" in prompt
     assert "run_tests" in prompt
     assert "不要删除或弱化测试" in prompt
