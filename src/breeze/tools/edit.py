@@ -418,18 +418,12 @@ def delete_path(path: str, recursive: bool = False) -> str:
         return f"Error: path is protected: {rel}"
 
     if not target.exists():
-        return (
-            f"Error: no such file or directory: {path}. "
-            "Use list_files or grep to confirm the path before deleting."
-        )
+        return f"Error: no such file or directory: {path}. Use list_files or grep to confirm the path before deleting."
 
     try:
         if target.is_dir():
             if not recursive and any(target.iterdir()):
-                return (
-                    f"Error: directory not empty: {rel}. "
-                    "Pass recursive=true to delete it."
-                )
+                return f"Error: directory not empty: {rel}. Pass recursive=true to delete it."
             if recursive:
                 shutil.rmtree(target)
             else:

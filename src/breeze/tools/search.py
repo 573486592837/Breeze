@@ -71,8 +71,7 @@ def _normalize_rg_line(line: str) -> str:
             "path": {
                 "type": "string",
                 "description": (
-                    "搜索起始路径，相对于仓库根目录或只读参考目录。"
-                    "建议用 '.' 从仓库根搜索，配合 glob 限定范围。"
+                    "搜索起始路径，相对于仓库根目录或只读参考目录。建议用 '.' 从仓库根搜索，配合 glob 限定范围。"
                 ),
                 "default": ".",
             },

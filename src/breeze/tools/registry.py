@@ -123,9 +123,7 @@ def validate_arguments(name: str, arguments: dict[str, Any]) -> str | None:
             issues.append(f"argument '{key}' must be {expected}, got boolean")
             continue
         if not isinstance(value, allowed):
-            issues.append(
-                f"argument '{key}' must be {expected}, got {_describe_type(value)}"
-            )
+            issues.append(f"argument '{key}' must be {expected}, got {_describe_type(value)}")
 
     if not issues:
         return None

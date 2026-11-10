@@ -413,9 +413,7 @@ def test_chat_traces_use_session_id_name(repo: Path, tmp_path: Path) -> None:
     assert [trace.name for trace in traces] == [f"{session_file.stem}.jsonl"]
 
 
-def test_chat_trace_pin_accumulates_turns(
-    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_chat_trace_pin_accumulates_turns(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """/trace dev 把多轮写入同一个 dev.jsonl 与 dev.messages.jsonl。"""
     from breeze.config import settings
 
@@ -435,10 +433,7 @@ def test_chat_trace_pin_accumulates_turns(
     assert sum(1 for e in events if e["event"] == "run_start") == 2
     assert sum(1 for e in events if e["event"] == "run_summary") == 2
 
-    records = [
-        json.loads(line)
-        for line in (trace_dir / "dev.messages.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    records = [json.loads(line) for line in (trace_dir / "dev.messages.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(records) == 2
     assert all(e["event"] == "llm_messages" for e in records)
 

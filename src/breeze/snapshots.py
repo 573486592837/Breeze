@@ -127,10 +127,7 @@ def _same_or_under(candidate: str, root: str) -> bool:
 
 def _matches_any(path: str, patterns: frozenset[str]) -> bool:
     """判断路径是否命中计划中的路径（允许只写文件名后缀）。"""
-    return any(
-        path == pattern or path.endswith("/" + pattern) or pattern.endswith("/" + path)
-        for pattern in patterns
-    )
+    return any(path == pattern or path.endswith("/" + pattern) or pattern.endswith("/" + path) for pattern in patterns)
 
 
 def _plan_paths(plan: str, root: Path) -> frozenset[str]:
@@ -205,12 +202,8 @@ class SnapshotStore:
             max_chars: 单文件与整块渲染的字符预算，None 时使用配置值。
         """
         self.root = Path(root or settings.repo_root).resolve()
-        self.max_files = (
-            settings.context_snapshot_max_files if max_files is None else max_files
-        )
-        self.max_chars = (
-            settings.context_snapshot_max_chars if max_chars is None else max_chars
-        )
+        self.max_files = settings.context_snapshot_max_files if max_files is None else max_files
+        self.max_chars = settings.context_snapshot_max_chars if max_chars is None else max_chars
         self.files: dict[str, FileSnapshot] = {}
 
     @property
@@ -234,11 +227,7 @@ class SnapshotStore:
         key = _normalize(path, self.root)
         if key is None:
             return
-        self.files = {
-            item: snap
-            for item, snap in self.files.items()
-            if not _same_or_under(item, key)
-        }
+        self.files = {item: snap for item, snap in self.files.items() if not _same_or_under(item, key)}
 
     def capture(
         self,

@@ -70,9 +70,7 @@ def test_defaults_api_key_env_is_breeze() -> None:
     assert DEFAULTS["llm"]["api_key_env"] == "BREEZE_API_KEY"
 
 
-def test_legacy_siliconflow_key_is_ignored(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_legacy_siliconflow_key_is_ignored(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """旧变量名不再作为回退：只能用 BREEZE_API_KEY 或配置的变量名。"""
     monkeypatch.delenv("BREEZE_API_KEY", raising=False)
     monkeypatch.setenv("SILICONFLOW_API_KEY", "legacy-secret")

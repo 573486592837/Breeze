@@ -232,9 +232,7 @@ def test_apply_patch_rejects_traces(repo: Path) -> None:
     assert "protected" in out
 
 
-def test_apply_patch_protects_configured_trace_dir(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_apply_patch_protects_configured_trace_dir(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """保护的是配置的 trace 目录，而不是固定名称 traces/。"""
     monkeypatch.setattr(settings, "trace_dir", "runs")
     _make_file(repo, "runs/log.jsonl", "x = 1\n")
@@ -696,9 +694,7 @@ def test_run_tests_prefers_repo_venv(python_repo: Path, fake_pytest: dict[str, A
     assert fake_pytest["tokens"][:3] == [str(python), "-m", "pytest"]
 
 
-def test_run_tests_falls_back_to_path_pytest(
-    python_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_tests_falls_back_to_path_pytest(python_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """当前解释器缺少 pytest 时，退回 PATH 上的 pytest。"""
     calls: list[list[str]] = []
     results = iter(
@@ -721,9 +717,7 @@ def test_run_tests_falls_back_to_path_pytest(
     assert calls[1] == ["pytest", "-q"]
 
 
-def test_run_tests_missing_pytest_reports_error(
-    python_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_tests_missing_pytest_reports_error(python_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """解释器与 PATH 都没有 pytest 时给出明确指引。"""
     results = iter(
         [
