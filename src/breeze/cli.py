@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -28,6 +29,7 @@ from breeze.doctor import Check, run_checks
 from breeze.llm import LLMClient
 from breeze.session import SessionStore
 from breeze.trace import RunTrace
+from breeze.update_check import check_for_update
 
 app = typer.Typer(
     name="breeze",
@@ -39,6 +41,7 @@ app = typer.Typer(
         "  breeze chat --resume latest\n"
         "  breeze chat --list --search safe_path\n"
         "  breeze doctor\n"
+        "  breeze update\n"
         "\n"
         "Run 'breeze ask --help' or 'breeze chat --help' for all options."
     ),
@@ -266,6 +269,8 @@ def chat(
         error_console.print(f"[red]invalid repository directory: {repo_root}[/red]")
         raise typer.Exit(code=1)
 
+    _maybe_notify_update()
+
     original_repo_root = settings.repo_root
     settings.repo_root = repo_root
 
@@ -392,6 +397,37 @@ def chat(
 
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+@app.command()
+def update() -> None:
+    """Check for a newer release; this command never modifies files."""
+    result = check_for_update(force=True)
+
+    if result.error and not result.latest:
+        error_console.print(f"[red]检查更新失败：{escape(result.error)}[/red]")
+        raise typer.Exit(code=1)
+
+    if result.available:
+        console.print(f"[yellow]发现新版本 v{escape(result.latest)}（当前 v{escape(result.current)}）。[/yellow]")
+        if result.url:
+            console.print(escape(result.url))
+        console.print("升级：在 git 检出中执行 git fetch --tags 后 checkout 新 tag，或按 README 重新安装。")
+        return
+
+    console.print(f"[green]当前已是最新版本 v{escape(result.current)}。[/green]")
+
+
+def _maybe_notify_update() -> None:
+    """交互式 chat 启动时提示新版本；只读缓存/网络，不自动升级。"""
+    if os.environ.get("BREEZE_NO_UPDATE_CHECK") or not console.is_terminal:
+        return
+    result = check_for_update(timeout=1.5)
+    if result.available:
+        console.print(
+            f"[yellow]发现新版本 v{escape(result.latest)}（当前 v{escape(result.current)}），"
+            "运行 breeze update 查看升级说明。[/yellow]"
+        )
 
 
 @app.command()

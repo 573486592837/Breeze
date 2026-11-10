@@ -220,6 +220,16 @@ ripgrep、会话与 trace 目录，并给出修复提示；有失败项时以非
 breeze doctor --ping
 ```
 
+### 版本更新
+
+```bash
+breeze update
+```
+
+该命令查询 GitHub 最新 release 并打印升级说明，不会自动修改文件。`breeze chat`
+启动时最多每 24 小时检查一次，只在发现新版本时提示；设置
+`BREEZE_NO_UPDATE_CHECK=1` 可关闭启动检查。
+
 ### 配置
 
 复制 `.env.example` 为 `.env`，填入 API Key：
@@ -265,6 +275,9 @@ breeze ask "找出 read_file 的实现位置" --max-steps 4
 
 # 检查环境与配置（--ping 会额外验证模型连通性）
 breeze doctor
+
+# 检查是否有新 release（只提示，不自动升级）
+breeze update
 
 # 交互式多回合会话（/new 重置，/help 命令，/exit 退出）
 breeze chat

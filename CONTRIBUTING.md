@@ -63,8 +63,8 @@ python -m ruff format src tests
    commit（`chore(release): bump version to vX.Y.Z`）。
 2. 全量测试 + `scripts/report.py` 出发布报告。
 3. PR 合并进 `main` 后，在合并 commit 上打带注释 tag：
-   `git tag -a vX.Y.Z-<slug> <merge-sha> -m "..."`，tag 正文写清实测数据。
-4. 推送 tag：`git push origin vX.Y.Z-<slug>`（GitHub 连不上时用
+   `git tag -a vX.Y.Z <merge-sha> -m "..."`，tag 正文写清主要变更与验证。
+4. 推送 tag：`git push origin vX.Y.Z`（GitHub 连不上时用
    `git -c http.proxy=http://127.0.0.1:7897`）。
 5. 删除远端与本地已合并分支。
 
@@ -73,8 +73,19 @@ python -m ruff format src tests
 1. 从 `main` 切出 `feat/...`、`fix/...` 或 `docs/...` 分支；不在 main 上直接提交。
 2. 推送后创建 PR，由维护者 review 并合并（merge commit，保留分支历史）。
 3. 合并后删除远端与本地已合并分支。
-4. 里程碑用带注释 tag：`git tag -a v0.x.0-<slug> -m "..."`，命名延续
-   `v0.9.0-long-compression` 风格。
+4. 非发布里程碑可用带注释 tag：`git tag -a vX.Y.Z-<slug> -m "..."`，
+   但这种 tag 不作为用户安装目标；正式 release 仍用 `vX.Y.Z`。
+
+## 版本号与兼容性
+
+- 采用 **SemVer 2.0.0**：`MAJOR.MINOR.PATCH`。新功能升 minor，兼容修复升
+  patch，破坏 CLI 参数、配置键或环境变量升 major。
+- 正式 release 只使用 `vX.Y.Z` tag，打在 release PR 的合并提交上；已发布
+  tag 不移动、不覆盖。`vX.Y.Z-<slug>` 仅用于非发布快照，不应作为用户安装目标。
+- 1.x 内保持配置键、环境变量和 CLI 参数兼容；确需破坏时先提供弃用提示，
+  再在下一个 major 移除。
+- 功能分支不 bump 版本。CHANGELOG 先累积为“未发布”；release PR 统一修改
+  `src/breeze/__init__.py` 的 `__version__`、整理 CHANGELOG 标题并打 tag。
 
 ## 添加评估任务
 

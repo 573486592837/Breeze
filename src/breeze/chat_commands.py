@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,46 @@ from breeze.trace import normalize_trace_name
 _ALLOWED_PROFILES = ", ".join([*CONTEXT_PROFILES, CUSTOM_PROFILE])
 _SET_KEYS = ("max_steps", "max_edit_failures", "temperature", "permission")
 _SET_USAGE = f"用法：/set <{'|'.join(_SET_KEYS)}> <值>"
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """一条会话命令的展示元数据。"""
+
+    name: str
+    usage: str
+    description: str
+
+
+COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("model", "/model [name]", "查看或切换模型"),
+    CommandSpec("trace", "/trace [name|auto]", "固定 trace 文件名（多轮追加）或恢复每回合文件"),
+    CommandSpec(
+        "profile",
+        "/profile [name]",
+        "查看或切换压缩档位（short / medium / long / custom）",
+    ),
+    CommandSpec(
+        "set",
+        "/set <key> <value>",
+        "调整 max_steps / max_edit_failures / temperature / permission",
+    ),
+    CommandSpec("config", "/config", "查看当前运行配置"),
+    CommandSpec("plan", "/plan", "查看 Agent 维护的当前计划"),
+    CommandSpec("new", "/new", "重置对话（运行时配置保留）"),
+    CommandSpec("help", "/help", "显示帮助"),
+    CommandSpec("exit", "/exit", "退出（Ctrl+C / Ctrl+D 同样有效）"),
+)
+
+
+def help_text() -> str:
+    """由命令元数据生成 /help 文本。"""
+    lines = ["commands:"]
+    lines.extend(f"  {spec.usage:<20} {spec.description}" for spec in COMMANDS)
+    return "\n".join(lines)
+
+
+HELP_TEXT = help_text()
 
 
 def _pick(explicit: Any, preset: dict[str, int] | None, key: str, fallback: int) -> int:

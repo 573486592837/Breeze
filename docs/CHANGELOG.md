@@ -1236,3 +1236,42 @@ CI 中加入 `ruff format --check`，防止继续漂移。
 新增 doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示、非 git 与
 ripgrep 警告、`--ping` 成功/失败与 CLI 退出码。全量 764 passed / 2 skipped，
 `ruff check` 与 `ruff format --check` 全绿。
+
+## 会话命令补全与版本提示（未发布）
+
+### 斜杠命令补全
+
+在 `breeze chat` 输入框中输入 `/` 时显示全部命令，继续输入如 `/p` 时只保留
+`/profile` 与 `/plan`，菜单右侧显示说明。命令名、用法与说明收敛到
+`chat_commands.py` 的单一元数据表，`/help` 与补全共用，避免两处漂移。
+
+- 只在输入的第一个 token 以 `/` 开头时触发；命令参数暂不补全。
+- 非 TTY、管道与测试环境继续使用逐行输入，不启动补全菜单。
+
+### 版本更新提示
+
+新增 `breeze update`：查询 GitHub 最新 release 并打印升级说明，**不会下载或
+执行任何升级命令**。`breeze chat` 启动时最多每 24 小时检查一次，结果缓存到
+`~/.breeze/update_check.json`；仅交互终端提示，`BREEZE_NO_UPDATE_CHECK=1`
+可关闭。
+
+- 版本比较只接受 `vX.Y.Z` / `X.Y.Z`；draft、prerelease 和异常 tag 忽略。
+- 网络超时 2 秒，失败静默；显式 `breeze update` 失败时返回非零退出码。
+- 不自动执行 `pip`/`git`：当前分发依赖 git 检出，用户可能处于 tag、脏工作区
+  或非 git 安装，静默更新有丢改动与供应链风险。
+
+### 版本号策略
+
+继续使用 SemVer 2.0.0 和 1.x 系列，下个功能版本为 v1.7.0。规则写入
+`CONTRIBUTING.md`：
+
+- `vX.Y.Z` 只用于正式 release，打在 release PR 的合并提交上，不移动已发布 tag。
+- 1.x 内破坏 CLI 参数、配置键或环境变量需要 major 版本；新功能升 minor，
+  修复升 patch。
+- CHANGELOG 先累积为“未发布”，release PR 统一 bump `__version__` 并改名。
+
+### 验证
+
+新增命令补全的 `/`、前缀过滤、非命令输入与帮助元数据一致性测试；更新检查覆盖
+版本比较、24 小时缓存、离线回退、错误退出码与启动提示开关。全量测试与
+`ruff check` / `ruff format --check` 结果见提交。
