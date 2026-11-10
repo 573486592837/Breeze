@@ -108,23 +108,13 @@ class SessionState:
         基于旧行号改代码或误以为无需重读。删除目录时其下文件一并失效。
         测试结果也随编辑变为过期。
         """
-        self.reads = {
-            p: desc for p, desc in self.reads.items() if not _same_or_under(p, path)
-        }
+        self.reads = {p: desc for p, desc in self.reads.items() if not _same_or_under(p, path)}
         self.symbols = {
-            name: loc
-            for name, loc in self.symbols.items()
-            if not _same_or_under(loc.rsplit(":", 1)[0], path)
+            name: loc for name, loc in self.symbols.items() if not _same_or_under(loc.rsplit(":", 1)[0], path)
         }
-        self.read_counts = {
-            key: count
-            for key, count in self.read_counts.items()
-            if not _same_or_under(key[0], path)
-        }
+        self.read_counts = {key: count for key, count in self.read_counts.items() if not _same_or_under(key[0], path)}
         self.read_hits = {
-            candidate: count
-            for candidate, count in self.read_hits.items()
-            if not _same_or_under(candidate, path)
+            candidate: count for candidate, count in self.read_hits.items() if not _same_or_under(candidate, path)
         }
         if self.tests:
             self.tests_stale = True
@@ -273,9 +263,7 @@ class SessionState:
         lines = self._repeated_reads_lines()
         if not lines:
             return ""
-        return "\n".join(
-            ["[Repeated reads this turn — do not re-read an unchanged file]", *lines]
-        )
+        return "\n".join(["[Repeated reads this turn — do not re-read an unchanged file]", *lines])
 
     def _repeated_reads_lines(self) -> list[str]:
         """生成重复读取提醒行。"""

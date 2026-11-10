@@ -54,9 +54,7 @@ def test_is_python_project_by_venv(tmp_path: Path) -> None:
     assert is_python_project(tmp_path)
 
 
-def test_is_git_repo_uses_rev_parse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_is_git_repo_uses_rev_parse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """git rev-parse 返回 true 时判定为工作区。"""
     monkeypatch.setattr(capabilities_module.shutil, "which", lambda _name: "/fake/git")
 

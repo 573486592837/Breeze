@@ -149,9 +149,7 @@ class RunTrace:
         self.messages_path = self.path.with_name(f"{self.path.stem}.messages.jsonl") if capture else None
         if self.messages_path is not None and mode == "a":
             _ensure_trailing_newline(self.messages_path)
-        self._messages_file = (
-            self.messages_path.open(mode, encoding="utf-8") if self.messages_path else None
-        )
+        self._messages_file = self.messages_path.open(mode, encoding="utf-8") if self.messages_path else None
 
         self._write(
             {
@@ -369,15 +367,9 @@ class RunTrace:
         """
         c = self._counters
         cache_total = c.cache_hit_tokens + c.cache_miss_tokens
-        cache_hit_rate = (
-            round(c.cache_hit_tokens / cache_total, 4)
-            if c.cache_reported_calls and cache_total
-            else None
-        )
+        cache_hit_rate = round(c.cache_hit_tokens / cache_total, 4) if c.cache_reported_calls and cache_total else None
         prefix_ratio = (
-            round(c.cacheable_prefix_tokens / c.estimated_prompt_tokens, 4)
-            if c.estimated_prompt_tokens
-            else None
+            round(c.cacheable_prefix_tokens / c.estimated_prompt_tokens, 4) if c.estimated_prompt_tokens else None
         )
         return {
             "run_id": self.run_id,

@@ -159,9 +159,7 @@ class LLMClient:
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.parallel_tool_calls = parallel_tool_calls
         self.timeout = settings.llm_timeout if timeout is None else timeout
-        self.connect_timeout = (
-            settings.llm_connect_timeout if connect_timeout is None else connect_timeout
-        )
+        self.connect_timeout = settings.llm_connect_timeout if connect_timeout is None else connect_timeout
         self.max_retries = settings.llm_max_retries if max_retries is None else max_retries
 
         if not self.api_key:

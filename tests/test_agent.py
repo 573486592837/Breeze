@@ -454,9 +454,7 @@ def test_default_system_prompt_reflects_edit_failure_limit() -> None:
     assert "默认 5 次" not in prompt
 
 
-def test_default_system_prompt_lists_read_roots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_default_system_prompt_lists_read_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """配置只读参考目录后，环境说明应告知模型。"""
     from breeze.agent import default_system_prompt
     from breeze.config import settings
@@ -566,9 +564,7 @@ def test_agent_injects_closing_hint_near_max_steps(trace: RunTrace, fake_tool: N
     assert len(hints) == 1
 
 
-def test_agent_keeps_tools_but_forbids_calls_on_last_step(
-    trace: RunTrace, fake_tool: None
-) -> None:
+def test_agent_keeps_tools_but_forbids_calls_on_last_step(trace: RunTrace, fake_tool: None) -> None:
     """最后一步保留工具 schema 以维持缓存，但要求模型不要调用。"""
     responses = [_tool_call("fake_echo", {"text": str(i)}, call_id=f"c{i}") for i in range(5)]
     llm = FakeLLMClient(responses)
@@ -706,9 +702,7 @@ def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
     assert messages[-1] == {"role": "user", "content": "继续当前任务。"}
 
 
-def test_agent_append_mode_keeps_previous_turn_messages(
-    trace: RunTrace, fake_tool: None
-) -> None:
+def test_agent_append_mode_keeps_previous_turn_messages(trace: RunTrace, fake_tool: None) -> None:
     """append 模式保留上一回合的完整消息，不注入回合归档。"""
     from breeze.context import ContextConfig, ContextManager
 
@@ -753,9 +747,7 @@ def test_agent_update_plan_is_injected_next_step(trace: RunTrace) -> None:
     assert "2. patch" in plan_msgs[0]["content"]
 
 
-def test_many_successful_edits_do_not_hit_failure_cap(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_many_successful_edits_do_not_hit_failure_cap(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """连续成功的并行编辑不受失败上限约束。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -769,8 +761,7 @@ def test_many_successful_edits_do_not_hit_failure_cap(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": f"f{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}")
-        for i in range(6)
+        _tool_call("apply_patch", {"path": f"f{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}") for i in range(6)
     ] + [_text("done")]
 
     llm = FakeLLMClient(responses)
@@ -786,9 +777,7 @@ def test_many_successful_edits_do_not_hit_failure_cap(
     assert not [e for e in apply_events if e["error"]]
 
 
-def test_agent_stops_after_consecutive_edit_failures(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_stops_after_consecutive_edit_failures(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """连续失败达到上限后，本回合后续编辑被拒绝。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -802,8 +791,7 @@ def test_agent_stops_after_consecutive_edit_failures(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
-        for i in range(6)
+        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}") for i in range(6)
     ] + [_text("done")]
 
     llm = FakeLLMClient(responses)
@@ -827,9 +815,9 @@ def test_agent_stops_after_consecutive_edit_failures(
 
 def test_argument_errors_do_not_consume_edit_failure_budget(trace: RunTrace) -> None:
     """漏传参数是模型手误，不应触发连续编辑失败上限。"""
-    responses = [
-        _tool_call("apply_patch", {"old": "a", "new": "b"}, call_id=f"c{i}") for i in range(4)
-    ] + [_text("done")]
+    responses = [_tool_call("apply_patch", {"old": "a", "new": "b"}, call_id=f"c{i}") for i in range(4)] + [
+        _text("done")
+    ]
 
     llm = FakeLLMClient(responses)
     agent = Agent(llm=llm, trace=trace, max_steps=10, max_edit_failures=1)
@@ -842,14 +830,10 @@ def test_argument_errors_do_not_consume_edit_failure_budget(trace: RunTrace) -> 
     assert len(patch_events) == 4
     assert not [e for e in patch_events if "max_edit_failures" in (e["error"] or "")]
     assert all("missing required argument 'path'" in (e["error"] or "") for e in patch_events)
-    assert all(
-        "No changes were written" in (e["result_preview"] or "") for e in patch_events
-    )
+    assert all("No changes were written" in (e["result_preview"] or "") for e in patch_events)
 
 
-def test_agent_edit_failure_streak_resets_on_success(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_edit_failure_streak_resets_on_success(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """成功编辑会清零连续失败计数，卡顿后仍可继续编辑。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -873,8 +857,7 @@ def test_agent_edit_failure_streak_resets_on_success(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": f"x{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}")
-        for i in range(6)
+        _tool_call("apply_patch", {"path": f"x{i}.py", "old": "a", "new": "b"}, call_id=f"c{i}") for i in range(6)
     ] + [_text("done")]
 
     llm = FakeLLMClient(responses)
@@ -892,9 +875,7 @@ def test_agent_edit_failure_streak_resets_on_success(
     assert sum(e["error"] is None for e in apply_events) == 2
 
 
-def test_agent_edit_failure_cap_resets_between_runs(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_edit_failure_cap_resets_between_runs(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """两次 run 的失败计数独立。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -916,8 +897,7 @@ def test_agent_edit_failure_cap_resets_between_runs(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     responses = [
-        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}")
-        for i in range(3)
+        _tool_call("apply_patch", {"path": "x.py", "old": "a", "new": "b"}, call_id=f"c{i}") for i in range(3)
     ] + [_text("done1")]
     responses += [_tool_call("apply_patch", {"path": "y.py", "old": "c", "new": "d"}, call_id="d0")]
     responses += [_text("done2")]
@@ -1187,9 +1167,7 @@ def test_claims_completed_edit_ignores_future_and_negative(text: str) -> None:
     assert not _claims_completed_edit(text)
 
 
-def test_agent_reprompts_when_claiming_edit_without_edits(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_reprompts_when_claiming_edit_without_edits(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """声称已改但本轮没有编辑时，应追加提醒并继续循环。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -1239,9 +1217,7 @@ def test_agent_keeps_last_answer_at_step_limit(trace: RunTrace, fake_tool: None)
     assert agent.run("继续") == "我将按上述方式完成实现。"
 
 
-def test_agent_annotates_false_edit_claim_at_step_limit(
-    trace: RunTrace, fake_tool: None
-) -> None:
+def test_agent_annotates_false_edit_claim_at_step_limit(trace: RunTrace, fake_tool: None) -> None:
     """最后一步无法重做时，完成声明前加事实标注而不是丢弃答案。"""
     from breeze.agent import Agent
 
@@ -1260,9 +1236,7 @@ def test_agent_annotates_false_edit_claim_at_step_limit(
     assert any("no edit tool succeeded" in e["message"] for e in guard_events)
 
 
-def test_agent_nudges_only_once_per_turn(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_nudges_only_once_per_turn(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """重复声称已改时只提醒一次，之后保留答案并加事实标注。"""
     from breeze.agent import Agent
 
@@ -1275,9 +1249,7 @@ def test_agent_nudges_only_once_per_turn(
     assert len(llm.calls) == 2
 
 
-def test_agent_no_reprompt_without_claim(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_no_reprompt_without_claim(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """普通解释性回答不触发提醒。"""
     from breeze.agent import Agent
 
@@ -1290,9 +1262,7 @@ def test_agent_no_reprompt_without_claim(
     assert len(llm.calls) == 1
 
 
-def test_agent_no_reprompt_after_successful_edit(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_no_reprompt_after_successful_edit(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """本轮有成功编辑时，完成声明不再提醒。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -1315,9 +1285,7 @@ def test_agent_no_reprompt_after_successful_edit(
     assert len(llm.calls) == 2
 
 
-def test_agent_reprompts_after_failed_edit(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_reprompts_after_failed_edit(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """编辑工具返回 Error 时不算成功，完成声明仍触发提醒。"""
     from breeze.agent import Agent
     from breeze.tools import registry
@@ -1680,9 +1648,7 @@ def test_agent_events_do_not_touch_messages(trace: RunTrace, fake_tool: None) ->
     assert calls_with[0]["messages"] == calls_plain[0]["messages"]
 
 
-def test_agent_delete_counts_as_edit_for_claim_guard(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_delete_counts_as_edit_for_claim_guard(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """delete_path 属于编辑操作，删除后的完成声明不应触发重申。"""
 
     def fake_execute(name: str, arguments: dict[str, Any]) -> str:
@@ -1713,9 +1679,7 @@ def _permission_events(trace: RunTrace) -> list[dict[str, Any]]:
     return [e for e in _events(trace.path) if e["event"] == "permission"]
 
 
-def test_agent_strict_permission_rejects_unlisted(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_strict_permission_rejects_unlisted(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """strict 模式下非白名单命令按工具错误返回。"""
 
     def fake_execute(name: str, arguments: dict[str, Any]) -> str:
@@ -1723,9 +1687,7 @@ def test_agent_strict_permission_rejects_unlisted(
 
     monkeypatch.setattr(registry, "execute", fake_execute)
 
-    llm = FakeLLMClient(
-        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")])
     agent = Agent(llm=llm, trace=trace, permission_mode="strict")
 
     assert agent.run("list") == "done"
@@ -1733,9 +1695,7 @@ def test_agent_strict_permission_rejects_unlisted(
     assert _permission_events(trace) == []
 
 
-def test_agent_confirm_permission_allows(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_confirm_permission_allows(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """confirm 模式在用户同意后执行非白名单命令并记录事件。"""
     from breeze.tools import shell as shell_module
 
@@ -1751,9 +1711,7 @@ def test_agent_confirm_permission_allows(
         lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
     )
 
-    llm = FakeLLMClient(
-        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")])
     agent = Agent(
         llm=llm,
         trace=trace,
@@ -1768,9 +1726,7 @@ def test_agent_confirm_permission_allows(
     assert events[-1]["mode"] == "confirm"
 
 
-def test_agent_confirm_permission_denied(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_confirm_permission_denied(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """confirm 模式拒绝后不执行命令，并把拒绝结果返回给模型。"""
     from breeze.tools import shell as shell_module
 
@@ -1786,9 +1742,7 @@ def test_agent_confirm_permission_denied(
         lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
     )
 
-    llm = FakeLLMClient(
-        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")])
     agent = Agent(
         llm=llm,
         trace=trace,
@@ -1802,9 +1756,7 @@ def test_agent_confirm_permission_denied(
     assert _permission_events(trace)[-1]["decision"] == "denied"
 
 
-def test_agent_confirm_without_interactive_user_denies(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_confirm_without_interactive_user_denies(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """非交互环境没有确认回调时，confirm 模式直接拒绝。"""
     from breeze.tools import shell as shell_module
 
@@ -1813,9 +1765,7 @@ def test_agent_confirm_without_interactive_user_denies(
 
     monkeypatch.setattr(shell_module, "check_command", reject)
 
-    llm = FakeLLMClient(
-        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")])
     agent = Agent(llm=llm, trace=trace, permission_mode="confirm", confirm_command=None)
 
     assert agent.run("list") == "done"
@@ -1823,9 +1773,7 @@ def test_agent_confirm_without_interactive_user_denies(
     assert _permission_events(trace)[-1]["decision"] == "denied"
 
 
-def test_agent_open_permission_runs_without_whitelist(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_agent_open_permission_runs_without_whitelist(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """open 模式跳过白名单直接执行。"""
     from breeze.tools import shell as shell_module
 
@@ -1841,9 +1789,7 @@ def test_agent_open_permission_runs_without_whitelist(
         lambda command, _cwd=".", **_kwargs: executed.append(command) or "ran",
     )
 
-    llm = FakeLLMClient(
-        [_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("run_shell", {"command": "ls -la"}, call_id="s1"), _text("done")])
     agent = Agent(llm=llm, trace=trace, permission_mode="open")
 
     assert agent.run("list") == "done"
@@ -1870,9 +1816,7 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
         assert agent.run("hi") == "ok"
 
     assert tr.messages_path is not None
-    records = [
-        json.loads(line) for line in tr.messages_path.read_text(encoding="utf-8").splitlines()
-    ]
+    records = [json.loads(line) for line in tr.messages_path.read_text(encoding="utf-8").splitlines()]
     assert len(records) == 1
     record = records[0]
     assert record["messages"][0]["content"] == "SYS"
@@ -1971,9 +1915,7 @@ def test_agent_honest_failure_report_not_flagged(
     assert not answer.startswith("[验证未通过]")
 
 
-def test_agent_passes_reasoning_content_back_with_tool_results(
-    trace: RunTrace, fake_tool: None
-) -> None:
+def test_agent_passes_reasoning_content_back_with_tool_results(trace: RunTrace, fake_tool: None) -> None:
     """推理模型的 thinking 随工具调用回传，避免多步后偏离目标。"""
     first = _tool_call("fake_echo", {"text": "x"})
     first.reasoning_content = "先回显 x，再给最终答案"
@@ -1982,18 +1924,12 @@ def test_agent_passes_reasoning_content_back_with_tool_results(
 
     assert agent.run("go") == "done"
 
-    assistant = [
-        msg
-        for msg in llm.calls[1]["messages"]
-        if msg.get("role") == "assistant" and msg.get("tool_calls")
-    ]
+    assistant = [msg for msg in llm.calls[1]["messages"] if msg.get("role") == "assistant" and msg.get("tool_calls")]
     assert assistant
     assert assistant[0]["reasoning_content"] == "先回显 x，再给最终答案"
 
 
-def test_rejected_verification_command_is_not_a_failed_check(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rejected_verification_command_is_not_a_failed_check(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """命令因管道/权限被拒绝时没有产生验证结论，不应触发“验证失败”纠偏。"""
     import breeze.agent as agent_mod
     from breeze.tools import registry
@@ -2018,9 +1954,7 @@ def test_rejected_verification_command_is_not_a_failed_check(
 # ─── 重复读取与跨回合状态 ───
 
 
-def test_tool_error_strings_are_recorded_as_errors(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tool_error_strings_are_recorded_as_errors(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """工具以 Error: 文本返回失败时，trace 与 run_summary 必须计入 errors。"""
     from breeze.tools import registry
 
@@ -2029,9 +1963,7 @@ def test_tool_error_strings_are_recorded_as_errors(
         "execute",
         lambda _name, _arguments: "Error: file already exists: x.py. Use apply_patch to modify it.",
     )
-    llm = FakeLLMClient(
-        [_tool_call("create_file", {"path": "x.py", "content": "a"}), _text("done")]
-    )
+    llm = FakeLLMClient([_tool_call("create_file", {"path": "x.py", "content": "a"}), _text("done")])
     events: list = []
     agent = Agent(llm=llm, trace=trace, max_steps=4, on_event=events.append)
 
@@ -2078,9 +2010,7 @@ def test_duplicate_read_is_suppressed_when_previous_copy_visible(
     assert sum("duplicate read suppressed" in e["message"] for e in guards) == 2
 
 
-def test_suppressed_read_includes_visible_copy_preview(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_suppressed_read_includes_visible_copy_preview(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """抑制结果附带可见副本预览，避免模型因看不到内容而反复重读。"""
     from breeze.tools import registry
 
@@ -2106,9 +2036,7 @@ def test_suppressed_read_includes_visible_copy_preview(
     assert "return 42" in tool_messages[-1]
 
 
-def test_third_duplicate_read_suppression_stops_turn(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_third_duplicate_read_suppression_stops_turn(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """同一路径连续第 3 次被抑制时终止本回合，避免无限重读。"""
     from breeze.tools import registry
 
@@ -2123,8 +2051,7 @@ def test_third_duplicate_read_suppression_stops_turn(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     llm = FakeLLMClient(
-        [_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}") for i in range(1, 5)]
-        + [_text("done")]
+        [_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}") for i in range(1, 5)] + [_text("done")]
     )
     agent = Agent(llm=llm, trace=trace, max_steps=10)
 
@@ -2151,9 +2078,7 @@ def test_range_read_covered_by_visible_full_read_is_suppressed(
     def fake_execute(name, arguments):
         if name == "read_file":
             executed.append((str(arguments.get("path")), arguments.get("start_line")))
-            return "\n".join(f"{i} | line {i}" for i in range(1, 121)) + (
-                "\n--- (file has 120 lines total) ---"
-            )
+            return "\n".join(f"{i} | line {i}" for i in range(1, 121)) + ("\n--- (file has 120 lines total) ---")
         return "ok"
 
     monkeypatch.setattr(registry, "execute", fake_execute)
@@ -2176,9 +2101,7 @@ def test_range_read_covered_by_visible_full_read_is_suppressed(
     assert "100 | line 100" not in tool_messages[-1]
 
 
-def test_truncated_full_read_does_not_cover_range(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_truncated_full_read_does_not_cover_range(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """整文件读取被截断时，行范围读取仍应执行。"""
     from breeze.tools import registry
 
@@ -2211,9 +2134,7 @@ def test_truncated_full_read_does_not_cover_range(
     assert executed == [None, 800]
 
 
-def test_duplicate_read_allowed_when_previous_copy_compressed(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_duplicate_read_allowed_when_previous_copy_compressed(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """旧副本已被 hard limit 压成指针时，允许再读一次，但仍只放行一次。"""
     from breeze.context import ContextConfig, ContextManager
     from breeze.tools import registry
@@ -2229,11 +2150,7 @@ def test_duplicate_read_allowed_when_previous_copy_compressed(
     monkeypatch.setattr(registry, "execute", fake_execute)
 
     llm = FakeLLMClient(
-        [
-            _tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}")
-            for i in range(1, 5)
-        ]
-        + [_text("done")]
+        [_tool_call("read_file", {"path": "a.py"}, call_id=f"r{i}") for i in range(1, 5)] + [_text("done")]
     )
     context = ContextManager(ContextConfig(intra_turn_budget=1, hard_budget=1))
     agent = Agent(llm=llm, trace=trace, max_steps=8, context=context)
@@ -2245,9 +2162,7 @@ def test_duplicate_read_allowed_when_previous_copy_compressed(
     assert any("duplicate read suppressed" in m for m in guards)
 
 
-def test_read_after_edit_is_not_suppressed(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_read_after_edit_is_not_suppressed(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """文件被编辑后版本变化，允许再次读取。"""
     from breeze.tools import registry
 
@@ -2284,9 +2199,7 @@ def test_read_after_edit_is_not_suppressed(
     assert not tool_messages[-1].startswith("[duplicate read suppressed]")
 
 
-def test_second_turn_first_request_includes_prior_state(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_second_turn_first_request_includes_prior_state(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """第二个回合首次请求带上一回合的读取与符号索引。"""
     from breeze.tools import registry
 
@@ -2376,9 +2289,7 @@ def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> 
     assert reasonings == ["先读文件", "再总结"]
 
 
-def test_agent_nudges_convergence_when_context_near_hard_budget(
-    trace: RunTrace, fake_tool: None
-) -> None:
+def test_agent_nudges_convergence_when_context_near_hard_budget(trace: RunTrace, fake_tool: None) -> None:
     """上下文接近硬上限且尚未编辑时，提醒停止扩展调研。"""
     from breeze.context import ContextConfig, ContextManager
 
@@ -2395,18 +2306,14 @@ def test_agent_nudges_convergence_when_context_near_hard_budget(
     assert agent.run("go") == "done"
 
     nudges = [
-        m
-        for m in llm.calls[1]["messages"]
-        if m["role"] == "system" and "上下文已用到约" in str(m.get("content", ""))
+        m for m in llm.calls[1]["messages"] if m["role"] == "system" and "上下文已用到约" in str(m.get("content", ""))
     ]
     assert len(nudges) == 1
     guards = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert any("asking to converge" in e["message"] for e in guards)
 
 
-def test_duplicate_apply_patch_is_suppressed(
-    trace: RunTrace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_duplicate_apply_patch_is_suppressed(trace: RunTrace, monkeypatch: pytest.MonkeyPatch) -> None:
     """同参数写操作已成功后不再执行，避免重复插入代码。"""
     from breeze.tools import registry
 

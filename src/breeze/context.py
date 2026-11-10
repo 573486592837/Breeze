@@ -206,9 +206,7 @@ def _arg_summary(tool: str, arguments: dict[str, Any]) -> str:
         path = arguments.get("path")
         if isinstance(path, str) and path:
             return f"path={path}"
-    bits = " ".join(
-        f"{key}={value}" for key, value in list(arguments.items())[:2] if isinstance(value, (str, int))
-    )
+    bits = " ".join(f"{key}={value}" for key, value in list(arguments.items())[:2] if isinstance(value, (str, int)))
     return _one_line(bits, 100)
 
 
@@ -251,9 +249,7 @@ def _shell_summary(result: str) -> str:
 
     stdout_end = stderr if stderr is not None else len(lines)
     stdout_lines = [line.strip() for line in lines[stdout + 1 : stdout_end] if line.strip()]
-    stderr_lines = (
-        [line.strip() for line in lines[stderr + 1 :] if line.strip()] if stderr is not None else []
-    )
+    stderr_lines = [line.strip() for line in lines[stderr + 1 :] if line.strip()] if stderr is not None else []
     if stderr_lines:
         parts.append(_one_line(stderr_lines[0]))
 
@@ -328,10 +324,7 @@ def _render_pointer(tool: str, arguments: dict[str, Any], result: str) -> str:
         start, end = arguments.get("start_line"), arguments.get("end_line")
         if start and end:
             rng = f"lines {start}-{end}"
-            return (
-                f"[read_file compressed] {path} ({rng}) dropped by hard limit; "
-                "re-read this range before editing."
-            )
+            return f"[read_file compressed] {path} ({rng}) dropped by hard limit; re-read this range before editing."
         return (
             f"[read_file compressed] {path} (full file) dropped by hard limit; "
             "use grep to locate the target, then re-read only that range."
@@ -387,9 +380,7 @@ class ContextConfig:
         if self.cross_turn is None:
             self.cross_turn = settings.context_cross_turn
         if self.cross_turn not in ("archive", "append"):
-            raise ValueError(
-                f"Invalid cross_turn mode: {self.cross_turn}. Choose from archive, append."
-            )
+            raise ValueError(f"Invalid cross_turn mode: {self.cross_turn}. Choose from archive, append.")
         if self.intra_turn_budget is None:
             self.intra_turn_budget = settings.context_intra_turn_budget
         if self.hard_budget is None:
@@ -881,10 +872,7 @@ class ContextManager:
             if len(paths) > 6:
                 shown += f" (+{len(paths) - 6} more)"
             if shown:
-                files = (
-                    f"Visible read_file content: ~{read_tokens} tokens / "
-                    f"{visible} read(s) from {shown}."
-                )
+                files = f"Visible read_file content: ~{read_tokens} tokens / {visible} read(s) from {shown}."
             else:
                 files = f"Visible read_file content: ~{read_tokens} tokens / {visible} read(s)."
         else:
@@ -963,9 +951,7 @@ class ContextManager:
         return frozenset(
             str(msg.get("tool_call_id", ""))
             for msg in converted
-            if msg.get("role") == "tool"
-            and isinstance(msg.get("content"), str)
-            and msg["content"].startswith(prefixes)
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str) and msg["content"].startswith(prefixes)
         )
 
     @staticmethod

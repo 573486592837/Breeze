@@ -65,8 +65,7 @@ _EDIT_CLAIM_NUDGE = (
 )
 
 _EMPTY_ANSWER_NUDGE = (
-    "你刚才的回复没有内容。请用简洁的中文直接给出最终答案："
-    "准确说明已经完成和尚未完成的部分，不要再调用工具。"
+    "你刚才的回复没有内容。请用简洁的中文直接给出最终答案：准确说明已经完成和尚未完成的部分，不要再调用工具。"
 )
 
 # 真实试跑中出现过：模型没有调用工具，而是用“Let me / 我将先”这类计划作最终回答。
@@ -100,10 +99,7 @@ _VERIFICATION_CLAIM_RE = re.compile(
 _VERIFICATION_FAILURE_RE = re.compile(r"(未通过|失败|\bfailed\b|\berror\b)", re.IGNORECASE)
 _VERIFICATION_COMMAND_RE = re.compile(r"\b(pytest|ruff)\b", re.IGNORECASE)
 
-_VERIFICATION_FAILED_NUDGE = (
-    "验证未通过：{summary}。请先修复失败项并重新运行测试/检查；"
-    "最终回答必须如实报告验证结果。"
-)
+_VERIFICATION_FAILED_NUDGE = "验证未通过：{summary}。请先修复失败项并重新运行测试/检查；最终回答必须如实报告验证结果。"
 _VERIFICATION_CLAIM_NUDGE = (
     "你的回答声称测试或检查已通过，但本回合最后一次验证未通过：{summary}。"
     "请如实报告失败项；如果还能继续，先修复并重新验证，不要声称任务已完成。"
@@ -258,17 +254,11 @@ def _environment_note(capabilities: Capabilities) -> str:
     return "运行环境：\n" + "\n".join(f"- {line}" for line in lines)
 
 
-_GIT_DIFF_RULE = (
-    "3. 需要确认整体改动时用 run_shell 执行 git diff，例如多次修改后或回滚前。"
-    "单次修改可直接继续。"
-)
-_GIT_DIFF_FALLBACK = (
-    "3. 需要确认整体改动时重新读取相关文件；当前目录不是 git 工作区，不要执行 git diff。"
-)
+_GIT_DIFF_RULE = "3. 需要确认整体改动时用 run_shell 执行 git diff，例如多次修改后或回滚前。单次修改可直接继续。"
+_GIT_DIFF_FALLBACK = "3. 需要确认整体改动时重新读取相关文件；当前目录不是 git 工作区，不要执行 git diff。"
 _GIT_RESTORE_RULE = "5. 如果修改有误，用 git_restore 回滚单个文件后重试。"
 _GIT_RESTORE_FALLBACK = (
-    "5. 如果修改有误，重新读取文件后用 apply_patch 修正；当前目录不是 git 工作区，"
-    "git_restore 不可用。"
+    "5. 如果修改有误，重新读取文件后用 apply_patch 修正；当前目录不是 git 工作区，git_restore 不可用。"
 )
 
 
@@ -276,9 +266,7 @@ def _adapt_git_rules(prompt: str, capabilities: Capabilities) -> str:
     """非 git 工作区时，把提示词里的 git 工具规则替换为替代方案。"""
     if capabilities.git_tools:
         return prompt
-    return prompt.replace(_GIT_DIFF_RULE, _GIT_DIFF_FALLBACK).replace(
-        _GIT_RESTORE_RULE, _GIT_RESTORE_FALLBACK
-    )
+    return prompt.replace(_GIT_DIFF_RULE, _GIT_DIFF_FALLBACK).replace(_GIT_RESTORE_RULE, _GIT_RESTORE_FALLBACK)
 
 
 _SHELL_RULE_STRICT = "12. run_shell 的可执行文件仅限 git / node / python / python3 / rg / where。"
@@ -286,10 +274,7 @@ _SHELL_RULE_CONFIRM = (
     "12. run_shell 默认只允许 git / node / python / python3 / rg / where；"
     "其他命令会先询问用户是否执行，用户拒绝后不要反复尝试。"
 )
-_SHELL_RULE_OPEN = (
-    "12. run_shell 当前为 open 模式，可执行任意命令；命令仍以 shell=False "
-    "直接执行，一次只跑一条命令。"
-)
+_SHELL_RULE_OPEN = "12. run_shell 当前为 open 模式，可执行任意命令；命令仍以 shell=False 直接执行，一次只跑一条命令。"
 
 
 def _adapt_shell_rule(prompt: str, permission_mode: str) -> str:
@@ -321,10 +306,7 @@ def _shell_limits(arguments: dict[str, Any]) -> dict[str, Any]:
     return limits
 
 
-_EDIT_LIMIT_RULE = (
-    "8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。\n"
-    "   超过后会被拒绝，此时应报告失败或回滚。"
-)
+_EDIT_LIMIT_RULE = "8. 单次任务中的 apply_patch 调用次数有限（默认 5 次）。\n   超过后会被拒绝，此时应报告失败或回滚。"
 
 _TEST_RULE_PY = (
     "4. 如果需要运行测试：Python 项目优先使用 run_tests（需要特殊 pytest 参数时\n"
@@ -351,9 +333,7 @@ def _adapt_test_rules(prompt: str, capabilities: Capabilities) -> str:
     """非 Python 项目时，改写依赖 run_tests 的规则。"""
     if capabilities.python_project:
         return prompt
-    return prompt.replace(_TEST_RULE_PY, _TEST_RULE_NO_PY).replace(
-        _TEST_RULE_9_PY, _TEST_RULE_9_NO_PY
-    )
+    return prompt.replace(_TEST_RULE_PY, _TEST_RULE_NO_PY).replace(_TEST_RULE_9_PY, _TEST_RULE_9_NO_PY)
 
 
 def _edit_limit_rule(limit: int) -> str:
@@ -536,15 +516,11 @@ class Agent:
         self.trace = trace
         self.on_event = on_event
         self._custom_capabilities = capabilities is not None
-        self.capabilities = (
-            capabilities if capabilities is not None else detect(settings.repo_root)
-        )
+        self.capabilities = capabilities if capabilities is not None else detect(settings.repo_root)
         self.tool_names = _enabled_tool_names(self.capabilities)
         mode = (permission_mode or settings.shell_permission).lower()
         if mode not in PERMISSION_MODES:
-            raise ValueError(
-                f"Invalid permission mode: {mode}. Choose from {', '.join(PERMISSION_MODES)}."
-            )
+            raise ValueError(f"Invalid permission mode: {mode}. Choose from {', '.join(PERMISSION_MODES)}.")
         self.permission_mode = mode
         self.confirm_command = confirm_command
         self.max_steps = max_steps if max_steps is not None else settings.agent_max_steps
@@ -763,12 +739,7 @@ class Agent:
                         "final answer was a plan with no tool call; re-prompting to execute",
                     )
                     continue
-                if (
-                    _claims_completed_edit(answer)
-                    and edits_this_turn == 0
-                    and not edit_claim_nudged
-                    and remaining > 1
-                ):
+                if _claims_completed_edit(answer) and edits_this_turn == 0 and not edit_claim_nudged and remaining > 1:
                     edit_claim_nudged = True
                     self.messages.append({"role": "assistant", "content": answer})
                     self.messages.append({"role": "system", "content": _EDIT_CLAIM_NUDGE})
@@ -887,9 +858,7 @@ class Agent:
                         )
                     continue
 
-                if tc.name in _WRITE_TOOLS and self._suppress_duplicate_write(
-                    tc, write_success, step
-                ):
+                if tc.name in _WRITE_TOOLS and self._suppress_duplicate_write(tc, write_success, step):
                     continue
 
                 result, argument_error = self._execute_and_append(tc, step)
@@ -917,8 +886,7 @@ class Agent:
                             read_versions.get(path, 0),
                             arguments.get("start_line"),
                             arguments.get("end_line"),
-                            "truncated to " not in result_text
-                            and "[line truncated:" not in result_text,
+                            "truncated to " not in result_text and "[line truncated:" not in result_text,
                         )
                 if _is_verification_call(tc.name, tc.arguments_json):
                     if _verification_ran(result or ""):
@@ -1055,11 +1023,7 @@ class Agent:
 
         最后一步无法再追加纠正回合，至少不能把失败结果原样归档成“已完成”。
         """
-        if (
-            last_verification is not None
-            and not last_verification[0]
-            and _claims_verification_success(answer)
-        ):
+        if last_verification is not None and not last_verification[0] and _claims_verification_success(answer):
             self.trace.log_guard(
                 step,
                 "final answer claimed verification success but last check failed",
@@ -1197,13 +1161,7 @@ class Agent:
         """当前回合之前是否已有可复用的会话事实。"""
         if self.ledger.records:
             return True
-        return bool(
-            self.state.reads
-            or self.state.edits
-            or self.state.symbols
-            or self.state.tests
-            or self.snapshots
-        )
+        return bool(self.state.reads or self.state.edits or self.state.symbols or self.state.tests or self.snapshots)
 
     def _turn_archive(self) -> str | None:
         """append 模式下历史已完整保留，不再重复注入回合归档。"""
@@ -1618,18 +1576,13 @@ class Agent:
 
             if self.confirm_command is None:
                 self.trace.log_permission(step, command, "denied", "confirm")
-                raise ValueError(
-                    "Command requires confirmation, but no interactive user is "
-                    f"available: {exc}"
-                ) from exc
+                raise ValueError(f"Command requires confirmation, but no interactive user is available: {exc}") from exc
 
             try:
                 approved = bool(self.confirm_command(command))
             except (EOFError, KeyboardInterrupt):
                 approved = False
-            self.trace.log_permission(
-                step, command, "allowed" if approved else "denied", "confirm"
-            )
+            self.trace.log_permission(step, command, "allowed" if approved else "denied", "confirm")
             if not approved:
                 raise ValueError(f"Command denied by user: {command}") from exc
             return shell.run_unlisted(command, cwd_value, **limits)

@@ -246,9 +246,7 @@ def _resolve_read_roots(root: Path, raw_roots: Any) -> tuple[Path, ...]:
             path = root / path
         resolved = path.resolve()
         if not resolved.is_dir():
-            raise ValueError(
-                f"tools.read_roots path does not exist or is not a directory: {raw}"
-            )
+            raise ValueError(f"tools.read_roots path does not exist or is not a directory: {raw}")
         roots.append(resolved)
     return tuple(roots)
 
@@ -371,10 +369,7 @@ class Settings:
 
         permission = str(cfg["shell"]["permission"]).lower()
         if permission not in PERMISSION_MODES:
-            raise ValueError(
-                f"Invalid shell permission mode: {permission}. "
-                f"Choose from {', '.join(PERMISSION_MODES)}."
-            )
+            raise ValueError(f"Invalid shell permission mode: {permission}. Choose from {', '.join(PERMISSION_MODES)}.")
         self.shell_permission: str = permission
 
         self.context_enable: bool = bool(cfg["context"]["enable"])
@@ -382,8 +377,7 @@ class Settings:
         cross_turn = str(cfg["context"]["cross_turn"]).lower()
         if cross_turn not in CROSS_TURN_MODES:
             raise ValueError(
-                f"Invalid context cross_turn mode: {cross_turn}. "
-                f"Choose from {', '.join(CROSS_TURN_MODES)}."
+                f"Invalid context cross_turn mode: {cross_turn}. Choose from {', '.join(CROSS_TURN_MODES)}."
             )
         self.context_cross_turn: str = cross_turn
         self.context_intra_turn_budget: int = int(cfg["context"]["intra_turn_budget"])
@@ -398,9 +392,7 @@ class Settings:
         self.trace_dir: str = cfg["trace"]["dir"]
         self.trace_capture_messages: bool = bool(cfg["trace"]["capture_messages"])
 
-        self.tools_read_roots: tuple[Path, ...] = _resolve_read_roots(
-            self.repo_root, cfg["tools"]["read_roots"]
-        )
+        self.tools_read_roots: tuple[Path, ...] = _resolve_read_roots(self.repo_root, cfg["tools"]["read_roots"])
 
         self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
         self.chat_max_records: int = int(cfg["chat"]["max_records"])

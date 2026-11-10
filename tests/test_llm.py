@@ -85,9 +85,7 @@ def test_disabled_client_never_sends_flag(client: LLMClient, monkeypatch: pytest
     assert "parallel_tool_calls" not in calls[0]
 
 
-def test_network_error_is_not_treated_as_param_fallback(
-    client: LLMClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_network_error_is_not_treated_as_param_fallback(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """断网/超时类异常不应去掉参数再请求一次。"""
     calls: list[dict[str, Any]] = []
 
@@ -224,9 +222,7 @@ def test_extracts_anthropic_cache_read_tokens(client: LLMClient, monkeypatch: py
     assert resp.cache_miss_tokens == 70
 
 
-def test_cache_fields_none_when_provider_omits_them(
-    client: LLMClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cache_fields_none_when_provider_omits_them(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """provider 不返回缓存字段时保持 None，不能当成 0 命中。"""
     usage = types.SimpleNamespace(prompt_tokens=100, completion_tokens=5, total_tokens=105)
     monkeypatch.setattr("breeze.llm.litellm.completion", lambda **_: _usage_response(usage))
@@ -308,9 +304,7 @@ def test_extracts_reasoning_content(client: LLMClient, monkeypatch: pytest.Monke
     assert resp.reasoning_content == "先读文件再改"
 
 
-def test_extracts_reasoning_from_provider_fields(
-    client: LLMClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_extracts_reasoning_from_provider_fields(client: LLMClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """网关把 thinking 放进 provider_specific_fields 时也要取到。"""
     usage = types.SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     msg = types.SimpleNamespace(

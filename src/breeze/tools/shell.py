@@ -423,10 +423,7 @@ def _check_allowed(tokens: list[str]) -> None:
         extra = ""
         base = exe.replace("\\", "/").rsplit("/", 1)[-1]
         if base in {"python.exe", "python", "python3.exe", "python3"}:
-            extra = (
-                " (use run_tests; path-prefixed interpreters are only allowed"
-                " from the repository's .venv or venv)"
-            )
+            extra = " (use run_tests; path-prefixed interpreters are only allowed from the repository's .venv or venv)"
         elif exe == "pytest":
             extra = " (use run_tests; for special pytest arguments use 'python -m pytest')"
         elif exe in {"npm", "npx", "yarn", "pnpm", "bun", "deno"}:
@@ -472,8 +469,7 @@ def _check_allowed(tokens: list[str]) -> None:
 
     if exe == "node" and len(tokens) < 2:
         raise ValueError(
-            "Node command requires a script or '--test'. "
-            "Run JS tests with 'node --test' or 'node --test <test-file>'."
+            "Node command requires a script or '--test'. Run JS tests with 'node --test' or 'node --test <test-file>'."
         )
 
     if exe in {"python", "python3"}:

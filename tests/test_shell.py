@@ -71,9 +71,7 @@ def test_run_shell_rejects_shell_operators(repo: Path) -> None:
             registry.execute("run_shell", {"command": cmd})
 
 
-def test_run_shell_allows_quoted_regex_alternation(
-    repo: Path, fake_run: dict[str, Any]
-) -> None:
+def test_run_shell_allows_quoted_regex_alternation(repo: Path, fake_run: dict[str, Any]) -> None:
     """引号内的正则 | 不是管道，不应被误拒。"""
     out = registry.execute("run_shell", {"command": 'rg "foo|bar"'})
     assert "exit_code: 0" in out
@@ -197,9 +195,7 @@ def test_run_shell_bare_pytest_hint(repo: Path) -> None:
 # ─── 安全：node ───
 
 
-def test_run_shell_allows_node_tests_and_scripts(
-    repo: Path, fake_run: dict[str, Any]
-) -> None:
+def test_run_shell_allows_node_tests_and_scripts(repo: Path, fake_run: dict[str, Any]) -> None:
     """node --test 与仓库内脚本应通过校验。"""
     for cmd in [
         "node --test",
@@ -217,12 +213,10 @@ def test_run_shell_rejects_bare_node(repo: Path, whitelisted_which: None) -> Non
         registry.execute("run_shell", {"command": "node"})
 
 
-def test_run_shell_rejects_node_inline_eval(
-    repo: Path, whitelisted_which: None
-) -> None:
+def test_run_shell_rejects_node_inline_eval(repo: Path, whitelisted_which: None) -> None:
     """node 的内联执行与模块加载选项可绕过仓库限制，必须被拒。"""
     for cmd in [
-        'node -e "require(\'fs\').writeFileSync(\'x\', \'y\')"',
+        "node -e \"require('fs').writeFileSync('x', 'y')\"",
         "node --eval=1+1",
         'node -p "1+1"',
         "node --print=1+1",
@@ -236,9 +230,7 @@ def test_run_shell_rejects_node_inline_eval(
             registry.execute("run_shell", {"command": cmd})
 
 
-def test_run_shell_rejects_node_debugger_and_watch(
-    repo: Path, whitelisted_which: None
-) -> None:
+def test_run_shell_rejects_node_debugger_and_watch(repo: Path, whitelisted_which: None) -> None:
     """调试端口与 watch 模式应被拒。"""
     for cmd in [
         "node --inspect test.js",
@@ -249,9 +241,7 @@ def test_run_shell_rejects_node_debugger_and_watch(
             registry.execute("run_shell", {"command": cmd})
 
 
-def test_run_shell_rejects_node_path_escape(
-    repo: Path, whitelisted_which: None
-) -> None:
+def test_run_shell_rejects_node_path_escape(repo: Path, whitelisted_which: None) -> None:
     """node 脚本参数同样受路径越界检查约束。"""
     with pytest.raises(ValueError, match="Path traversal"):
         registry.execute("run_shell", {"command": "node ../outside.js"})
@@ -266,9 +256,7 @@ def test_run_shell_rejects_package_managers_with_node_hint(repo: Path) -> None:
             registry.execute("run_shell", {"command": cmd})
 
 
-def test_run_shell_missing_node_hint(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_shell_missing_node_hint(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """node 未安装时应明确提示。"""
     monkeypatch.setattr("breeze.tools.shell.shutil.which", lambda _name: None)
     with pytest.raises(ValueError, match="Node.js is not installed"):

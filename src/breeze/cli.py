@@ -24,6 +24,7 @@ from breeze.chat import run_chat
 from breeze.chat_commands import ChatController
 from breeze.chat_input import make_chat_input
 from breeze.config import PERMISSION_MODES, settings
+from breeze.doctor import Check, run_checks
 from breeze.llm import LLMClient
 from breeze.session import SessionStore
 from breeze.trace import RunTrace
@@ -37,6 +38,7 @@ app = typer.Typer(
         '  breeze ask "修复 bug" --trace-name fix-bug\n'
         "  breeze chat --resume latest\n"
         "  breeze chat --list --search safe_path\n"
+        "  breeze doctor\n"
         "\n"
         "Run 'breeze ask --help' or 'breeze chat --help' for all options."
     ),
@@ -390,6 +392,48 @@ def chat(
 
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+@app.command()
+def doctor(
+    ping: bool = typer.Option(
+        False,
+        "--ping",
+        help="send one minimal model request to verify API key, endpoint and model",
+    ),
+) -> None:
+    """Check local configuration and environment, then exit."""
+    checks = run_checks(ping=ping)
+    _print_doctor(checks)
+
+    failures = sum(check.status == "fail" for check in checks)
+    if failures:
+        error_console.print("[red]请先修复失败项再运行 breeze ask/chat。[/red]")
+        raise typer.Exit(code=1)
+
+
+def _print_doctor(checks: list[Check]) -> None:
+    """渲染诊断结果。"""
+    styles = {
+        "ok": "[green]OK[/green]",
+        "warn": "[yellow]WARN[/yellow]",
+        "fail": "[red]FAIL[/red]",
+    }
+    table = Table(title=f"Breeze doctor {__version__}")
+    table.add_column("检查", no_wrap=True)
+    table.add_column("状态", no_wrap=True)
+    table.add_column("说明", overflow="fold")
+
+    for check in checks:
+        detail = escape(check.detail)
+        if check.hint:
+            detail += f"\n[dim]{escape(check.hint)}[/dim]"
+        table.add_row(escape(check.name), styles[check.status], detail)
+
+    console.print(f"[dim]cwd: {escape(str(Path.cwd()))}[/dim]")
+    console.print(table)
+    counts = {status: sum(check.status == status for check in checks) for status in styles}
+    console.print(f"[dim]{counts['ok']} 项通过，{counts['warn']} 项警告，{counts['fail']} 项失败[/dim]")
 
 
 def _print_sessions(session_dir: Path | None, search: str | None = None) -> None:

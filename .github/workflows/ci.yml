@@ -29,5 +29,7 @@ jobs:
           pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests breeze_eval
+      - name: Format
+        run: ruff format --check src tests breeze_eval
       - name: Test
         run: python -m pytest -q

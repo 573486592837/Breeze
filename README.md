@@ -202,6 +202,24 @@ pip install -e .
 `mcp` 包（Breeze 每轮都带工具 schema），已装 1.106.x 的环境用
 `pip install "litellm==1.103.0"` 回退。
 
+### 环境诊断
+
+启动失败、模型报错或不确定配置是否生效时，在仓库根目录运行：
+
+```bash
+breeze doctor
+```
+
+它会检查 Python 版本、仓库可写性、`.env`、API Key、模型名、API Base、git、
+ripgrep、会话与 trace 目录，并给出修复提示；有失败项时以非零退出码结束。
+
+需要验证 API Key、端点和模型确实可用时，加 `--ping`。这会发送一次最小模型
+请求并产生少量费用：
+
+```bash
+breeze doctor --ping
+```
+
 ### 配置
 
 复制 `.env.example` 为 `.env`，填入 API Key：
@@ -244,6 +262,9 @@ breeze ask "修复 src/breeze/tools/safety.py 的路径逃逸问题"
 
 # 限制步数
 breeze ask "找出 read_file 的实现位置" --max-steps 4
+
+# 检查环境与配置（--ping 会额外验证模型连通性）
+breeze doctor
 
 # 交互式多回合会话（/new 重置，/help 命令，/exit 退出）
 breeze chat
@@ -604,6 +625,7 @@ breeze/
 │   ├── cli.py            # CLI 入口
 │   ├── config.py         # 分层配置
 │   ├── context.py        # 上下文管理
+│   ├── doctor.py         # 环境诊断（breeze doctor）
 │   ├── llm.py            # LLM 客户端
 │   ├── session.py        # 会话持久化（~/.breeze/sessions）
 │   ├── state.py          # 跨压缩的会话事实索引

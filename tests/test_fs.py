@@ -61,9 +61,7 @@ def test_list_files_empty_dir(repo: Path) -> None:
     assert "(empty)" in out
 
 
-def test_list_files_reports_unreadable_directory(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_list_files_reports_unreadable_directory(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """无法读取的目录应明确提示，而不是让模型以为目录为空。"""
     (repo / "src").mkdir()
     (repo / "src" / "a.py").write_text("x", encoding="utf-8")
@@ -141,9 +139,7 @@ def test_read_file_long_line_preserves_utf8(repo: Path) -> None:
     assert "\ufffd" not in out
 
 
-def test_read_file_error_includes_os_reason(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_read_file_error_includes_os_reason(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """底层 OSError 原因应出现在错误信息里，便于模型判断下一步。"""
     (repo / "x.py").write_text("x", encoding="utf-8")
 
@@ -252,9 +248,7 @@ def test_list_files_allows_configured_read_root(read_root: tuple[Path, Path]) ->
     assert "note.txt" in out
 
 
-def test_grep_allows_configured_read_root(
-    read_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_grep_allows_configured_read_root(read_root: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     """grep 可以搜索只读参考目录。"""
     monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
 

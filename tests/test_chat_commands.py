@@ -122,7 +122,7 @@ def test_trace_name_is_normalized() -> None:
 
 
 def test_trace_pins_exact_file(tmp_path: Path) -> None:
-    """ /trace <name> 固定为 dev.jsonl，并把状态写入会话。"""
+    """/trace <name> 固定为 dev.jsonl，并把状态写入会话。"""
     session = StubSession()
     controller = _controller(session=session, trace_dir=tmp_path)
 
@@ -149,7 +149,7 @@ def test_trace_rejects_existing_trace_or_messages(tmp_path: Path) -> None:
 
 
 def test_trace_auto_restores_per_turn_files(tmp_path: Path) -> None:
-    """ /trace auto 取消固定，恢复每回合独立文件。"""
+    """/trace auto 取消固定，恢复每回合独立文件。"""
     session = StubSession()
     controller = _controller(session=session, trace_dir=tmp_path)
     controller.handle("/trace dev", None)

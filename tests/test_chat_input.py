@@ -46,6 +46,7 @@ def test_non_tty_falls_back_to_input() -> None:
 
 def test_missing_prompt_toolkit_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """依赖缺失时退回逐行输入，而不是让 chat 启动失败。"""
+
     def fallback(prompt: str) -> str:
         return "answer"
 

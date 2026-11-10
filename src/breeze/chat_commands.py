@@ -191,10 +191,7 @@ class ChatController:
         """查看、固定或恢复 trace 文件模式。"""
         if not argument:
             if self.trace_pinned:
-                return (
-                    f"当前固定 trace：{self._trace_target()}"
-                    "（后续回合追加；/trace auto 恢复每回合文件）"
-                )
+                return f"当前固定 trace：{self._trace_target()}（后续回合追加；/trace auto 恢复每回合文件）"
             return f"当前 trace 前缀：{self.trace_prefix}（每回合一文件）"
 
         if argument.lower() == "auto":
@@ -212,10 +209,7 @@ class ChatController:
             target = self.trace_dir / f"{name}.jsonl"
             messages = self.trace_dir / f"{name}.messages.jsonl"
             if target.exists() or messages.exists():
-                return (
-                    f"trace 文件已存在：{target}（或 {messages.name}）；"
-                    "请换一个名字，避免把新会话混入旧 trace。"
-                )
+                return f"trace 文件已存在：{target}（或 {messages.name}）；请换一个名字，避免把新会话混入旧 trace。"
 
         self.trace_prefix = name
         self.trace_pinned = True

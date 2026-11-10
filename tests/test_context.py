@@ -209,10 +209,7 @@ def test_soft_budget_keeps_prefix_reusable() -> None:
     result, second = cm.build_with_stats(messages)
 
     assert [m["content"] for m in result if m["role"] == "tool"] == [big, big]
-    assert (
-        second.cacheable_prefix_tokens
-        == first.total_tokens - first.budget_tokens - first.continuation_tokens
-    )
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens - first.continuation_tokens
 
 
 def test_hard_budget_never_below_soft() -> None:
@@ -480,10 +477,7 @@ def test_stats_prefix_reuse_for_append_only_turn() -> None:
     messages = [*base, *_round("c1", "read_file", '{"path": "a.py"}', "content")]
     _, second = cm.build_with_stats(messages)
 
-    assert (
-        second.cacheable_prefix_tokens
-        == first.total_tokens - first.budget_tokens - first.continuation_tokens
-    )
+    assert second.cacheable_prefix_tokens == first.total_tokens - first.budget_tokens - first.continuation_tokens
     assert second.total_tokens > first.total_tokens
 
 
@@ -514,10 +508,7 @@ def test_stats_prefix_reuse_keeps_body_when_state_changes() -> None:
 
     assert (
         second.cacheable_prefix_tokens
-        == first.total_tokens
-        - first.state_tokens
-        - first.budget_tokens
-        - first.continuation_tokens
+        == first.total_tokens - first.state_tokens - first.budget_tokens - first.continuation_tokens
     )
     assert second.cacheable_prefix_tokens > first.system_tokens
 
@@ -1156,9 +1147,7 @@ def test_soft_spill_batches_to_target_headroom() -> None:
     args: dict[str, dict[str, Any]] = {}
     for i, lines in enumerate((80, 70, 60, 50, 40, 30)):
         call_id = f"c{i}"
-        content = "exit_code: 0\n" + "\n".join(
-            f"line {j}: " + "word " * 40 for j in range(lines)
-        )
+        content = "exit_code: 0\n" + "\n".join(f"line {j}: " + "word " * 40 for j in range(lines))
         body.extend(_round(call_id, "run_shell", '{"command": "git status"}', content))
         names[call_id] = "run_shell"
         args[call_id] = {"command": "git status"}
@@ -1167,9 +1156,7 @@ def test_soft_spill_batches_to_target_headroom() -> None:
     budget = int(total * 0.8)
     target = int(budget * 0.85)
 
-    out, changed = cm._spill(
-        head, body, names, args, budget, None, None, None, None, SPILL_TOOLS, target=target
-    )
+    out, changed = cm._spill(head, body, names, args, budget, None, None, None, None, SPILL_TOOLS, target=target)
 
     assert changed
     assert cm._measure(head, out, None) <= target
