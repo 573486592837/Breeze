@@ -1209,7 +1209,10 @@ wheel 的 METADATA 为 `License-Expression: MIT`，并包含
 `dist-info/licenses/LICENSE`。`breeze.__version__` 与 packaging 测试同步到
 1.6.1。
 
-## 环境诊断与格式基线（未发布）
+## 环境诊断、命令补全与版本提示 (v1.7.0)
+
+v1.6.1 公开试用后的一轮可用性改进：安装与配置问题可自诊、仓库格式统一、
+会话命令可补全、安装后可感知新版本。不改变 Agent 推理流程与上下文压缩策略。
 
 ### breeze doctor
 
@@ -1230,14 +1233,6 @@ wheel 的 METADATA 为 `License-Expression: MIT`，并包含
 
 仓库已有 23 个文件与 `ruff format` 不一致。本次统一格式化，并在 Windows/Linux
 CI 中加入 `ruff format --check`，防止继续漂移。
-
-### 验证
-
-新增 doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示、非 git 与
-ripgrep 警告、`--ping` 成功/失败与 CLI 退出码。全量 764 passed / 2 skipped，
-`ruff check` 与 `ruff format --check` 全绿。
-
-## 会话命令补全与版本提示（未发布）
 
 ### 斜杠命令补全
 
@@ -1262,7 +1257,7 @@ ripgrep 警告、`--ping` 成功/失败与 CLI 退出码。全量 764 passed / 2
 
 ### 版本号策略
 
-继续使用 SemVer 2.0.0 和 1.x 系列，下个功能版本为 v1.7.0。规则写入
+继续使用 SemVer 2.0.0 和 1.x 系列，本次功能版本为 v1.7.0。规则写入
 `CONTRIBUTING.md`：
 
 - `vX.Y.Z` 只用于正式 release，打在 release PR 的合并提交上，不移动已发布 tag。
@@ -1272,6 +1267,8 @@ ripgrep 警告、`--ping` 成功/失败与 CLI 退出码。全量 764 passed / 2
 
 ### 验证
 
-新增命令补全的 `/`、前缀过滤、非命令输入与帮助元数据一致性测试；更新检查覆盖
-版本比较、24 小时缓存、离线回退、错误退出码与启动提示开关。全量测试与
-`ruff check` / `ruff format --check` 结果见提交。
+doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示、非 git 与 ripgrep
+警告、`--ping` 成功/失败与 CLI 退出码；命令补全覆盖 `/`、前缀过滤、非命令
+输入与帮助元数据一致性；更新检查覆盖版本比较、24 小时缓存、离线回退、错误
+退出码与启动提示开关。全量 780 passed / 2 skipped，`ruff check` 与
+`ruff format --check` 全绿；`breeze.__version__` 与 packaging 测试同步到 1.7.0。
