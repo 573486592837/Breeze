@@ -162,6 +162,7 @@ def test_help_lists_current_options() -> None:
 
     assert top.exit_code == 0
     assert "breeze ask --help" in _plain(top.stdout)
+    assert "doctor" in _plain(top.stdout)
     assert "--trace-name" in _plain(ask_help.stdout)
     assert "--trace-name" in _plain(chat_help.stdout)
     assert "--permission" in _plain(ask_help.stdout)

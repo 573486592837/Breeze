@@ -1208,3 +1208,31 @@ v1.6.0 之后的仓库公开准备，不改变 Agent 运行时行为。目标是
 wheel 的 METADATA 为 `License-Expression: MIT`，并包含
 `dist-info/licenses/LICENSE`。`breeze.__version__` 与 packaging 测试同步到
 1.6.1。
+
+## 环境诊断与格式基线（未发布）
+
+### breeze doctor
+
+公开试用后，最常见的失败不是 Agent 推理，而是安装、密钥或模型配置没生效。
+新增只读诊断命令，在仓库根目录运行，不发起网络请求：
+
+- 检查 Python 版本、当前仓库存在且可写、`.env` 查找结果、API Key 是否设置
+  （只显示环境变量名，不输出密钥）、模型名、API Base、git、ripgrep、Python
+  项目、会话目录与 trace 目录。
+- 已知配置陷阱给出可执行提示：例如硅基流动等 OpenAI 兼容端点需要在模型名前
+  加 `openai/`；非 git 目录提示 `git_restore` 不可用；缺少 ripgrep 提示 grep
+  会回退 Python 实现。
+- 失败项返回非零退出码，警告项不影响退出码。
+- `--ping` 额外发送一次最小模型请求，验证 API Key、端点和模型可用；默认关闭，
+  避免隐式产生费用。错误信息中的 API Key 会被替换为 `<redacted>`。
+
+### ruff format 基线
+
+仓库已有 23 个文件与 `ruff format` 不一致。本次统一格式化，并在 Windows/Linux
+CI 中加入 `ruff format --check`，防止继续漂移。
+
+### 验证
+
+新增 doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示、非 git 与
+ripgrep 警告、`--ping` 成功/失败与 CLI 退出码。全量 764 passed / 2 skipped，
+`ruff check` 与 `ruff format --check` 全绿。
