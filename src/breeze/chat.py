@@ -14,18 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-HELP_TEXT = (
-    "commands:\n"
-    "  /model [name]       查看或切换模型\n"
-    "  /trace [name|auto]  固定 trace 文件名（多轮追加）或恢复每回合文件\n"
-    "  /profile [name]     查看或切换压缩档位（short / medium / long / custom）\n"
-    "  /set <key> <value>  调整 max_steps / max_edit_failures / temperature / permission\n"
-    "  /config             查看当前运行配置\n"
-    "  /plan               查看 Agent 维护的当前计划\n"
-    "  /new                重置对话（运行时配置保留）\n"
-    "  /help               显示帮助\n"
-    "  /exit               退出（Ctrl+C / Ctrl+D 同样有效）"
-)
+from breeze.chat_commands import HELP_TEXT
 
 
 def run_chat(

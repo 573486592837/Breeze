@@ -13,8 +13,37 @@ from typing import Any
 
 try:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import Completer, Completion
+    from prompt_toolkit.shortcuts import CompleteStyle
 except ImportError:  # pragma: no cover - 依赖缺失时保留逐行输入
     PromptSession = None
+    Completer = None
+    Completion = None
+    CompleteStyle = None
+
+from breeze.chat_commands import COMMANDS, CommandSpec
+
+if Completer is not None:
+
+    class SlashCommandCompleter(Completer):
+        """只在输入以 / 开头且尚未输入参数时补全会话命令。"""
+
+        def __init__(self, commands: tuple[CommandSpec, ...] = COMMANDS) -> None:
+            self.commands = commands
+
+        def get_completions(self, document, _complete_event):
+            text = document.text_before_cursor
+            if not text.startswith("/") or any(char.isspace() for char in text):
+                return
+            prefix = text[1:].lower()
+            for spec in self.commands:
+                if spec.name.startswith(prefix):
+                    yield Completion(
+                        spec.name,
+                        start_position=-len(prefix),
+                        display=spec.usage,
+                        display_meta=spec.description,
+                    )
 
 
 def make_chat_input(
@@ -34,7 +63,11 @@ def make_chat_input(
     if PromptSession is None or not getattr(stream, "isatty", lambda: False)():
         return input_fn
 
-    session = PromptSession()
+    session = PromptSession(
+        completer=SlashCommandCompleter(),
+        complete_while_typing=True,
+        complete_style=CompleteStyle.MULTI_COLUMN,
+    )
 
     def read(prompt: str) -> str:
         return session.prompt(prompt)

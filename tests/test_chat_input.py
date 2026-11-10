@@ -60,12 +60,57 @@ def test_missing_prompt_toolkit_falls_back(monkeypatch: pytest.MonkeyPatch) -> N
 def test_tty_uses_prompt_session(monkeypatch: pytest.MonkeyPatch) -> None:
     """终端下通过 PromptSession 读取，多行内容原样返回。"""
     session = _FakeSession()
-    monkeypatch.setattr(chat_input, "PromptSession", lambda: session)
+    monkeypatch.setattr(chat_input, "PromptSession", lambda **_: session)
 
     read = chat_input.make_chat_input(stream=_Stream(True))
 
     assert read("You> ") == "line1\nline2"
     assert session.prompts == ["You> "]
+
+
+def test_slash_completer_lists_all_commands() -> None:
+    """只输入 / 时列出全部命令。"""
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.document import Document
+
+    completer = chat_input.SlashCommandCompleter()
+    completions = list(completer.get_completions(Document("/", 1), None))
+
+    assert [item.text for item in completions] == [spec.name for spec in chat_input.COMMANDS]
+
+
+def test_slash_completer_filters_by_prefix() -> None:
+    """输入 /p 时只保留 profile 与 plan。"""
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.document import Document
+
+    completer = chat_input.SlashCommandCompleter()
+    completions = list(completer.get_completions(Document("/p", 2), None))
+
+    assert [item.text for item in completions] == ["profile", "plan"]
+    assert all(item.display_meta_text for item in completions)
+
+
+def test_slash_completer_ignores_non_commands_and_arguments() -> None:
+    """普通输入和命令参数不做补全。"""
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.document import Document
+
+    completer = chat_input.SlashCommandCompleter()
+
+    assert list(completer.get_completions(Document("hello /p", 8), None)) == []
+    assert list(completer.get_completions(Document("/model ", 7), None)) == []
+
+
+def test_help_text_is_generated_from_command_metadata() -> None:
+    """帮助文本与补全共用同一份命令元数据。"""
+    from breeze.chat import HELP_TEXT
+    from breeze.chat_commands import COMMANDS, help_text
+
+    assert help_text() == HELP_TEXT
+    assert "/plan" in HELP_TEXT
+    assert len({spec.name for spec in COMMANDS}) == len(COMMANDS)
+    assert all(spec.usage.startswith(f"/{spec.name}") for spec in COMMANDS)
 
 
 def test_bracketed_paste_arrives_as_one_question() -> None:
