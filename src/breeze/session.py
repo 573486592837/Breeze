@@ -239,12 +239,17 @@ class SessionStore:
                 ledger.records.clear()
                 state = SessionState()
             elif kind == "turn":
+                clarifications: list[tuple[str, str]] = []
+                for item in event.get("clarifications") or []:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        clarifications.append((str(item[0]), str(item[1])))
                 ledger.records.append(
                     TurnRecord(
                         index=event["index"],
                         question=event["question"],
                         answer=event["answer"],
                         touched=list(event.get("touched") or []),
+                        clarifications=clarifications,
                     )
                 )
                 state = SessionState.from_dict(event.get("state") or {})
