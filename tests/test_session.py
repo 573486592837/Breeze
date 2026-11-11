@@ -394,3 +394,46 @@ def test_default_dir_comes_from_settings(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert store.path == tmp_path / "configured" / "20260101T000000_aaa.jsonl"
     assert SessionStore.list_sessions()[0].session_id == "20260101T000000_aaa"
+
+
+def test_clarifications_round_trip(tmp_path: Path) -> None:
+    """澄清问答随回合归档持久化，resume 后仍能进入下一轮上下文。"""
+    store = _store(tmp_path)
+    record = TurnRecord(
+        1,
+        "加一个存储层",
+        "已完成",
+        ["db.py"],
+        clarifications=[("用哪个数据库？", "Postgres")],
+    )
+    store.record_turn(record, _state(), _summary())
+
+    ledger, _ = store.load()
+
+    assert ledger.records[0].clarifications == [("用哪个数据库？", "Postgres")]
+    assert "clarified: 用哪个数据库？ → Postgres" in ledger.render()
+
+
+def test_old_turn_event_without_clarifications_loads(tmp_path: Path) -> None:
+    """旧版会话文件没有 clarifications 字段，加载时按空列表处理。"""
+    store = _store(tmp_path)
+    store.session_dir.mkdir(parents=True)
+    store.path.write_text(
+        json.dumps(
+            {
+                "event": "turn",
+                "index": 1,
+                "question": "旧问题",
+                "answer": "旧答案",
+                "touched": [],
+                "state": {},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ledger, _ = store.load()
+
+    assert ledger.records[0].clarifications == []

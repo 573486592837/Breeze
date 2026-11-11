@@ -92,6 +92,7 @@ flowchart TB
 | `tools/shell.py` | `run_shell` | `shell=False`、可执行文件/子命令/选项白名单 | 拒绝未加引号的串联/管道/重定向 |
 | `tools/edit.py` | 5 个工具 | 单点替换、建文件、删路径、回滚、pytest | 补丁大小、受保护路径、原子写入 |
 | `tools/plan.py` | `update_plan` | 计划写入 `SessionState.plan` | 最多 2000 字符 |
+| `tools/interaction.py` | `ask_user` | 向用户澄清需求；回答由 CLI 回调注入 | 仅交互式下发；每回合最多 5 个 |
 | `capabilities.py` | `detect` | 按环境裁剪工具集与提示词 | 写操作后可能重新探测 |
 | `instructions.py` | AGENTS.md | 仓库级指引作为独立 system 消息注入 | 最多 8000 字符，不能放宽安全规则 |
 | `config.py` | `settings` | 默认值 → 用户 → 仓库 → 环境变量 → CLI 合并 | 安全白名单不可配置 |
@@ -314,7 +315,7 @@ flowchart LR
 
 | 结构 | 保留什么 | 丢弃什么 | 作用 |
 |---|---|---|---|
-| `TurnLedger` | 问题（单行折叠）、答案原文（受预算）、触碰文件 | 历史工具调用与中间输出 | 下一回合只看到“结论” |
+| `TurnLedger` | 问题（单行折叠）、答案原文（受预算）、触碰文件、澄清问答 | 历史工具调用与中间输出 | 下一回合只看到“结论” |
 | `SessionState` | 符号位置、最近读取范围、编辑结果、测试摘要、计划 | 本回合读取计数（不落盘） | 降级后仍能定点重读/编辑 |
 | `SessionStore` | 两者的持久化快照 | trace 级细节 | 进程退出后可 `--resume` |
 
@@ -358,6 +359,10 @@ flowchart TD
 `ToolArgumentError`，Agent 转成带 `Expected:` 列表的错误结果，并明确写工具没有
 写入目标文件。这样模型能直接修正参数，而不是面对一句 `TypeError` 再盲目重试。
 
+`ask_user` 与 `run_shell` 一样由 Agent 在执行前拦截：CLI 注入回调时回答直接
+作为工具结果返回，并计入每回合 5 次的上限；没有回调（管道、评估、测试）时
+该工具不会出现在 schema 中，模型只能按已有信息继续。
+
 三种权限模式都保留的边界：
 
 - `shell=False`，一次只执行一条命令；未加引号的 `; | & < >` 一律拒绝。
@@ -378,6 +383,9 @@ flowchart LR
     A --> E{检测到 Python 项目?}
     E -- 否 --> F[移除 run_tests<br/>提示词改写为项目自带测试命令]
     E -- 是 --> G[保留 run_tests]
+    A --> H{有交互式用户?}
+    H -- 否 --> I[移除 ask_user]
+    H -- 是 --> J[保留 ask_user<br/>提示词追加提问规则]
 ```
 
 `_refresh_capabilities_after_write()` 只在当前缺少 Python 项目时重新探测，

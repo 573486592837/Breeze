@@ -2354,3 +2354,85 @@ def test_plan_answer_detects_continuation_and_imperative_edits() -> None:
     assert _is_plan_answer("Let me continue with the CLI wiring.")
     assert not _is_plan_answer("给 cli.py 添加了 diff 命令，测试已通过。")
     assert not _is_plan_answer("已完成实现并通过测试。建议下一步：运行全量测试。")
+
+
+# ─── ask_user ───
+
+
+def test_agent_hides_ask_user_without_callback(trace: RunTrace) -> None:
+    """非交互会话不下发 ask_user，避免模型停在无人回答的提问上。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(llm=llm, trace=trace, capabilities=_caps())
+    agent.run("hi")
+
+    assert "ask_user" not in _tool_names(llm)
+
+
+def test_agent_exposes_ask_user_with_callback(trace: RunTrace) -> None:
+    """注入回调后下发 ask_user，并把回答作为工具结果交回模型。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call(
+                "ask_user",
+                {"question": "用哪个数据库？", "options": ["SQLite", "Postgres"]},
+            ),
+            _text("done"),
+        ]
+    )
+    asked: list[tuple[str, list[str] | None]] = []
+
+    def answer(question: str, options: list[str] | None) -> str:
+        asked.append((question, options))
+        return "Postgres"
+
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=answer)
+    assert agent.run("加一个存储层") == "done"
+
+    assert "ask_user" in _tool_names(llm)
+    assert asked == [("用哪个数据库？", ["SQLite", "Postgres"])]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert tool_messages[-1] == "User answer: Postgres"
+    assert agent.ledger.records[-1].clarifications == [("用哪个数据库？", "Postgres")]
+    assert "clarified: 用哪个数据库？ → Postgres" in agent.ledger.render()
+
+
+def test_agent_ask_user_records_no_answer(trace: RunTrace) -> None:
+    """用户跳过时明确告知模型按最合理假设继续，而不是等待。"""
+    llm = FakeLLMClient([_tool_call("ask_user", {"question": "选哪个？"}), _text("done")])
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=lambda *_: "")
+    agent.run("go")
+
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "User did not answer" in tool_messages[-1]
+    assert agent.ledger.records[-1].clarifications == [("选哪个？", "(no answer)")]
+
+
+def test_agent_limits_questions_per_turn(trace: RunTrace) -> None:
+    """超过每回合提问上限后拒绝继续提问，要求带假设继续执行。"""
+    responses = [_tool_call("ask_user", {"question": f"q{i}"}, call_id=f"c{i}") for i in range(6)]
+    responses.append(_text("done"))
+    llm = FakeLLMClient(responses)
+    asked: list[str] = []
+
+    def answer(question: str, options: list[str] | None) -> str:
+        asked.append(question)
+        return "ok"
+
+    agent = Agent(llm=llm, trace=trace, max_steps=10, capabilities=_caps(), ask_user=answer)
+    assert agent.run("go") == "done"
+
+    assert len(asked) == 5
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "ask_user limit reached" in tool_messages[-1]
+
+
+def test_default_system_prompt_mentions_ask_user_only_when_interactive() -> None:
+    """只有可交互时才提示使用 ask_user，避免自动运行得到无效指令。"""
+    from breeze.agent import default_system_prompt
+
+    interactive = default_system_prompt(_caps(), include_instructions=False, interactive=True)
+    automatic = default_system_prompt(_caps(), include_instructions=False)
+
+    assert "ask_user" in interactive
+    assert "最多问 5 个" in interactive
+    assert "ask_user" not in automatic
