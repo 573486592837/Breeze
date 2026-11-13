@@ -77,9 +77,10 @@ flowchart TB
 | 文件 | 核心对象 | 职责 | 关键约束 |
 |---|---|---|---|
 | `cli.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
-| `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘 | 与 CLI 解耦，依赖可注入 |
+| `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘、侧任务输入分发 | 与 CLI 解耦，依赖可注入 |
+| `side.py` | `SideTree` / `SideTask` | 内存侧任务树：创建、暂停、切换、关闭 | 不持久化、无 resume；close 丢弃子树 |
 | `chat_commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
-| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复 | 默认 25 步、连续编辑失败 3 次 |
+| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复、只读模式 | 默认 25 步、连续编辑失败 3 次 |
 | `context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
 | `state.py` | `SessionState` / `TurnLedger` | 从真实工具结果提取事实；跨回合归档问答结论 | 不采信模型自述 |
 | `session.py` | `SessionStore` | append-only JSONL，恢复 ledger/state/config | 空会话不落盘 |
@@ -319,6 +320,28 @@ flowchart LR
 | `SessionState` | 符号位置、最近读取范围、编辑结果、测试摘要、计划 | 本回合读取计数（不落盘） | 降级后仍能定点重读/编辑 |
 | `SessionStore` | 两者的持久化快照 | trace 级细节 | 进程退出后可 `--resume` |
 
+### 6.4 只读侧任务
+
+侧任务用于在主对话之外临时查资料，结构是内存树，根为主对话：
+
+```mermaid
+flowchart LR
+    M[main] --> S1[s1 只读任务]
+    S1 --> S2[s2 嵌套任务]
+    M --> S3[s3 paused]
+```
+
+- `SideTree` 只保存在当前进程；节点记录独立 Agent、父节点、问题与回合数。
+- `/back` 暂停并回到父节点，`/switch` 切到任意保留节点，`/close` 丢弃当前
+  节点及子树；程序退出即全部丢失，没有 `--resume`。
+- 每个侧任务使用独立 `Agent`（messages / SessionState / TurnLedger /
+  SnapshotStore），主 Agent 不被读写；侧任务回合不调用 `SessionStore`，
+  不进入主回合摘要。
+- 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
+- 同一时刻只有一个活动节点；多个侧任务并存时只能切换，不做并行执行。
+- v1.9.0 的入口是主 `You>` 与 `side[id]>` 提示符；`ask_user`/confirm 等待
+  点暂不支持切入侧任务。
+
 ## 7. 工具执行与权限
 
 ```mermaid
@@ -363,6 +386,11 @@ flowchart TD
 作为工具结果返回，并计入每回合 5 次的上限；没有回调（管道、评估、测试）时
 该工具不会出现在 schema 中，模型只能按已有信息继续。
 
+执行前还会校验 `tc.name in self.tool_names`。被能力裁剪、非交互 `ask_user`
+或只读模式隐藏的工具，即使模型幻觉调用也直接返回
+`Error: tool '...' is not available in this session.`，不会进入
+`registry.execute`——schema 是提示，不是安全边界。
+
 三种权限模式都保留的边界：
 
 - `shell=False`，一次只执行一条命令；未加引号的 `; | & < >` 一律拒绝。
@@ -387,6 +415,9 @@ flowchart LR
     H -- 否 --> I[移除 ask_user]
     H -- 是 --> J[保留 ask_user<br/>提示词追加提问规则]
 ```
+
+`read_only=True` 时跳过上述能力裁剪，工具集直接收敛为
+`{list_files, read_file, grep}`；system prompt 去掉编辑章节，只保留只读规则。
 
 `_refresh_capabilities_after_write()` 只在当前缺少 Python 项目时重新探测，
 因为写操作可能刚创建 `pyproject.toml` 等标记；能力变化会同步工具集与 system prompt。

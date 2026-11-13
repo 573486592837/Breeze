@@ -275,6 +275,28 @@ Trace Summary（回合数、调用次数、Token 与耗时合计）。`--quiet` 
 - 澄清问答会随回合归档进入下一轮；`--resume` 后仍保留。
 - 非交互环境（管道、评估脚本）不下发 `ask_user`，模型只能基于已有信息继续。
 
+### 只读侧任务
+
+在 `breeze chat` 中随时用 `/side <问题>` 开一个只读侧任务，查完资料再回到主线：
+
+```text
+You> /side 看看配置加载顺序和 .env 的查找规则
+side[s1]> 它和 profile preset 谁先生效？
+side[s1]> /back
+(back to main)
+You>
+```
+
+- 侧任务只能用 `list_files` / `read_file` / `grep`；写文件、`run_shell`、
+  `run_tests` 会从工具集移除，执行层也会拒绝。
+- 侧任务可嵌套；`/back` 暂停并回到父节点，`/sides` 查看树，`/switch s2`
+  切回已暂停的任务，`/close` 关闭当前任务及子树（不可恢复）。
+- 多个侧任务可以并存、切换，但同一时刻只有一个活动任务，不做后台并行执行。
+- 侧任务不写主会话、不计入主回合摘要，也不影响主 Agent 的上下文；退出程序
+  即全部丢弃，没有 `--resume`。
+- 侧任务内的 `/model`、`/set`、`/trace`、`/profile`、`/config`、`/new` 被禁用；
+  主对话的 `/new` 会同时丢弃侧任务树。
+
 ### 使用
 
 ```bash
@@ -322,6 +344,11 @@ breeze --version
 | `/set <key> <value>` | 调整 max_steps / max_edit_failures / temperature |
 | `/config` | 查看模型、会话、trace 与实际预算 |
 | `/plan` | 查看 Agent 维护的当前任务计划 |
+| `/side <问题>` | 开启只读侧任务（可嵌套） |
+| `/sides` | 查看侧任务树 |
+| `/back` | 暂停当前侧任务并回到父节点 |
+| `/close` | 关闭当前侧任务及子树（不可恢复） |
+| `/switch <id\|main>` | 切换到已暂停的侧任务 |
 | `/new` | 重置对话（运行时配置保留） |
 | `/help` | 显示命令帮助 |
 | `/exit` | 退出（Ctrl+C / Ctrl+D 同样有效） |

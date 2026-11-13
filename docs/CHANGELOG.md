@@ -1308,3 +1308,41 @@ v1.7.0 之后新增的会话交互能力：需求有歧义时先问再动手，�
 `TurnRecord` 往返与旧会话兼容测试；全量 789 passed / 2 skipped，
 `ruff check` 与 `ruff format --check` 全绿；`breeze.__version__` 与
 packaging 测试同步到 1.8.0。
+
+## 只读侧任务 /side（未发布）
+
+### 只读模式
+
+Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep`，
+写工具、`run_shell`、`run_tests` 与 `ask_user` 全部移除；system prompt 去掉
+编辑章节，只保留读取与检索规则。执行层同时校验工具是否在当前工具集中，
+模型绕过 schema 调用隐藏工具时返回明确错误，而不是真的执行。
+
+### 侧任务树
+
+`breeze chat` 新增 `/side <问题>`，从当前活动节点派生只读侧任务，可嵌套：
+
+- `/back` 暂停当前侧任务并回到父节点；
+- `/sides` 查看树（active / paused）；
+- `/switch <id|main>` 切回已暂停的侧任务；
+- `/close` 丢弃当前节点及其子树，不可恢复。
+
+多个侧任务可以并存、切换，但同一时刻只有一个活动任务，不做并行执行。
+侧任务只存在内存中，没有 `--resume`；主对话 `/new` 会一并丢弃侧任务树。
+
+### 隔离边界
+
+- 每个侧任务使用独立 Agent（messages / SessionState / TurnLedger /
+  SnapshotStore），主 Agent 的上下文与归档不被读写。
+- 侧任务回合不写 `SessionStore`，不计入主回合摘要；主对话模型/步数配置
+  在侧任务每回合前同步，但侧任务内禁用 `/model`、`/set`、`/trace`、
+  `/profile`、`/config`、`/new`。
+- 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
+- v1.9.0 支持从主 `You>` 与侧任务提示符进入；`ask_user` / confirm 等待点
+  暂不支持切入侧任务。
+
+### 验证
+
+新增只读工具集、隐藏工具执行拒绝、只读提示词、SideTree 生命周期、嵌套与
+切换、主会话/trace 隔离、侧任务内禁用配置命令与 close 后不可恢复测试；
+全量 806 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
