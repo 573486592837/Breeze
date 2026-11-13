@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -362,32 +363,59 @@ def chat(
         chat_input = make_chat_input()
         ask_user = _ask_user_callback(console, chat_input, progress) if sys.stdin.isatty() else None
 
-        exit_code = run_chat(
-            agent_factory=lambda trace: Agent(
-                llm=controller.llm,
-                trace=trace,
-                max_steps=controller.max_steps,
-                max_edit_failures=controller.max_edit_failures,
-                context=controller.build_context(),
-                on_event=progress.on_event,
-                permission_mode=controller.permission,
-                confirm_command=confirm_command,
-                ask_user=ask_user,
-            ),
-            trace_factory=lambda: (
-                RunTrace(trace_dir=trace_dir, fixed_name=controller.trace_prefix)
-                if controller.trace_pinned
-                else RunTrace(trace_dir=trace_dir, name=controller.trace_prefix)
-            ),
-            input_fn=chat_input,
-            print_fn=lambda text: console.print(text, markup=False),
-            session=session,
-            answer_fn=lambda answer: console.print(_answer_panel(answer)),
-            summary_fn=_on_turn_summary,
-            command_fn=controller.handle,
-            agent_setup_fn=controller.apply_to_agent,
-            progress=progress,
-        )
+        with tempfile.TemporaryDirectory(prefix="breeze-sides-") as side_dir:
+            side_root = Path(side_dir)
+
+            def _side_agent(trace):
+                return Agent(
+                    llm=controller.llm,
+                    trace=trace,
+                    max_steps=controller.max_steps,
+                    max_edit_failures=controller.max_edit_failures,
+                    context=controller.build_context(),
+                    on_event=progress.on_event,
+                    permission_mode=controller.permission,
+                    read_only=True,
+                )
+
+            def _side_trace(task_id):
+                return RunTrace(trace_dir=side_root, name=f"side-{task_id}")
+
+            def _side_sync(agent):
+                # 侧任务保留自己的 messages/state/context，只同步主对话的运行时参数。
+                agent.llm = controller.llm
+                agent.max_steps = controller.max_steps
+                agent.max_edit_failures = controller.max_edit_failures
+
+            exit_code = run_chat(
+                agent_factory=lambda trace: Agent(
+                    llm=controller.llm,
+                    trace=trace,
+                    max_steps=controller.max_steps,
+                    max_edit_failures=controller.max_edit_failures,
+                    context=controller.build_context(),
+                    on_event=progress.on_event,
+                    permission_mode=controller.permission,
+                    confirm_command=confirm_command,
+                    ask_user=ask_user,
+                ),
+                trace_factory=lambda: (
+                    RunTrace(trace_dir=trace_dir, fixed_name=controller.trace_prefix)
+                    if controller.trace_pinned
+                    else RunTrace(trace_dir=trace_dir, name=controller.trace_prefix)
+                ),
+                input_fn=chat_input,
+                print_fn=lambda text: console.print(text, markup=False),
+                session=session,
+                answer_fn=lambda answer: console.print(_answer_panel(answer)),
+                summary_fn=_on_turn_summary,
+                command_fn=controller.handle,
+                agent_setup_fn=controller.apply_to_agent,
+                progress=progress,
+                side_agent_factory=_side_agent,
+                side_trace_factory=_side_trace,
+                side_setup_fn=_side_sync,
+            )
         if summaries:
             _print_chat_summary(summaries)
     except typer.Exit:

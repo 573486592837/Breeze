@@ -1231,3 +1231,36 @@ def test_ask_user_callback_keeps_free_text() -> None:
     ask = cli_module._ask_user_callback(console, lambda _: "用 DuckDB")
 
     assert ask("用哪个数据库？", ["SQLite", "Postgres"]) == "用 DuckDB"
+
+
+def test_chat_side_task_isolated_from_session_and_traces(repo: Path, tmp_path: Path) -> None:
+    """侧任务不写主会话，也不把 trace 写进仓库 trace 目录。"""
+    session_dir = tmp_path / "sessions"
+    trace_dir = tmp_path / "traces"
+
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(trace_dir),
+            "--session-dir",
+            str(session_dir),
+        ],
+        input="/side 看看配置加载\n/close\nhello\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "(side s1 started)" in result.stdout
+    assert result.stdout.count("fake answer") == 2
+    assert "closed s1" in result.stdout
+
+    session_file = next(session_dir.glob("*.jsonl"))
+    events = [json.loads(line) for line in session_file.read_text(encoding="utf-8").splitlines()]
+    turns = [event for event in events if event["event"] == "turn"]
+    assert [turn["question"] for turn in turns] == ["hello"]
+
+    traces = list(trace_dir.glob("*.jsonl"))
+    assert [trace.name for trace in traces] == [f"{session_file.stem}.jsonl"]
