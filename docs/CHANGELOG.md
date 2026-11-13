@@ -1273,7 +1273,10 @@ doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示
 退出码与启动提示开关。全量 780 passed / 2 skipped，`ruff check` 与
 `ruff format --check` 全绿；`breeze.__version__` 与 packaging 测试同步到 1.7.0。
 
-## 需求澄清与 ask_user（未发布）
+## 需求澄清与 ask_user (v1.8.0)
+
+v1.7.0 之后新增的会话交互能力：需求有歧义时先问再动手，澄清结论随回合归档。
+不改变工具权限边界与上下文压缩策略。
 
 ### ask_user 工具
 
@@ -1303,4 +1306,5 @@ doctor 单测覆盖通过/失败项、密钥不泄露、硅基流动前缀提示
 
 新增 Agent 提问/空回答/每回合上限/非交互隐藏、CLI 编号选择与自由文本、
 `TurnRecord` 往返与旧会话兼容测试；全量 789 passed / 2 skipped，
-`ruff check` 与 `ruff format --check` 全绿。
+`ruff check` 与 `ruff format --check` 全绿；`breeze.__version__` 与
+packaging 测试同步到 1.8.0。
