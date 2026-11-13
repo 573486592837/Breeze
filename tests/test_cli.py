@@ -2,10 +2,12 @@
 
 import json
 import re
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from breeze import cli as cli_module
@@ -179,15 +181,17 @@ def test_ask_custom_max_steps_and_permission(repo: Path, tmp_path: Path) -> None
     original_agent = cli_module.Agent
 
     class CapturingAgent:
-        def __init__(self, llm, trace, max_steps, on_event=None, permission_mode=None):
+        def __init__(self, llm, trace, max_steps, on_event=None, permission_mode=None, ask_user=None):
             captured["max_steps"] = max_steps
             captured["permission_mode"] = permission_mode
+            captured["ask_user"] = ask_user
             self._inner = original_agent(
                 llm=llm,
                 trace=trace,
                 max_steps=max_steps,
                 on_event=on_event,
                 permission_mode=permission_mode,
+                ask_user=ask_user,
             )
 
         def run(self, question):
@@ -216,6 +220,7 @@ def test_ask_custom_max_steps_and_permission(repo: Path, tmp_path: Path) -> None
     assert result.exit_code == 0
     assert captured["max_steps"] == 3
     assert captured["permission_mode"] == "open"
+    assert captured["ask_user"] is None
 
 
 def test_ask_rejects_invalid_permission(repo: Path, tmp_path: Path) -> None:
@@ -1206,3 +1211,23 @@ def test_reasoning_preview_keeps_tail_and_caps_lines() -> None:
     assert preview.splitlines()[-1] == "line 29"
     assert len(preview.splitlines()) <= _TurnProgress._REASONING_LINES
     assert not preview.startswith("line 0")
+
+
+def test_ask_user_callback_maps_numbered_choice() -> None:
+    """用户输入编号时，把选项文本交给模型而不是数字本身。"""
+    prompts: list[str] = []
+    console = Console(file=StringIO(), force_terminal=False)
+    ask = cli_module._ask_user_callback(console, lambda prompt: prompts.append(prompt) or "2")
+
+    answer = ask("用哪个数据库？", ["SQLite", "Postgres"])
+
+    assert answer == "Postgres"
+    assert prompts == ["Answer> "]
+
+
+def test_ask_user_callback_keeps_free_text() -> None:
+    """非编号输入原样返回，支持用户补充自定义答案。"""
+    console = Console(file=StringIO(), force_terminal=False)
+    ask = cli_module._ask_user_callback(console, lambda _: "用 DuckDB")
+
+    assert ask("用哪个数据库？", ["SQLite", "Postgres"]) == "用 DuckDB"

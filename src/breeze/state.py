@@ -16,7 +16,7 @@ TurnLedger 记录已完成的问答回合（问题折叠为一行、答案保留
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from breeze.config import settings
@@ -347,12 +347,15 @@ class TurnRecord:
         question: 用户问题。
         answer: 该回合的最终答案。
         touched: 该回合触碰过的文件路径列表。
+        clarifications: 该回合向用户确认过的问题与回答；回答影响后续实现，
+            需要随回合归档进入下一轮，否则接续时会丢失需求约束。
     """
 
     index: int
     question: str
     answer: str
     touched: list[str]
+    clarifications: list[tuple[str, str]] = field(default_factory=list)
 
 
 class TurnLedger:
@@ -392,13 +395,20 @@ class TurnLedger:
         self.max_records = max_records or settings.chat_max_records
         self.max_chars = max_chars or settings.chat_max_chars
 
-    def record(self, question: str, answer: str, touched: list[str]) -> None:
+    def record(
+        self,
+        question: str,
+        answer: str,
+        touched: list[str],
+        clarifications: list[tuple[str, str]] | None = None,
+    ) -> None:
         """归档一个刚完成的回合。
 
         Args:
             question: 该回合的用户问题。
             answer: 该回合的最终答案。
             touched: 该回合读过或改过的文件路径。
+            clarifications: 该回合向用户确认过的问题与回答。
         """
         self.records.append(
             TurnRecord(
@@ -406,6 +416,7 @@ class TurnLedger:
                 question=_fold(question, 200),
                 answer=_clip(answer, self.answer_preview),
                 touched=list(dict.fromkeys(touched)),
+                clarifications=[(_fold(q, 200), _fold(a, 300)) for q, a in (clarifications or [])],
             )
         )
 
@@ -434,6 +445,8 @@ class TurnLedger:
     def _block(rec: TurnRecord) -> str:
         """渲染单条回合记录。"""
         lines = [f"Turn {rec.index} Q: {rec.question}", f"Turn {rec.index} A: {rec.answer}"]
+        for question, answer in rec.clarifications:
+            lines.append(f"Turn {rec.index} clarified: {question} → {answer}")
         if rec.touched:
             files = ", ".join(rec.touched[:8])
             more = f" (+{len(rec.touched) - 8} more)" if len(rec.touched) > 8 else ""

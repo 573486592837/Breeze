@@ -10,6 +10,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -153,12 +154,14 @@ def ask(
 
         with RunTrace(trace_dir=trace_dir, name=trace_name) as trace:
             progress = _TurnProgress(console)
+            ask_user = _ask_user_callback(console, input, progress) if sys.stdin.isatty() else None
             agent = Agent(
                 llm=llm,
                 trace=trace,
                 max_steps=max_steps,
                 on_event=progress.on_event,
                 permission_mode=permission,
+                ask_user=ask_user,
             )
 
             if not quiet:
@@ -356,6 +359,8 @@ def chat(
             return answer in {"y", "yes"}
 
         confirm_command = _confirm_command if sys.stdin.isatty() else None
+        chat_input = make_chat_input()
+        ask_user = _ask_user_callback(console, chat_input, progress) if sys.stdin.isatty() else None
 
         exit_code = run_chat(
             agent_factory=lambda trace: Agent(
@@ -367,13 +372,14 @@ def chat(
                 on_event=progress.on_event,
                 permission_mode=controller.permission,
                 confirm_command=confirm_command,
+                ask_user=ask_user,
             ),
             trace_factory=lambda: (
                 RunTrace(trace_dir=trace_dir, fixed_name=controller.trace_prefix)
                 if controller.trace_pinned
                 else RunTrace(trace_dir=trace_dir, name=controller.trace_prefix)
             ),
-            input_fn=make_chat_input(),
+            input_fn=chat_input,
             print_fn=lambda text: console.print(text, markup=False),
             session=session,
             answer_fn=lambda answer: console.print(_answer_panel(answer)),
@@ -625,6 +631,36 @@ class _TurnProgress:
             if self._status is not None:
                 self._status.stop()
                 self._status = None
+
+
+def _ask_user_callback(
+    console: Console,
+    read: Callable[[str], str],
+    progress: _TurnProgress | None = None,
+) -> Callable[[str, list[str] | None], str]:
+    """构造 ask_user 的终端回调：展示问题与候选，返回选项文本或原始回答。"""
+
+    def ask(question: str, options: list[str] | None) -> str:
+        # Agent 可能正显示状态行；提问前先收起，避免 input 与动态状态重叠。
+        if progress is not None:
+            progress.stop()
+        console.print()
+        console.print("[cyan]Agent 提问：[/cyan]")
+        console.print(question, markup=False)
+        choices = [str(option) for option in (options or [])][:4]
+        for index, option in enumerate(choices, 1):
+            console.print(f"  {index}. {option}", markup=False)
+        try:
+            answer = read("Answer> ").strip()
+        except EOFError:
+            return ""
+        if choices and answer.isdigit():
+            picked = int(answer) - 1
+            if 0 <= picked < len(choices):
+                return choices[picked]
+        return answer
+
+    return ask
 
 
 def _answer_panel(answer: str) -> Panel:

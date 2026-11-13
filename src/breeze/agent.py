@@ -31,6 +31,8 @@ _ReadMeta = tuple[str, int, int | None, int | None, bool]
 # 同一路径的读取在副本仍可见时连续被抑制到第 3 次，说明模型没有在使用上下文，
 # 继续循环只会空耗步数；直接结束本回合并报告未完成。
 _MAX_DUPLICATE_READ_SUPPRESSIONS = 3
+# 单个用户回合内允许的提问次数：足以澄清需求，又不至于把任务拖成采访。
+_MAX_ASK_USER_QUESTIONS = 5
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -286,13 +288,15 @@ def _adapt_shell_rule(prompt: str, permission_mode: str) -> str:
     return prompt
 
 
-def _enabled_tool_names(capabilities: Capabilities) -> frozenset[str]:
-    """按环境能力裁剪工具集。"""
+def _enabled_tool_names(capabilities: Capabilities, interactive: bool = False) -> frozenset[str]:
+    """按环境能力裁剪工具集；非交互会话不下发 ask_user。"""
     names = set(registry.TOOLS)
     if not capabilities.git_tools:
         names.discard("git_restore")
     if not capabilities.python_project:
         names.discard("run_tests")
+    if not interactive:
+        names.discard("ask_user")
     return frozenset(names)
 
 
@@ -345,11 +349,23 @@ def _edit_limit_rule(limit: int) -> str:
     )
 
 
+def _ask_user_rule() -> str:
+    """生成 ask_user 的可用性说明；仅在交互式会话追加。"""
+    return (
+        "17. 需求存在会改变实现、范围或验收标准的歧义时，用 ask_user 向用户确认；"
+        "能从仓库或工具确认的事实不要问，也不要用它请求执行许可或确认计划。"
+        "一次只问一个最关键的问题，可以把候选方案放进 options；"
+        f"本回合最多问 {_MAX_ASK_USER_QUESTIONS} 个。用户未回答时按最合理假设继续，"
+        "并在最终答案中说明假设。"
+    )
+
+
 def default_system_prompt(
     capabilities: Capabilities | None = None,
     permission_mode: str | None = None,
     max_edit_failures: int | None = None,
     include_instructions: bool = True,
+    interactive: bool = False,
 ) -> str:
     """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
 
@@ -360,6 +376,7 @@ def default_system_prompt(
         include_instructions: 是否把 AGENTS.md 拼进返回值。Agent 使用独立
             system 消息注入指引，因此传 False；直接调用本函数的场景保持
             原有行为。
+        interactive: 是否有可交互用户；为 True 时追加 ask_user 使用规则。
     """
     caps = capabilities if capabilities is not None else detect(settings.repo_root)
     mode = (permission_mode or settings.shell_permission).lower()
@@ -367,6 +384,8 @@ def default_system_prompt(
     prompt = _adapt_shell_rule(_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), mode)
     prompt = _adapt_test_rules(prompt, caps)
     prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
+    if interactive:
+        prompt = f"{prompt}\n{_ask_user_rule()}\n"
     parts = [prompt, _environment_note(caps)]
     if include_instructions:
         instructions, _ = load_project_instructions()
@@ -494,6 +513,7 @@ class Agent:
         capabilities: Capabilities | None = None,
         permission_mode: str | None = None,
         confirm_command: Callable[[str], bool] | None = None,
+        ask_user: Callable[[str, list[str] | None], str] | None = None,
     ) -> None:
         """初始化 Agent。
 
@@ -511,13 +531,18 @@ class Agent:
             capabilities: 环境能力；None 时探测 settings.repo_root。
             permission_mode: run_shell 权限模式（strict / confirm / open）。
             confirm_command: confirm 模式下询问用户是否允许命令的回调。
+            ask_user: 读取用户澄清回答的回调；None 表示非交互会话，不下发
+                ask_user 工具。
         """
         self.llm = llm
         self.trace = trace
         self.on_event = on_event
         self._custom_capabilities = capabilities is not None
         self.capabilities = capabilities if capabilities is not None else detect(settings.repo_root)
-        self.tool_names = _enabled_tool_names(self.capabilities)
+        self.ask_user = ask_user
+        self._clarifications: list[tuple[str, str]] = []
+        self._questions_this_turn = 0
+        self.tool_names = _enabled_tool_names(self.capabilities, interactive=ask_user is not None)
         mode = (permission_mode or settings.shell_permission).lower()
         if mode not in PERMISSION_MODES:
             raise ValueError(f"Invalid permission mode: {mode}. Choose from {', '.join(PERMISSION_MODES)}.")
@@ -536,6 +561,7 @@ class Agent:
                 self.permission_mode,
                 max_edit_failures=self.max_edit_failures,
                 include_instructions=False,
+                interactive=ask_user is not None,
             )
         )
         self.project_instructions = self._load_project_instructions()
@@ -567,6 +593,8 @@ class Agent:
         self.messages.append({"role": "user", "content": question})
         turn_start = len(self.messages) - 1
         self.state.start_turn()
+        self._clarifications = []
+        self._questions_this_turn = 0
 
         edits_this_turn = 0
         edit_failures = 0
@@ -952,7 +980,7 @@ class Agent:
         if caps == self.capabilities:
             return False
         self.capabilities = caps
-        self.tool_names = _enabled_tool_names(caps)
+        self.tool_names = _enabled_tool_names(caps, interactive=self.ask_user is not None)
         return True
 
     def _refresh_capabilities_after_write(self) -> None:
@@ -981,6 +1009,7 @@ class Agent:
             self.permission_mode,
             max_edit_failures=self.max_edit_failures,
             include_instructions=False,
+            interactive=self.ask_user is not None,
         )
         self.project_instructions = self._load_project_instructions()
 
@@ -1001,6 +1030,8 @@ class Agent:
         self.state = SessionState()
         self.snapshots.clear()
         self.context.reset()
+        self._clarifications = []
+        self._questions_this_turn = 0
         self._refresh_default_prompt()
 
     def _guard_missing_edits(self, step: int, answer: str, edits_this_turn: int) -> str:
@@ -1129,7 +1160,8 @@ class Agent:
                     touched.append(path)
 
         self._capture_snapshots(touched, edited_paths or [], len(self.ledger.records) + 1)
-        self.ledger.record(question, answer, touched)
+        self.ledger.record(question, answer, touched, clarifications=self._clarifications)
+        self._clarifications = []
         return answer
 
     def _capture_snapshots(self, touched: list[str], edited: list[str], turn: int) -> None:
@@ -1503,6 +1535,8 @@ class Agent:
         try:
             if tc.name == "run_shell":
                 result = self._execute_shell(arguments, step)
+            elif tc.name == "ask_user":
+                result = self._ask_user(arguments)
             else:
                 result = registry.execute(tc.name, arguments)
             exception_error = None
@@ -1548,6 +1582,30 @@ class Agent:
 
         self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         return (None if exception_error is not None else result), argument_error
+
+    def _ask_user(self, arguments: dict[str, Any]) -> str:
+        """把模型的问题交给注入的回调，并把回答作为工具结果返回。"""
+        question = arguments.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return "Error: ask_user requires a non-empty 'question' string."
+        raw_options = arguments.get("options")
+        options = None
+        if isinstance(raw_options, list):
+            options = [str(option) for option in raw_options[:4]]
+        if self.ask_user is None:
+            return "Error: ask_user is unavailable in this non-interactive session."
+        if self._questions_this_turn >= _MAX_ASK_USER_QUESTIONS:
+            return (
+                f"Error: ask_user limit reached ({_MAX_ASK_USER_QUESTIONS} questions per turn); "
+                "proceed with the most reasonable assumption and state it in the final answer."
+            )
+
+        self._questions_this_turn += 1
+        answer = str(self.ask_user(question.strip(), options) or "").strip()
+        self._clarifications.append((question.strip(), answer or "(no answer)"))
+        if not answer:
+            return "User did not answer. Proceed with the most reasonable assumption and state it in the final answer."
+        return f"User answer: {answer}"
 
     def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
         """按权限模式执行 run_shell。
