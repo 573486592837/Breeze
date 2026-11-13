@@ -80,8 +80,10 @@ class ScriptInput:
 
     def __init__(self, lines: list[str]) -> None:
         self.lines = list(lines)
+        self.prompts: list[str] = []
 
     def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
         if not self.lines:
             raise EOFError
         return self.lines.pop(0)
@@ -446,3 +448,144 @@ def test_progress_not_required() -> None:
     code, outputs, _, _ = _run(["hello"], answers=["plain"])
     assert code == 0
     assert "plain" in outputs
+
+
+# ─── 只读侧任务 ───
+
+
+def _run_with_sides(
+    lines: list[str],
+    answers: list[str] | None = None,
+    side_answers: list[str] | None = None,
+    command_fn: Any | None = None,
+) -> tuple[int, list[str], list[StubAgent], list[StubAgent], list[StubTrace], ScriptInput, StubSession]:
+    """执行启用侧任务的 run_chat。"""
+    main_traces: list[StubTrace] = []
+    side_traces: list[StubTrace] = []
+    main_agents: list[StubAgent] = []
+    side_agents: list[StubAgent] = []
+    outputs: list[str] = []
+    script = ScriptInput(lines)
+    session = StubSession()
+
+    def agent_factory(trace: Any) -> StubAgent:
+        agent = StubAgent(trace, list(answers or ["answer"]))
+        main_agents.append(agent)
+        return agent
+
+    def side_agent_factory(trace: Any) -> StubAgent:
+        agent = StubAgent(trace, list(side_answers or ["side-answer"]))
+        side_agents.append(agent)
+        return agent
+
+    def trace_factory() -> StubTrace:
+        trace = StubTrace(len(main_traces) + 1)
+        main_traces.append(trace)
+        return trace
+
+    def side_trace_factory(task_id: str) -> StubTrace:
+        trace = StubTrace(len(side_traces) + 100)
+        trace.task_id = task_id
+        side_traces.append(trace)
+        return trace
+
+    code = run_chat(
+        agent_factory=agent_factory,
+        trace_factory=trace_factory,
+        input_fn=script,
+        print_fn=outputs.append,
+        session=session,
+        command_fn=command_fn,
+        side_agent_factory=side_agent_factory,
+        side_trace_factory=side_trace_factory,
+        side_summary_fn=lambda _summary, task_id, turns: outputs.append(f"[side {task_id} turn {turns}]"),
+    )
+    return code, outputs, main_agents, side_agents, side_traces, script, session
+
+
+def test_side_task_isolated_from_main_conversation() -> None:
+    """侧任务使用独立 Agent，回合不写入主会话与主回合计数。"""
+    code, outputs, main_agents, side_agents, side_traces, script, session = _run_with_sides(
+        ["/side 看看配置", "追问", "/back", "主问题", "/exit"],
+        answers=["main-answer"],
+        side_answers=["side-1", "side-2"],
+    )
+
+    assert code == 0
+    assert len(side_agents) == 1
+    assert side_agents[0].questions == ["看看配置", "追问"]
+    assert [record.question for record in side_agents[0].ledger.records] == ["看看配置", "追问"]
+    assert len(side_traces) == 2
+
+    assert len(main_agents) == 1
+    assert main_agents[0].questions == ["主问题"]
+    assert len(main_agents[0].ledger.records) == 1
+    assert len(session.saved) == 1
+
+    assert "(side s1 started)" in outputs
+    assert "side-1" in outputs
+    assert "(back to main)" in outputs
+    assert "main-answer" in outputs
+    assert script.prompts[0] == "You> "
+    assert "side[s1]> " in script.prompts
+
+
+def test_nested_sides_switch_and_close() -> None:
+    """嵌套侧任务可暂停、切换，close 丢弃当前子树。"""
+    code, outputs, _, side_agents, _, _, _ = _run_with_sides(
+        ["/side a", "/side b", "/sides", "/back", "/sides", "/switch s2", "/close", "/sides", "/exit"],
+        side_answers=["a1", "b1"],
+    )
+
+    assert code == 0
+    assert len(side_agents) == 2
+    trees = [line for line in outputs if line.startswith("main (")]
+    assert "s1 (paused) a" in trees[0]
+    assert "s2 (active) b" in trees[0]
+    assert "s1 (active) a" in trees[1]
+    assert "s2" not in trees[2]
+    assert any("closed s2" in line for line in outputs)
+
+
+def test_side_task_rejects_runtime_config_commands() -> None:
+    """侧任务内不执行主对话的运行时配置命令。"""
+    commands: list[str] = []
+
+    def command_fn(question: str, agent: Any) -> str | None:
+        commands.append(question)
+        return "handled"
+
+    code, outputs, _, side_agents, _, _, _ = _run_with_sides(
+        ["/side a", "/model other", "继续", "/exit"],
+        side_answers=["a1", "a2"],
+        command_fn=command_fn,
+    )
+
+    assert code == 0
+    assert commands == []
+    assert side_agents[0].questions == ["a", "继续"]
+    assert any("runtime config commands are disabled" in line for line in outputs)
+
+
+def test_closed_side_task_cannot_be_reopened() -> None:
+    """close 后节点从内存删除，switch 不能再恢复。"""
+    code, outputs, _, _, _, _, _ = _run_with_sides(
+        ["/side a", "/close", "/switch s1", "/exit"],
+        side_answers=["a1"],
+    )
+
+    assert code == 0
+    assert any("closed s1" in line for line in outputs)
+    assert "(unknown side task: s1)" in outputs
+
+
+def test_new_conversation_discards_side_tasks() -> None:
+    """/new 重置主对话时一并丢弃侧任务树。"""
+    code, outputs, _, _, _, _, _ = _run_with_sides(
+        ["/side a", "/back", "/new", "/sides", "/exit"],
+        side_answers=["a1"],
+    )
+
+    assert code == 0
+    assert "(new conversation)" in outputs
+    assert outputs[-2] == "main (active)"
