@@ -33,6 +33,8 @@ _ReadMeta = tuple[str, int, int | None, int | None, bool]
 _MAX_DUPLICATE_READ_SUPPRESSIONS = 3
 # 单个用户回合内允许的提问次数：足以澄清需求，又不至于把任务拖成采访。
 _MAX_ASK_USER_QUESTIONS = 5
+# 只读侧任务的全部工具：只读取/检索，不执行命令、不写文件。
+_READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "grep"})
 
 # 真实试跑中出现过：模型只读文件就断言"已修复"，并粘贴从未写入的代码。
 # 这里只匹配第一人称的完成声明，避免误伤对既有改动的解释。
@@ -222,14 +224,16 @@ def _parsed_arguments(arguments_json: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _environment_note(capabilities: Capabilities) -> str:
+def _environment_note(capabilities: Capabilities, read_only: bool = False) -> str:
     """生成运行环境说明：仓库根、外部命令与项目类型。
 
     模型常在缺少外部命令时反复试错（例如机器没装 ripgrep 却用 run_shell 调
     rg，再改用被白名单拒绝的 find）。提前告诉它哪些命令可用，可以省掉这些步数。
+    只读任务不提外部命令，避免暗示可以用 run_shell。
 
     Args:
         capabilities: 启动时探测到的环境能力。
+        read_only: 是否为只读侧任务。
 
     Returns:
         多行说明文本，且不含可变的时间戳等内容。
@@ -241,6 +245,9 @@ def _environment_note(capabilities: Capabilities) -> str:
     if settings.tools_read_roots:
         roots = "、".join(str(path) for path in settings.tools_read_roots)
         lines.append(f"只读参考目录：{roots}（可读，不可写）")
+    if read_only:
+        lines.append("当前是只读侧任务：只能使用 list_files / read_file / grep。")
+        return "运行环境：\n" + "\n".join(f"- {line}" for line in lines)
     if missing:
         lines.append(
             f"外部命令可用：{'、'.join(available) if available else '无'}；"
@@ -288,8 +295,14 @@ def _adapt_shell_rule(prompt: str, permission_mode: str) -> str:
     return prompt
 
 
-def _enabled_tool_names(capabilities: Capabilities, interactive: bool = False) -> frozenset[str]:
-    """按环境能力裁剪工具集；非交互会话不下发 ask_user。"""
+def _enabled_tool_names(
+    capabilities: Capabilities,
+    interactive: bool = False,
+    read_only: bool = False,
+) -> frozenset[str]:
+    """按环境能力裁剪工具集；非交互会话不下发 ask_user，只读模式仅保留读工具。"""
+    if read_only:
+        return frozenset(registry.TOOLS) & _READ_ONLY_TOOLS
     names = set(registry.TOOLS)
     if not capabilities.git_tools:
         names.discard("git_restore")
@@ -360,12 +373,20 @@ def _ask_user_rule() -> str:
     )
 
 
+_READ_ONLY_RULE = """只读侧任务规则：
+1. 你只能使用 list_files / read_file / grep 读取与检索仓库，不能修改文件。
+2. 不要尝试 apply_patch / create_file / delete_path / run_shell / run_tests，这些工具不可用。
+3. 回答必须自包含，引用文件路径与行号；结论不会进入主对话上下文。
+4. 用户要求修改时，说明当前是只读侧任务，建议回到主对话执行。"""
+
+
 def default_system_prompt(
     capabilities: Capabilities | None = None,
     permission_mode: str | None = None,
     max_edit_failures: int | None = None,
     include_instructions: bool = True,
     interactive: bool = False,
+    read_only: bool = False,
 ) -> str:
     """默认系统提示，附带当前运行环境说明与仓库级 AGENTS.md 指引。
 
@@ -377,16 +398,21 @@ def default_system_prompt(
             system 消息注入指引，因此传 False；直接调用本函数的场景保持
             原有行为。
         interactive: 是否有可交互用户；为 True 时追加 ask_user 使用规则。
+        read_only: 是否为只读侧任务；为 True 时去掉编辑章节，只保留读取/检索规则。
     """
     caps = capabilities if capabilities is not None else detect(settings.repo_root)
     mode = (permission_mode or settings.shell_permission).lower()
     limit = settings.agent_max_edit_failures if max_edit_failures is None else max_edit_failures
-    prompt = _adapt_shell_rule(_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), mode)
-    prompt = _adapt_test_rules(prompt, caps)
-    prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
-    if interactive:
-        prompt = f"{prompt}\n{_ask_user_rule()}\n"
-    parts = [prompt, _environment_note(caps)]
+    if read_only:
+        base = DEFAULT_SYSTEM_PROMPT.split("\n编辑代码时：", 1)[0].rstrip()
+        prompt = f"{base}\n\n{_READ_ONLY_RULE}\n"
+    else:
+        prompt = _adapt_shell_rule(_adapt_git_rules(DEFAULT_SYSTEM_PROMPT, caps), mode)
+        prompt = _adapt_test_rules(prompt, caps)
+        prompt = prompt.replace(_EDIT_LIMIT_RULE, _edit_limit_rule(limit))
+        if interactive:
+            prompt = f"{prompt}\n{_ask_user_rule()}\n"
+    parts = [prompt, _environment_note(caps, read_only=read_only)]
     if include_instructions:
         instructions, _ = load_project_instructions()
         if instructions:
@@ -514,6 +540,7 @@ class Agent:
         permission_mode: str | None = None,
         confirm_command: Callable[[str], bool] | None = None,
         ask_user: Callable[[str, list[str] | None], str] | None = None,
+        read_only: bool = False,
     ) -> None:
         """初始化 Agent。
 
@@ -533,16 +560,23 @@ class Agent:
             confirm_command: confirm 模式下询问用户是否允许命令的回调。
             ask_user: 读取用户澄清回答的回调；None 表示非交互会话，不下发
                 ask_user 工具。
+            read_only: 只读侧任务模式；只下发 list_files/read_file/grep，
+                忽略 ask_user 回调。
         """
         self.llm = llm
         self.trace = trace
         self.on_event = on_event
+        self.read_only = read_only
         self._custom_capabilities = capabilities is not None
         self.capabilities = capabilities if capabilities is not None else detect(settings.repo_root)
-        self.ask_user = ask_user
+        self.ask_user = None if read_only else ask_user
         self._clarifications: list[tuple[str, str]] = []
         self._questions_this_turn = 0
-        self.tool_names = _enabled_tool_names(self.capabilities, interactive=ask_user is not None)
+        self.tool_names = _enabled_tool_names(
+            self.capabilities,
+            interactive=self.ask_user is not None,
+            read_only=read_only,
+        )
         mode = (permission_mode or settings.shell_permission).lower()
         if mode not in PERMISSION_MODES:
             raise ValueError(f"Invalid permission mode: {mode}. Choose from {', '.join(PERMISSION_MODES)}.")
@@ -561,7 +595,8 @@ class Agent:
                 self.permission_mode,
                 max_edit_failures=self.max_edit_failures,
                 include_instructions=False,
-                interactive=ask_user is not None,
+                interactive=self.ask_user is not None,
+                read_only=read_only,
             )
         )
         self.project_instructions = self._load_project_instructions()
@@ -980,7 +1015,11 @@ class Agent:
         if caps == self.capabilities:
             return False
         self.capabilities = caps
-        self.tool_names = _enabled_tool_names(caps, interactive=self.ask_user is not None)
+        self.tool_names = _enabled_tool_names(
+            caps,
+            interactive=self.ask_user is not None,
+            read_only=self.read_only,
+        )
         return True
 
     def _refresh_capabilities_after_write(self) -> None:
@@ -1010,6 +1049,7 @@ class Agent:
             max_edit_failures=self.max_edit_failures,
             include_instructions=False,
             interactive=self.ask_user is not None,
+            read_only=self.read_only,
         )
         self.project_instructions = self._load_project_instructions()
 
@@ -1502,6 +1542,22 @@ class Agent:
             编辑失败次数。
         """
         self._emit(AgentEvent("tool_start", step, tool=tc.name))
+
+        # schema 只是提示：模型仍可能幻觉调用未下发/只读模式禁止的工具。
+        # 必须在执行层拒绝，否则“隐藏工具”不构成安全边界。
+        if tc.name not in self.tool_names:
+            result = f"Error: tool '{tc.name}' is not available in this session."
+            self.trace.log_tool(
+                step=step,
+                tool=tc.name,
+                arguments={"raw": tc.arguments_json},
+                result=result,
+                latency_ms=0.0,
+                error=result,
+            )
+            self._emit(AgentEvent("tool_end", step, tool=tc.name, ok=False, detail=result))
+            self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            return None, False
 
         def finish(result: str, error: str | None, *, argument_error: bool) -> tuple[None, bool]:
             if argument_error and tc.name in ("apply_patch", "create_file"):

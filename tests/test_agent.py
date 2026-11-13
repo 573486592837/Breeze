@@ -2436,3 +2436,56 @@ def test_default_system_prompt_mentions_ask_user_only_when_interactive() -> None
     assert "ask_user" in interactive
     assert "最多问 5 个" in interactive
     assert "ask_user" not in automatic
+
+
+# ─── 只读模式 ───
+
+
+def test_read_only_agent_only_exposes_read_tools(trace: RunTrace) -> None:
+    """只读侧任务只下发读取/检索工具，写工具与命令执行全部隐藏。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        capabilities=_caps(),
+        read_only=True,
+        ask_user=lambda *_: "不该注册",
+    )
+    agent.run("hi")
+
+    assert _tool_names(llm) == {"list_files", "read_file", "grep"}
+
+
+def test_read_only_agent_rejects_hidden_write_tool(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型幻觉调用隐藏工具时，执行层拒绝而不是真的写文件。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "evil.txt", "content": "x"}),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), read_only=True)
+    assert agent.run("go") == "done"
+
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "not available in this session" in tool_messages[-1]
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_read_only_prompt_drops_edit_section() -> None:
+    """只读提示词不包含编辑章节，并明确列出可用工具。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), include_instructions=False, read_only=True)
+
+    assert "编辑代码时" not in prompt
+    assert "只读侧任务规则" in prompt
+    assert "list_files / read_file / grep" in prompt
+    assert "run_shell" not in prompt.split("只读侧任务规则")[0]
