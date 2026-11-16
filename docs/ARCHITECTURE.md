@@ -77,9 +77,10 @@ flowchart TB
 | 文件 | 核心对象 | 职责 | 关键约束 |
 |---|---|---|---|
 | `cli.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
-| `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘 | 与 CLI 解耦，依赖可注入 |
+| `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘、侧任务输入分发 | 与 CLI 解耦，依赖可注入 |
+| `side.py` | `SideTree` / `SideTask` | 主对话下的一层只读分支：创建、暂停、切换、关闭 | 不持久化、无 resume；退出丢弃所有分支 |
 | `chat_commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
-| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复 | 默认 25 步、连续编辑失败 3 次 |
+| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复、只读模式 | 默认 25 步、连续编辑失败 3 次 |
 | `context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
 | `state.py` | `SessionState` / `TurnLedger` | 从真实工具结果提取事实；跨回合归档问答结论 | 不采信模型自述 |
 | `session.py` | `SessionStore` | append-only JSONL，恢复 ledger/state/config | 空会话不落盘 |
@@ -203,14 +204,18 @@ body          assistant ↔ tool 的完整往返
 plan          update_plan 的当前计划（非空时）
 state         SessionState（降级或回合启动时注入完整状态；
               未降级时只注入本回合重复读取警示）
-budget        剩余预算与仍可见的 read_file 工作集（每轮）
-continuation  最后一条是 system 时补的短 user 消息
+budget        剩余预算与仍可见的 read_file 工作集（用量过半后）
+continuation  最后一条是 system 时补的短 user 消息（本回合无工具轮时
+              请求回答提问，否则提示继续）
 ```
 
 `plan` 与 `state` 放在末尾，是为了让计划/索引变化不切断前面的缓存前缀；
 `state` 的完整块只在发生降级或回合启动时注入，未压缩回合只保留重复读取提醒，
-避免占用预算或把历史读取计数误当成当前事实。`budget` 块随剩余预算变化，
-因此放在 `state` 之后、`continuation` 之前。
+避免占用预算或把历史读取计数误当成当前事实。`budget` 块只在实测用量超过
+`hard_budget` 一半后注入：余量充足时它不影响决策，省略还能让小回合不以
+`system` 结尾。收尾消息按本回合是否已有 `assistant`/`tool` 消息自适应：
+首轮提问或新回合第一次调用用“请回答我上一条消息。”，已有工具轮才用
+“继续当前任务。”，避免把续跑指令误当成新任务。
 
 ### 5.2 两级预算与降级流程
 
@@ -319,6 +324,34 @@ flowchart LR
 | `SessionState` | 符号位置、最近读取范围、编辑结果、测试摘要、计划 | 本回合读取计数（不落盘） | 降级后仍能定点重读/编辑 |
 | `SessionStore` | 两者的持久化快照 | trace 级细节 | 进程退出后可 `--resume` |
 
+### 6.4 只读侧任务
+
+侧任务用于在主对话之外临时查资料。结构是主对话下的一层内存分支，不支持
+分支再嵌套：
+
+```mermaid
+flowchart LR
+    M[main] --> S1[s1 只读分支]
+    M --> S2[s2 paused]
+    M --> S3[s3 paused]
+```
+
+- `SideTree` 只保存在当前进程；每个分支记录独立 Agent、问题与回合数。
+- 创建分支时 `Agent.inherit_context()` 深拷贝主 Agent 的 messages、TurnLedger、
+  SessionState 与 SnapshotStore；分支看到的是派生时刻的主对话上下文，之后
+  双方互不影响。主对话后续新增的回合不会回填到已创建的分支。
+- `/side` 只能在主 `You>` 提示符使用；分支内不支持再派生分支。`/back` 暂停
+  当前分支并回到主对话，`/switch` 切到任意保留分支，`/close` 丢弃当前分支。
+- 程序退出时所有分支一并丢弃，只有主对话写入 `SessionStore` 并可按原会话
+  恢复；侧任务没有 `--resume`。
+- 每个侧任务使用独立 `Agent`（messages / SessionState / TurnLedger /
+  SnapshotStore），主 Agent 不被读写；侧任务回合不调用 `SessionStore`，
+  不进入主回合摘要。
+- 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
+- 同一时刻只有一个活动分支；多个侧任务并存时只能切换，不做并行执行。
+- 分支内只保留 `/sides`、`/back`、`/close`、`/switch`、`/help`、`/exit`；
+  运行时配置命令禁用。`ask_user`/confirm 等待点暂不支持切入侧任务。
+
 ## 7. 工具执行与权限
 
 ```mermaid
@@ -363,6 +396,11 @@ flowchart TD
 作为工具结果返回，并计入每回合 5 次的上限；没有回调（管道、评估、测试）时
 该工具不会出现在 schema 中，模型只能按已有信息继续。
 
+执行前还会校验 `tc.name in self.tool_names`。被能力裁剪、非交互 `ask_user`
+或只读模式隐藏的工具，即使模型幻觉调用也直接返回
+`Error: tool '...' is not available in this session.`，不会进入
+`registry.execute`——schema 是提示，不是安全边界。
+
 三种权限模式都保留的边界：
 
 - `shell=False`，一次只执行一条命令；未加引号的 `; | & < >` 一律拒绝。
@@ -387,6 +425,9 @@ flowchart LR
     H -- 否 --> I[移除 ask_user]
     H -- 是 --> J[保留 ask_user<br/>提示词追加提问规则]
 ```
+
+`read_only=True` 时跳过上述能力裁剪，工具集直接收敛为
+`{list_files, read_file, grep}`；system prompt 去掉编辑章节，只保留只读规则。
 
 `_refresh_capabilities_after_write()` 只在当前缺少 Python 项目时重新探测，
 因为写操作可能刚创建 `pyproject.toml` 等标记；能力变化会同步工具集与 system prompt。

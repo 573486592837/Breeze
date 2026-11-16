@@ -1308,3 +1308,73 @@ v1.7.0 之后新增的会话交互能力：需求有歧义时先问再动手，�
 `TurnRecord` 往返与旧会话兼容测试；全量 789 passed / 2 skipped，
 `ruff check` 与 `ruff format --check` 全绿；`breeze.__version__` 与
 packaging 测试同步到 1.8.0。
+
+## 上下文预算提示与收尾消息（未发布）
+
+### 预算提示只在中后段注入
+
+此前每次构建提示词都会在末尾追加 `system` 预算提示，即使只发一句“你好”。
+实测余量充足时这段提示对决策没有帮助，还会让小回合多出一条 `system` 尾巴。
+现在只在消息用量超过 `hard_budget` 一半后注入；提示内容与降级规则不变。
+
+### 收尾消息自适应
+
+部分网关在最后一条消息是 `system` 时返回空内容，因此尾部仍需补一条 user
+消息。此前固定使用“继续当前任务。”，首轮无前文时模型会把它当成新任务并开始
+探索环境。现在按本回合是否已有 `assistant`/`tool` 消息区分：
+
+- 还没有工具轮（首轮提问、新回合第一次调用）→“请回答我上一条消息。”；
+- 已有工具调用或结果 → 保持“继续当前任务。”。
+
+`ContextManager.build` / `build_with_stats` 新增 `turn_has_activity` 参数；
+Agent 从本回合起点之后的消息判断，append 模式下不会把上一回合的工具轮误算进来。
+
+### 验证
+
+新增预算过半阈值、首轮省略/注入、两种收尾消息与工具轮判定的测试；更新受
+影响的提示词布局断言。全量 810 passed / 2 skipped，`ruff check` 与
+`ruff format --check`（`src tests breeze_eval`）全绿。
+
+## 只读侧任务 /side（未发布）
+
+### 只读模式
+
+Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep`，
+写工具、`run_shell`、`run_tests` 与 `ask_user` 全部移除；system prompt 去掉
+编辑章节，只保留读取与检索规则。执行层同时校验工具是否在当前工具集中，
+模型绕过 schema 调用隐藏工具时返回明确错误，而不是真的执行。
+
+### 侧任务分支
+
+`breeze chat` 新增 `/side <问题>`，从主对话派生一层只读侧任务分支：
+
+- 创建分支时深拷贝主 Agent 的 messages、TurnLedger、SessionState 与
+  SnapshotStore，分支从当前主节点继续；之后分支与主对话互不影响，主对话
+  后续新增的回合也不会回填到已创建的分支；
+- `/back` 暂停当前分支并回到主对话；
+- `/sides` 查看分支（active / paused）；
+- `/switch <id|main>` 切回已暂停的分支；
+- `/close` 丢弃当前分支，不可恢复。
+
+侧任务只能从主 `You>` 提示符派生，不支持分支再嵌套。多个侧任务可以并存、
+切换，但同一时刻只有一个活动任务，不做并行执行。侧任务只存在内存中，没有
+`--resume`；关闭或退出程序时所有分支丢弃，仅主对话保留并可照常恢复。
+主对话 `/new` 会一并丢弃所有分支。
+
+### 隔离边界
+
+- 每个侧任务使用独立 Agent（messages / SessionState / TurnLedger /
+  SnapshotStore），分支上下文来自创建时的深拷贝，主 Agent 的上下文与归档
+  不被读写。
+- 侧任务回合不写 `SessionStore`，不计入主回合摘要；主对话模型/步数配置
+  在侧任务每回合前同步，但侧任务内禁用 `/model`、`/set`、`/trace`、
+  `/profile`、`/config`、`/new`。
+- 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
+- 入口只在主 `You>`；分支内只保留 `/sides`、`/back`、`/close`、`/switch`、
+  `/help`、`/exit`。`ask_user` / confirm 等待点暂不支持切入侧任务。
+
+### 验证
+
+新增只读工具集、隐藏工具执行拒绝、只读提示词、分支生命周期、上下文深拷贝
+与隔离、主会话/trace 隔离、侧任务内禁用配置命令与 close 后不可恢复测试；
+全量 813 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。

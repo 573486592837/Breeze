@@ -47,6 +47,10 @@ POINTER_TOOLS: frozenset[str] = frozenset({"grep", "list_files"})
 # 是 system 时会直接 finish_reason=stop 并返回空内容。元状态之后补一条不含新
 # 要求的短 user 消息，保证请求以可回应的角色结束。
 _CONTINUATION_PROMPT = "继续当前任务。"
+# 本回合还没有任何 assistant/tool 消息时（首轮提问、新回合第一次调用），
+# context 里没有可“继续”的任务；此时请求模型回答上一条提问，避免它把续跑
+# 指令当成新任务并开始探索环境。
+_REPLY_PROMPT = "请回答我上一条消息。"
 # 小于该字符数的定位结果直接透传：一行指针往往比结果本身还长，
 # 且状态块并不记录目录列表，模型只能反复重跑同一工具。
 POINTER_KEEP_CHARS = 1_000
@@ -476,6 +480,7 @@ class ContextManager:
         include_state: bool = False,
         snapshots: str | None = None,
         instructions: str | None = None,
+        turn_has_activity: bool = True,
     ) -> list[dict[str, Any]]:
         """构建发给 LLM 的消息列表。
 
@@ -488,6 +493,9 @@ class ContextManager:
             include_state: 回合启动时注入上一回合遗留的状态索引。
             snapshots: 回合启动时注入的工作集文件内容；不参与降级。
             instructions: AGENTS.md 渲染块，作为独立 system 消息注入。
+            turn_has_activity: 本回合是否已有 assistant/tool 消息；决定尾部
+                收尾消息是“请回答上一条”还是“继续当前任务”。append 模式
+                需要调用方按回合起点判断，不能从完整历史推断。
 
         Returns:
             分级处理后的消息列表。原始消息不被修改。
@@ -500,6 +508,7 @@ class ContextManager:
             include_state=include_state,
             snapshots=snapshots,
             instructions=instructions,
+            turn_has_activity=turn_has_activity,
         )
         return result
 
@@ -513,6 +522,7 @@ class ContextManager:
         include_state: bool = False,
         snapshots: str | None = None,
         instructions: str | None = None,
+        turn_has_activity: bool = True,
     ) -> tuple[list[dict[str, Any]], PromptStats]:
         """构建消息列表，并返回本次提示词的组成与缓存复用量。
 
@@ -527,7 +537,8 @@ class ContextManager:
             }
             if result and result[-1]["role"] == "system":
                 segments["continuation"] = [len(result)]
-                result.append({"role": "user", "content": _CONTINUATION_PROMPT})
+                prompt = _CONTINUATION_PROMPT if turn_has_activity else _REPLY_PROMPT
+                result.append({"role": "user", "content": prompt})
             return result, self._stats(result, segments)
 
         head = list(messages[:2])
@@ -683,7 +694,8 @@ class ContextManager:
         if budget_note:
             add({"role": "system", "content": budget_note}, "budget")
         if result[-1]["role"] == "system":
-            add({"role": "user", "content": _CONTINUATION_PROMPT}, "continuation")
+            prompt = _CONTINUATION_PROMPT if turn_has_activity else _REPLY_PROMPT
+            add({"role": "user", "content": prompt}, "continuation")
         return result, self._stats(result, segments, demoted_read_ids)
 
     def _apply_frozen_spills(
@@ -826,7 +838,7 @@ class ContextManager:
         id_to_name: dict[str, str],
         id_to_args: dict[str, dict[str, Any]],
     ) -> str:
-        """每轮告诉模型当前消息预算与仍可见的 read_file 工作集。
+        """用量过半后告诉模型当前消息预算与仍可见的 read_file 工作集。
 
         read_file 的淘汰顺序是“旧读取先丢”，模型只有持续看到剩余预算和已读
         文件，才能主动收敛。提示块很小，不参与降级；它放在消息末尾，不切断
@@ -836,6 +848,10 @@ class ContextManager:
         if hard <= 0:
             return ""
         used = self._measure(head, body, state, archive, plan, snapshots, instructions)
+        # 余量充足时这段提示对决策没有帮助；只在过半后注入，顺带让小回合
+        # 不以 system 结尾，也就不会补出多余的收尾消息。
+        if used * 2 <= hard:
+            return ""
 
         reads = 0
         visible = 0

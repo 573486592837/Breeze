@@ -150,8 +150,7 @@ def test_agent_message_flow(trace: RunTrace, fake_tool: None) -> None:
     agent.run("echo xyz")
 
     second = llm.calls[1]["messages"]
-    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool", "system", "user"]
-    assert second[-2]["content"].startswith("[Context budget")
+    assert [m["role"] for m in second] == ["system", "user", "assistant", "tool"]
 
     assistant_msg = second[2]
     assert assistant_msg["tool_calls"][0]["id"] == "c1"
@@ -615,6 +614,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
             include_state: bool = False,
             snapshots=None,
             instructions=None,
+            turn_has_activity: bool = True,
         ):
             seen_state.append(state is not None)
             return super().build_with_stats(
@@ -625,6 +625,7 @@ def test_agent_uses_context_manager(trace: RunTrace, fake_tool: None) -> None:
                 include_state=include_state,
                 snapshots=snapshots,
                 instructions=instructions,
+                turn_has_activity=turn_has_activity,
             )
 
     class RecordingLLM:
@@ -698,8 +699,8 @@ def test_agent_appends_session_plan_after_question(trace: RunTrace) -> None:
     assert messages[1]["content"] == "hi"
     plan_msg = next(m for m in messages[2:] if str(m.get("content", "")).startswith("[Current plan"))
     assert "2. patch" in plan_msg["content"]
-    assert messages[-2]["content"].startswith("[Context budget")
-    assert messages[-1] == {"role": "user", "content": "继续当前任务。"}
+    assert messages[-2] is plan_msg
+    assert messages[-1] == {"role": "user", "content": "请回答我上一条消息。"}
 
 
 def test_agent_append_mode_keeps_previous_turn_messages(trace: RunTrace, fake_tool: None) -> None:
@@ -1192,8 +1193,8 @@ def test_agent_reprompts_when_claiming_edit_without_edits(trace: RunTrace, monke
     assert executed == ["apply_patch"]
 
     roles = [m["role"] for m in llm.calls[1]["messages"]]
-    assert roles[-4:] == ["assistant", "system", "system", "user"]
-    nudge = llm.calls[1]["messages"][-3]["content"]
+    assert roles[-3:] == ["assistant", "system", "user"]
+    nudge = llm.calls[1]["messages"][-2]["content"]
     assert "没有" in nudge
     assert "apply_patch" in nudge
 
@@ -1319,7 +1320,7 @@ def test_agent_recovers_from_empty_final_answer(trace: RunTrace) -> None:
     assert agent.run("继续") == "已完成撤销逻辑，界面与测试尚未完成。"
     assert len(llm.calls) == 2
     assert llm.calls[1]["tools"] == []
-    assert "没有内容" in llm.calls[1]["messages"][-3]["content"]
+    assert "没有内容" in llm.calls[1]["messages"][-2]["content"]
     guard_events = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert [e["message"] for e in guard_events] == ["empty final answer; asking for a summary once"]
 
@@ -1380,7 +1381,7 @@ def test_agent_reprompts_when_answer_is_a_plan(trace: RunTrace, fake_tool: None)
 
     assert agent.run("修复测试") == "已修复并验证。"
     assert len(llm.calls) == 3
-    assert "计划" in llm.calls[1]["messages"][-3]["content"]
+    assert "计划" in llm.calls[1]["messages"][-2]["content"]
     guards = [e for e in _events(trace.path) if e["event"] == "guard"]
     assert any("final answer was a plan" in e["message"] for e in guards)
 
@@ -1516,14 +1517,14 @@ def test_agent_second_turn_view_only_grows_within_turn(
     agent.run("q1")
     agent.run("q2")
 
-    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题 + 预算 + 续跑
+    # 第二次回合的首次 LLM 调用：system + 归档 + 当前问题
     roles = [m["role"] for m in llm.calls[2]["messages"]]
-    assert roles == ["system", "system", "user", "system", "user"]
+    assert roles == ["system", "system", "user"]
 
     # 第三次调用带上了本回合的工具轮
     roles = [m["role"] for m in llm.calls[3]["messages"]]
-    assert roles == ["system", "system", "user", "assistant", "tool", "system", "user"]
-    assert "echo: two" in str(llm.calls[3]["messages"][-3]["content"])
+    assert roles == ["system", "system", "user", "assistant", "tool"]
+    assert "echo: two" in str(llm.calls[3]["messages"][-1]["content"])
     assert "echo: one" not in " ".join(str(m.get("content", "")) for m in llm.calls[3]["messages"])
 
 
@@ -1820,9 +1821,7 @@ def test_agent_captures_full_prompt_when_enabled(tmp_path: Path) -> None:
     assert len(records) == 1
     record = records[0]
     assert record["messages"][0]["content"] == "SYS"
-    assert record["messages"][-3]["content"] == "hi"
-    assert record["messages"][-2]["content"].startswith("[Context budget")
-    assert record["messages"][-1] == {"role": "user", "content": "继续当前任务。"}
+    assert record["messages"][-1] == {"role": "user", "content": "hi"}
     assert record["tool_choice"] is None
     assert isinstance(record["temperature"], float)
     assert record["response"]["content"] == "ok"
@@ -2271,7 +2270,7 @@ def test_agent_custom_system_prompt_skips_agents_md(
     agent.run("hi")
 
     assert agent.project_instructions == ""
-    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user", "system", "user"]
+    assert [m["role"] for m in llm.calls[0]["messages"]] == ["system", "user"]
 
 
 def test_agent_emits_reasoning_for_display(trace: RunTrace, fake_tool: None) -> None:
@@ -2436,3 +2435,82 @@ def test_default_system_prompt_mentions_ask_user_only_when_interactive() -> None
     assert "ask_user" in interactive
     assert "最多问 5 个" in interactive
     assert "ask_user" not in automatic
+
+
+# ─── 只读模式 ───
+
+
+def test_read_only_agent_only_exposes_read_tools(trace: RunTrace) -> None:
+    """只读侧任务只下发读取/检索工具，写工具与命令执行全部隐藏。"""
+    llm = FakeLLMClient([_text("ok")])
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        capabilities=_caps(),
+        read_only=True,
+        ask_user=lambda *_: "不该注册",
+    )
+    agent.run("hi")
+
+    assert _tool_names(llm) == {"list_files", "read_file", "grep"}
+
+
+def test_read_only_agent_rejects_hidden_write_tool(
+    trace: RunTrace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型幻觉调用隐藏工具时，执行层拒绝而不是真的写文件。"""
+    from breeze.config import settings
+
+    monkeypatch.setattr(settings, "repo_root", tmp_path)
+    llm = FakeLLMClient(
+        [
+            _tool_call("create_file", {"path": "evil.txt", "content": "x"}),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), read_only=True)
+    assert agent.run("go") == "done"
+
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "not available in this session" in tool_messages[-1]
+    assert not (tmp_path / "evil.txt").exists()
+
+
+def test_read_only_prompt_drops_edit_section() -> None:
+    """只读提示词不包含编辑章节，并明确列出可用工具。"""
+    from breeze.agent import default_system_prompt
+
+    prompt = default_system_prompt(_caps(), include_instructions=False, read_only=True)
+
+    assert "编辑代码时" not in prompt
+    assert "只读侧任务规则" in prompt
+    assert "list_files / read_file / grep" in prompt
+    assert "run_shell" not in prompt.split("只读侧任务规则")[0]
+
+
+def test_inherit_context_copies_main_context_and_stays_isolated(trace: RunTrace) -> None:
+    """分支 Agent 以主对话当前上下文为起点，后续读写互不影响。"""
+    main = Agent(llm=FakeLLMClient([_text("main answer")]), trace=trace)
+    assert main.run("main question") == "main answer"
+    main.state.symbols["foo"] = "a.py:1"
+
+    side = Agent(llm=FakeLLMClient([_text("side answer")]), trace=trace, read_only=True)
+    side.inherit_context(main)
+
+    assert [m["content"] for m in side.messages] == [m["content"] for m in main.messages]
+    assert side.messages is not main.messages
+    assert [record.question for record in side.ledger.records] == ["main question"]
+    assert side.ledger is not main.ledger
+    assert side.state.symbols == {"foo": "a.py:1"}
+    assert side.snapshots is not main.snapshots
+
+    side.state.symbols["bar"] = "b.py:2"
+    side.ledger.record("side q", "side a", [])
+    assert "bar" not in main.state.symbols
+    assert [record.question for record in main.ledger.records] == ["main question"]
+
+    assert side.run("side question") == "side answer"
+    assert main.messages[-1]["content"] == "main answer"
+    assert [record.question for record in main.ledger.records] == ["main question"]
