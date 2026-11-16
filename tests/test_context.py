@@ -86,15 +86,26 @@ def test_cross_turn_invalid_raises() -> None:
         ContextConfig(cross_turn="both")
 
 
-def test_head_only_keeps_original_and_adds_budget() -> None:
-    """只有 system+user 时原消息不变，仅追加预算提示。"""
+def test_head_only_below_half_budget_stays_original() -> None:
+    """只有 system+user 且用量未过半时原样返回，不追加预算或收尾消息。"""
     cm = ContextManager()
     messages = [_system(), _user("q")]
     result = cm.build(messages)
 
-    assert result[:2] == messages
-    assert result[2]["role"] == "system"
-    assert "[Context budget" in result[2]["content"]
+    assert result == messages
+
+
+def test_budget_note_injected_only_after_half_budget() -> None:
+    """用量未过半不注入预算提示，超过一半才注入。"""
+    small = ContextManager(ContextConfig(intra_turn_budget=1_000, hard_budget=1_000))
+    assert small.build([_system(), _user("q")]) == [_system(), _user("q")]
+
+    big = ContextManager(ContextConfig(intra_turn_budget=1_000, hard_budget=1_000))
+    result = big.build([_system(_code_lines(120)), _user("q")])
+
+    assert result[-2]["role"] == "system"
+    assert result[-2]["content"].startswith("[Context budget")
+    assert "1000" in result[-2]["content"]
 
 
 # ─── 定位类结果 ───
@@ -265,7 +276,7 @@ def test_plan_appended_after_content_without_demotion() -> None:
     plan_msg = next(m for m in result if str(m.get("content", "")).startswith("[Current plan"))
     assert plan_msg["role"] == "system"
     assert "2. 改代码" in plan_msg["content"]
-    assert result[-2]["content"].startswith("[Context budget")
+    assert result[-2] is plan_msg
     assert result[-1] == {"role": "user", "content": "继续当前任务。"}
 
 
@@ -400,7 +411,7 @@ def test_archive_injected_between_system_and_question() -> None:
     messages = [_system(), _user("current question")]
     result = cm.build(messages, state=_state(), archive="[Completed turns — 1 most recent of 1]\nTurn 1 Q: old")
 
-    assert [m["role"] for m in result] == ["system", "system", "user", "system", "user"]
+    assert [m["role"] for m in result] == ["system", "system", "user"]
     assert "Completed turns" in result[1]["content"]
     assert result[2]["content"] == "current question"
 
@@ -422,7 +433,7 @@ def test_no_archive_keeps_layout() -> None:
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', _code_lines(5))]
     result = cm.build(messages, state=_state({"target": "a.py:1"}))
 
-    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool", "system", "user"]
+    assert [m["role"] for m in result] == ["system", "user", "assistant", "tool"]
 
 
 def test_archive_counted_in_budget() -> None:
@@ -905,8 +916,7 @@ def test_snapshot_block_injected_and_counted() -> None:
 
     snapshot_msg = next(m for m in result if m.get("content") == block)
     assert snapshot_msg == {"role": "system", "content": block}
-    assert result[-2]["content"].startswith("[Context budget")
-    assert result[-1]["role"] == "user"
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
     assert stats.snapshot_tokens > 0
     assert stats.breakdown()["snapshot"] == stats.snapshot_tokens
 
@@ -997,7 +1007,6 @@ def test_metadata_blocks_use_system_role() -> None:
         "tool",
         "system",
         "system",
-        "system",
         "user",
     ]
     user_msgs = [m for m in result if m["role"] == "user"]
@@ -1009,7 +1018,6 @@ def test_metadata_blocks_use_system_role() -> None:
         "[Working set]",
         "[Current plan",
         "[Session state",
-        "[Context budget",
     ):
         assert marker in metadata
 
@@ -1031,17 +1039,17 @@ def test_instructions_injected_as_separate_system_message() -> None:
 
 
 def test_budget_note_reports_remaining_reads_and_eviction_order() -> None:
-    """每轮预算提示包含剩余量、可见读取文件与旧读取先丢弃的规则。"""
+    """用量过半后，预算提示包含剩余量、可见读取文件与旧读取先丢弃的规则。"""
     body = _code_lines(60)
     messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', body)]
-    cm = ContextManager(ContextConfig(intra_turn_budget=10_000, hard_budget=10_000))
+    cm = ContextManager(ContextConfig(intra_turn_budget=700, hard_budget=700))
 
     result, stats = cm.build_with_stats(messages)
 
     note = result[-2]
     assert note["role"] == "system"
     assert "[Context budget" in note["content"]
-    assert "10000" in note["content"]
+    assert "700" in note["content"]
     assert "left" in note["content"]
     assert "a.py" in note["content"]
     assert "1 read(s)" in note["content"]
@@ -1053,15 +1061,24 @@ def test_budget_note_reports_remaining_reads_and_eviction_order() -> None:
     assert stats.breakdown()["continuation"] == stats.continuation_tokens
 
 
-def test_budget_note_present_from_first_call() -> None:
-    """还没有读取任何文件时也注入预算提示，让模型从第一步就规划。"""
+def test_budget_note_omitted_below_half_budget() -> None:
+    """首轮或余量充足的小回合不注入预算提示，尾部保持用户提问。"""
     cm = ContextManager(ContextConfig(intra_turn_budget=10_000, hard_budget=10_000))
 
     result = cm.build([_system(), _user("q")])
 
+    assert result == [_system(), _user("q")]
+
+
+def test_budget_note_present_above_half_budget_on_first_call() -> None:
+    """即使还没有读取文件，只要头部用量过半就注入预算提示。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=1_000, hard_budget=1_000))
+
+    result = cm.build([_system(_code_lines(120)), _user("q")])
+
     note = result[-2]
     assert note["role"] == "system"
-    assert "10000" in note["content"]
+    assert "1000" in note["content"]
     assert "none yet" in note["content"]
     assert result[-1] == {"role": "user", "content": "继续当前任务。"}
 
@@ -1086,6 +1103,31 @@ def test_budget_note_lists_only_visible_reads() -> None:
     assert "new.py" in note
     assert "old.py" not in note
     assert "1 older read(s) already compressed" in note
+
+
+def test_tail_prompt_asks_to_answer_before_any_activity() -> None:
+    """本回合还没有 assistant/tool 消息时，收尾消息请求回答提问而不是继续。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+
+    result = cm.build(
+        [_system(), _user("你好")],
+        plan="1. 打招呼",
+        turn_has_activity=False,
+    )
+
+    assert result[-1] == {"role": "user", "content": "请回答我上一条消息。"}
+    assert result[-2]["content"].startswith("[Current plan")
+
+
+def test_tail_prompt_continues_after_tool_activity() -> None:
+    """本回合已有工具轮时，收尾消息保持“继续当前任务”。"""
+    cm = ContextManager(ContextConfig(intra_turn_budget=100_000))
+    messages = [_system(), _user("q"), *_round("c1", "read_file", '{"path": "a.py"}', "content")]
+
+    result = cm.build(messages, plan="1. a", turn_has_activity=True)
+
+    assert result[-1] == {"role": "user", "content": "继续当前任务。"}
+    assert result[-2]["content"].startswith("[Current plan")
 
 
 def test_prompt_never_ends_with_system_message() -> None:

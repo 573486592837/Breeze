@@ -715,6 +715,7 @@ class Agent:
             tools = registry.schemas(self.tool_names)
             tool_choice = None if remaining > 1 else "none"
             view = self._llm_view(turn_start)
+            turn_has_activity = any(msg.get("role") in ("assistant", "tool") for msg in self.messages[turn_start:])
             include_prior = step == 0 and self._has_prior_turn()
             snapshot_block = self.snapshots.render() if include_prior else None
             llm_messages, prompt_stats = self.context.build_with_stats(
@@ -725,6 +726,7 @@ class Agent:
                 include_state=include_prior,
                 snapshots=snapshot_block,
                 instructions=self.project_instructions,
+                turn_has_activity=turn_has_activity,
             )
             last_demoted_reads = prompt_stats.demoted_read_ids
             last_prompt_tokens = prompt_stats.total_tokens

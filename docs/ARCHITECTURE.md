@@ -204,14 +204,18 @@ body          assistant ↔ tool 的完整往返
 plan          update_plan 的当前计划（非空时）
 state         SessionState（降级或回合启动时注入完整状态；
               未降级时只注入本回合重复读取警示）
-budget        剩余预算与仍可见的 read_file 工作集（每轮）
-continuation  最后一条是 system 时补的短 user 消息
+budget        剩余预算与仍可见的 read_file 工作集（用量过半后）
+continuation  最后一条是 system 时补的短 user 消息（本回合无工具轮时
+              请求回答提问，否则提示继续）
 ```
 
 `plan` 与 `state` 放在末尾，是为了让计划/索引变化不切断前面的缓存前缀；
 `state` 的完整块只在发生降级或回合启动时注入，未压缩回合只保留重复读取提醒，
-避免占用预算或把历史读取计数误当成当前事实。`budget` 块随剩余预算变化，
-因此放在 `state` 之后、`continuation` 之前。
+避免占用预算或把历史读取计数误当成当前事实。`budget` 块只在实测用量超过
+`hard_budget` 一半后注入：余量充足时它不影响决策，省略还能让小回合不以
+`system` 结尾。收尾消息按本回合是否已有 `assistant`/`tool` 消息自适应：
+首轮提问或新回合第一次调用用“请回答我上一条消息。”，已有工具轮才用
+“继续当前任务。”，避免把续跑指令误当成新任务。
 
 ### 5.2 两级预算与降级流程
 
