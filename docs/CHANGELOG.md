@@ -1309,33 +1309,10 @@ v1.7.0 之后新增的会话交互能力：需求有歧义时先问再动手，�
 `ruff check` 与 `ruff format --check` 全绿；`breeze.__version__` 与
 packaging 测试同步到 1.8.0。
 
-## 上下文预算提示与收尾消息（未发布）
+## 只读侧任务与上下文收尾 (v1.9.0)
 
-### 预算提示只在中后段注入
-
-此前每次构建提示词都会在末尾追加 `system` 预算提示，即使只发一句“你好”。
-实测余量充足时这段提示对决策没有帮助，还会让小回合多出一条 `system` 尾巴。
-现在只在消息用量超过 `hard_budget` 一半后注入；提示内容与降级规则不变。
-
-### 收尾消息自适应
-
-部分网关在最后一条消息是 `system` 时返回空内容，因此尾部仍需补一条 user
-消息。此前固定使用“继续当前任务。”，首轮无前文时模型会把它当成新任务并开始
-探索环境。现在按本回合是否已有 `assistant`/`tool` 消息区分：
-
-- 还没有工具轮（首轮提问、新回合第一次调用）→“请回答我上一条消息。”；
-- 已有工具调用或结果 → 保持“继续当前任务。”。
-
-`ContextManager.build` / `build_with_stats` 新增 `turn_has_activity` 参数；
-Agent 从本回合起点之后的消息判断，append 模式下不会把上一回合的工具轮误算进来。
-
-### 验证
-
-新增预算过半阈值、首轮省略/注入、两种收尾消息与工具轮判定的测试；更新受
-影响的提示词布局断言。全量 810 passed / 2 skipped，`ruff check` 与
-`ruff format --check`（`src tests breeze_eval`）全绿。
-
-## 只读侧任务 /side（未发布）
+v1.8.0 之后新增只读侧任务分支，并修正上下文预算提示与小回合收尾消息。
+不改变既有工具权限边界与上下文压缩规则。
 
 ### 只读模式
 
@@ -1373,8 +1350,19 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 - 入口只在主 `You>`；分支内只保留 `/sides`、`/back`、`/close`、`/switch`、
   `/help`、`/exit`。`ask_user` / confirm 等待点暂不支持切入侧任务。
 
+### 上下文预算与收尾消息
+
+- 预算提示只在消息用量超过 `hard_budget` 一半后注入；余量充足时省略，
+  小回合不再多出一条 `system` 尾巴。
+- 尾部收尾消息自适应：本回合还没有 `assistant`/`tool` 消息时使用
+  “请回答我上一条消息。”，已有工具轮才用“继续当前任务。”，避免首轮
+  “你好”被当成新任务并开始探索环境。
+- `ContextManager.build` / `build_with_stats` 新增 `turn_has_activity`；
+  Agent 按本回合起点判断，append 模式不会把上一回合的工具轮误算进来。
+
 ### 验证
 
 新增只读工具集、隐藏工具执行拒绝、只读提示词、分支生命周期、上下文深拷贝
-与隔离、主会话/trace 隔离、侧任务内禁用配置命令与 close 后不可恢复测试；
-全量 813 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+与隔离、预算过半阈值、两种收尾消息、主会话/trace 隔离、侧任务内禁用配置
+命令与 close 后不可恢复测试；全量 813 passed / 2 skipped，`ruff check` 与
+`ruff format --check` 全绿；`breeze.__version__` 与 packaging 测试同步到 1.9.0。
