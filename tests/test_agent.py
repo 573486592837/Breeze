@@ -2488,3 +2488,29 @@ def test_read_only_prompt_drops_edit_section() -> None:
     assert "只读侧任务规则" in prompt
     assert "list_files / read_file / grep" in prompt
     assert "run_shell" not in prompt.split("只读侧任务规则")[0]
+
+
+def test_inherit_context_copies_main_context_and_stays_isolated(trace: RunTrace) -> None:
+    """分支 Agent 以主对话当前上下文为起点，后续读写互不影响。"""
+    main = Agent(llm=FakeLLMClient([_text("main answer")]), trace=trace)
+    assert main.run("main question") == "main answer"
+    main.state.symbols["foo"] = "a.py:1"
+
+    side = Agent(llm=FakeLLMClient([_text("side answer")]), trace=trace, read_only=True)
+    side.inherit_context(main)
+
+    assert [m["content"] for m in side.messages] == [m["content"] for m in main.messages]
+    assert side.messages is not main.messages
+    assert [record.question for record in side.ledger.records] == ["main question"]
+    assert side.ledger is not main.ledger
+    assert side.state.symbols == {"foo": "a.py:1"}
+    assert side.snapshots is not main.snapshots
+
+    side.state.symbols["bar"] = "b.py:2"
+    side.ledger.record("side q", "side a", [])
+    assert "bar" not in main.state.symbols
+    assert [record.question for record in main.ledger.records] == ["main question"]
+
+    assert side.run("side question") == "side answer"
+    assert main.messages[-1]["content"] == "main answer"
+    assert [record.question for record in main.ledger.records] == ["main question"]

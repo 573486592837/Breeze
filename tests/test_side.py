@@ -1,4 +1,4 @@
-"""内存侧任务树的单元测试。"""
+"""内存侧任务分支的单元测试。"""
 
 from __future__ import annotations
 
@@ -7,34 +7,31 @@ import pytest
 from breeze.side import SideTree
 
 
-def test_spawn_from_main_and_nested() -> None:
-    """侧任务从当前活动节点派生，形成父子关系。"""
+def test_branches_are_always_spawned_from_main() -> None:
+    """侧任务只能从主对话派生，即使已有活动分支也不再嵌套。"""
     tree = SideTree()
 
     first = tree.spawn("看看配置加载", "agent")
     second = tree.spawn("看看 env 解析", "agent")
 
     assert first.id == "s1"
-    assert first.parent_id is None
     assert first.agent == "agent"
     assert second.id == "s2"
-    assert second.parent_id == "s1"
     assert tree.active is second
 
 
-def test_back_pauses_and_returns_parent() -> None:
-    """/back 只暂停，不丢弃节点。"""
+def test_back_pauses_and_returns_main() -> None:
+    """/back 只暂停当前分支，不丢弃节点。"""
     tree = SideTree()
     first = tree.spawn("q1", "agent")
     tree.spawn("q2", "agent")
 
-    assert tree.back() == "s1"
-    assert tree.active is first
+    tree.back()
+    assert tree.active is None
     assert [task.id for task in tree.tasks()] == ["s1", "s2"]
 
-    assert tree.back() is None
-    assert tree.active is None
-    assert len(tree.tasks()) == 2
+    tree.switch("s1")
+    assert tree.active is first
 
 
 def test_switch_between_paused_tasks() -> None:
@@ -53,28 +50,20 @@ def test_switch_between_paused_tasks() -> None:
     assert tree.active.id == "s2"
 
 
-def test_close_discards_subtree() -> None:
-    """关闭父节点会连同其子树一起丢弃，且回到父节点的父节点。"""
+def test_close_discards_only_current_branch() -> None:
+    """关闭当前分支不受其他兄弟分支影响，且回到主对话。"""
     tree = SideTree()
     tree.spawn("q1", "agent")
     tree.spawn("q2", "agent")
-    tree.spawn("q3", "agent")
-
-    removed = tree.close()
-
-    assert removed == ["s3"]
-    assert tree.active is not None
-    assert tree.active.id == "s2"
 
     removed = tree.close()
 
     assert removed == ["s2"]
-    assert tree.active is not None
-    assert tree.active.id == "s1"
+    assert tree.active is None
+    assert [task.id for task in tree.tasks()] == ["s1"]
 
-    removed = tree.close()
-
-    assert removed == ["s1"]
+    tree.switch("s1")
+    assert tree.close() == ["s1"]
     assert tree.active is None
     assert tree.tasks() == ()
 
@@ -97,8 +86,8 @@ def test_switch_unknown_task_is_rejected() -> None:
         tree.switch("s9")
 
 
-def test_render_marks_active_and_paused() -> None:
-    """树形渲染包含主线、嵌套关系与状态。"""
+def test_render_marks_active_and_paused_without_nesting() -> None:
+    """渲染包含主线与平级分支的状态，不出现缩进层级。"""
     tree = SideTree()
     tree.spawn("看看配置加载", "agent")
     tree.spawn("看看 env 解析", "agent")
@@ -106,9 +95,10 @@ def test_render_marks_active_and_paused() -> None:
 
     text = tree.render()
 
-    assert "main (paused)" in text
-    assert "s1 (active) 看看配置加载" in text
+    assert "main (active)" in text
+    assert "  s1 (paused) 看看配置加载" in text
     assert "  s2 (paused) 看看 env 解析" in text
+    assert "    s2" not in text
 
 
 def test_empty_tree_renders_main_only() -> None:

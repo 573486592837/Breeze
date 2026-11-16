@@ -4,6 +4,7 @@ ReAct 风格的代码仓库 Agent，使用 LLM 的 function calling 能力多步
 """
 
 import contextlib
+import copy
 import json
 import re
 import time
@@ -1061,6 +1062,21 @@ class Agent:
             return ""
         text, _ = load_project_instructions()
         return render_project_instructions(text) if text else ""
+
+    def inherit_context(self, source: "Agent") -> None:
+        """以另一个 Agent 的当前上下文作为分支起点。
+
+        消息、回合归档、会话状态与工作集快照都做深拷贝，分支后续的读写不会
+        回流到源 Agent。system prompt 不复制：分支保持自己的（例如只读）提示。
+
+        Args:
+            source: 主对话 Agent；通常在其等待用户输入时创建分支。
+        """
+        self.messages = copy.deepcopy(source.messages)
+        self.ledger = copy.deepcopy(source.ledger)
+        self.state = copy.deepcopy(source.state)
+        self.snapshots = copy.deepcopy(source.snapshots)
+        self.context.reset()
 
     def reset(self) -> None:
         """清空消息日志、回合归档与会话状态，开始新会话。

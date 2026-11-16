@@ -366,8 +366,8 @@ def chat(
         with tempfile.TemporaryDirectory(prefix="breeze-sides-") as side_dir:
             side_root = Path(side_dir)
 
-            def _side_agent(trace):
-                return Agent(
+            def _side_agent(trace, main_agent):
+                agent = Agent(
                     llm=controller.llm,
                     trace=trace,
                     max_steps=controller.max_steps,
@@ -377,6 +377,9 @@ def chat(
                     permission_mode=controller.permission,
                     read_only=True,
                 )
+                if main_agent is not None:
+                    agent.inherit_context(main_agent)
+                return agent
 
             def _side_trace(task_id):
                 return RunTrace(trace_dir=side_root, name=f"side-{task_id}")

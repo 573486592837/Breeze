@@ -1344,31 +1344,37 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 编辑章节，只保留读取与检索规则。执行层同时校验工具是否在当前工具集中，
 模型绕过 schema 调用隐藏工具时返回明确错误，而不是真的执行。
 
-### 侧任务树
+### 侧任务分支
 
-`breeze chat` 新增 `/side <问题>`，从当前活动节点派生只读侧任务，可嵌套：
+`breeze chat` 新增 `/side <问题>`，从主对话派生一层只读侧任务分支：
 
-- `/back` 暂停当前侧任务并回到父节点；
-- `/sides` 查看树（active / paused）；
-- `/switch <id|main>` 切回已暂停的侧任务；
-- `/close` 丢弃当前节点及其子树，不可恢复。
+- 创建分支时深拷贝主 Agent 的 messages、TurnLedger、SessionState 与
+  SnapshotStore，分支从当前主节点继续；之后分支与主对话互不影响，主对话
+  后续新增的回合也不会回填到已创建的分支；
+- `/back` 暂停当前分支并回到主对话；
+- `/sides` 查看分支（active / paused）；
+- `/switch <id|main>` 切回已暂停的分支；
+- `/close` 丢弃当前分支，不可恢复。
 
-多个侧任务可以并存、切换，但同一时刻只有一个活动任务，不做并行执行。
-侧任务只存在内存中，没有 `--resume`；主对话 `/new` 会一并丢弃侧任务树。
+侧任务只能从主 `You>` 提示符派生，不支持分支再嵌套。多个侧任务可以并存、
+切换，但同一时刻只有一个活动任务，不做并行执行。侧任务只存在内存中，没有
+`--resume`；关闭或退出程序时所有分支丢弃，仅主对话保留并可照常恢复。
+主对话 `/new` 会一并丢弃所有分支。
 
 ### 隔离边界
 
 - 每个侧任务使用独立 Agent（messages / SessionState / TurnLedger /
-  SnapshotStore），主 Agent 的上下文与归档不被读写。
+  SnapshotStore），分支上下文来自创建时的深拷贝，主 Agent 的上下文与归档
+  不被读写。
 - 侧任务回合不写 `SessionStore`，不计入主回合摘要；主对话模型/步数配置
   在侧任务每回合前同步，但侧任务内禁用 `/model`、`/set`、`/trace`、
   `/profile`、`/config`、`/new`。
 - 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
-- v1.9.0 支持从主 `You>` 与侧任务提示符进入；`ask_user` / confirm 等待点
-  暂不支持切入侧任务。
+- 入口只在主 `You>`；分支内只保留 `/sides`、`/back`、`/close`、`/switch`、
+  `/help`、`/exit`。`ask_user` / confirm 等待点暂不支持切入侧任务。
 
 ### 验证
 
-新增只读工具集、隐藏工具执行拒绝、只读提示词、SideTree 生命周期、嵌套与
-切换、主会话/trace 隔离、侧任务内禁用配置命令与 close 后不可恢复测试；
-全量 806 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+新增只读工具集、隐藏工具执行拒绝、只读提示词、分支生命周期、上下文深拷贝
+与隔离、主会话/trace 隔离、侧任务内禁用配置命令与 close 后不可恢复测试；
+全量 813 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。

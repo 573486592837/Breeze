@@ -8,9 +8,9 @@ run_chat 与 CLI 解耦（agent_factory / trace_factory / input_fn 可注入）�
 传入 session（SessionStore）时，会话开始前沿用其中已归档的回合与状态，
 每回合结束把结论与状态快照落盘，进程退出后仍可 `--resume` 接续。
 
-提供 side_agent_factory / side_trace_factory 时启用只读侧任务：侧任务挂在
-当前活动节点下形成内存树，/back 暂停、/switch 切回、/close 丢弃；侧任务
-不写主会话、不计入主回合摘要，退出后不可恢复。
+提供 side_agent_factory / side_trace_factory 时启用只读侧任务：侧任务只能
+从主对话派生一层分支，创建时复制主对话上下文；/back 暂停、/switch 切回、
+/close 丢弃。侧任务不写主会话、不计入主回合摘要，退出后不可恢复。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 from breeze.chat_commands import COMMANDS, HELP_TEXT
 from breeze.side import SideTask, SideTree
 
-_SIDE_COMMAND_NAMES = frozenset({"side", "sides", "back", "close", "switch", "help", "exit"})
+_SIDE_COMMAND_NAMES = frozenset({"sides", "back", "close", "switch", "help", "exit"})
 
 
 def _side_help_text() -> str:
@@ -45,7 +45,7 @@ def run_chat(
     command_fn: Callable[[str, Any | None], str | None] | None = None,
     agent_setup_fn: Callable[[Any], None] | None = None,
     progress: Any | None = None,
-    side_agent_factory: Callable[[Any], Any] | None = None,
+    side_agent_factory: Callable[[Any, Any], Any] | None = None,
     side_trace_factory: Callable[[str], Any] | None = None,
     side_summary_fn: Callable[[dict[str, Any], str, int], None] | None = None,
     side_setup_fn: Callable[[Any], None] | None = None,
@@ -65,8 +65,8 @@ def run_chat(
         agent_setup_fn: 主 Agent 创建并恢复会话状态后调用，用于同步运行时配置。
         progress: 进度展示对象，需提供 on_event(event) 与 stop()。
             仅在终端下由 CLI 传入；它只观察 Agent 事件，不影响 prompt 与 trace。
-        side_agent_factory: 接收首个 trace，构造只读侧任务 Agent；None 时
-            不启用侧任务。
+        side_agent_factory: 接收首个 trace 与当前主 Agent（尚未创建时为 None），
+            构造只读侧任务 Agent；None 时不启用侧任务。
         side_trace_factory: 接收侧任务 ID，返回该回合的 RunTrace；None 时
             不启用侧任务。
         side_summary_fn: 渲染侧任务回合摘要，默认按单行文本输出。
@@ -132,7 +132,7 @@ def run_chat(
         trace = None
         try:
             trace = side_trace_factory(task_id)
-            side_agent = side_agent_factory(trace)
+            side_agent = side_agent_factory(trace, agent)
             task = side_tree.spawn(question, side_agent, task_id)
         except Exception as exc:
             if trace is not None:
@@ -162,6 +162,9 @@ def run_chat(
 
         if side_tree is not None:
             if question == "/side" or question.startswith("/side "):
+                if active is not None:
+                    print_fn("(side tasks cannot be nested; /back to main first)")
+                    continue
                 text = question[len("/side") :].strip()
                 if not text:
                     print_fn("用法：/side <问题>")
@@ -175,17 +178,15 @@ def run_chat(
                 if active is None:
                     print_fn("(not in a side task)")
                     continue
-                parent = side_tree.back()
-                print_fn("(back to main)" if parent is None else f"(back to {parent})")
+                side_tree.back()
+                print_fn("(back to main)")
                 continue
             if question == "/close":
                 if active is None:
                     print_fn("(not in a side task)")
                     continue
                 removed = side_tree.close()
-                parent = side_tree.active_id
-                target = "main" if parent is None else parent
-                print_fn(f"(closed {', '.join(removed)}; now at {target})")
+                print_fn(f"(closed {', '.join(removed)}; now at main)")
                 continue
             if question == "/switch" or question.startswith("/switch "):
                 target = question[len("/switch") :].strip()
@@ -203,7 +204,7 @@ def run_chat(
         if active is not None:
             if question.startswith("/"):
                 print_fn(
-                    "side tasks only support /side /sides /back /close /switch /help /exit; "
+                    "side tasks only support /sides /back /close /switch /help /exit; "
                     "runtime config commands are disabled."
                 )
                 continue

@@ -1233,6 +1233,52 @@ def test_ask_user_callback_keeps_free_text() -> None:
     assert ask("用哪个数据库？", ["SQLite", "Postgres"]) == "用 DuckDB"
 
 
+def test_chat_side_task_inherits_main_context(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """从主对话派生侧任务时，分支首个提示词包含主对话已完成的回合。"""
+    calls: list[tuple[list[dict], list[dict]]] = []
+
+    class RecordingLLM:
+        model = "rec"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def chat(self, messages, tools=None, temperature=0.0, tool_choice=None):
+            calls.append((list(messages), list(tools or [])))
+            return LLMResponse(
+                content="answer",
+                tool_calls=[],
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+            )
+
+    monkeypatch.setattr(cli_module, "LLMClient", RecordingLLM)
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--repo",
+            str(repo),
+            "--trace-dir",
+            str(tmp_path / "traces"),
+            "--session-dir",
+            str(tmp_path / "sessions"),
+        ],
+        input="main question\n/side side question\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    side_calls = [call for call in calls if "只读侧任务规则" in call[0][0]["content"]]
+    assert len(side_calls) == 1
+    messages, tools = side_calls[0]
+    combined = "\n".join(str(message.get("content", "")) for message in messages)
+    assert "main question" in combined
+    assert "answer" in combined
+    assert messages[-1] == {"role": "user", "content": "side question"}
+    assert {tool["function"]["name"] for tool in tools} == {"list_files", "read_file", "grep"}
+
+
 def test_chat_side_task_isolated_from_session_and_traces(repo: Path, tmp_path: Path) -> None:
     """侧任务不写主会话，也不把 trace 写进仓库 trace 目录。"""
     session_dir = tmp_path / "sessions"

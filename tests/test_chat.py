@@ -473,8 +473,9 @@ def _run_with_sides(
         main_agents.append(agent)
         return agent
 
-    def side_agent_factory(trace: Any) -> StubAgent:
+    def side_agent_factory(trace: Any, main_agent: Any) -> StubAgent:
         agent = StubAgent(trace, list(side_answers or ["side-answer"]))
+        agent.spawned_from = main_agent
         side_agents.append(agent)
         return agent
 
@@ -530,21 +531,32 @@ def test_side_task_isolated_from_main_conversation() -> None:
     assert "side[s1]> " in script.prompts
 
 
-def test_nested_sides_switch_and_close() -> None:
-    """嵌套侧任务可暂停、切换，close 丢弃当前子树。"""
+def test_side_tasks_cannot_nest() -> None:
+    """侧任务内不能再 /side；完整退出后只能从主对话重新派生分支。"""
     code, outputs, _, side_agents, _, _, _ = _run_with_sides(
-        ["/side a", "/side b", "/sides", "/back", "/sides", "/switch s2", "/close", "/sides", "/exit"],
-        side_answers=["a1", "b1"],
+        ["/side a", "/side b", "/back", "/side c", "/sides", "/exit"],
+        side_answers=["a1", "c1"],
     )
 
     assert code == 0
     assert len(side_agents) == 2
+    assert "(side tasks cannot be nested; /back to main first)" in outputs
     trees = [line for line in outputs if line.startswith("main (")]
     assert "s1 (paused) a" in trees[0]
-    assert "s2 (active) b" in trees[0]
-    assert "s1 (active) a" in trees[1]
-    assert "s2" not in trees[2]
-    assert any("closed s2" in line for line in outputs)
+    assert "s2 (active) c" in trees[0]
+
+
+def test_side_branch_receives_main_agent_for_context_seed() -> None:
+    """侧任务工厂拿到当前主 Agent，供 CLI 复制分支上下文。"""
+    code, _, main_agents, side_agents, _, _, _ = _run_with_sides(
+        ["主问题", "/side 看看配置", "/exit"],
+        answers=["main-answer"],
+        side_answers=["side-answer"],
+    )
+
+    assert code == 0
+    assert len(main_agents) == 1
+    assert side_agents[0].spawned_from is main_agents[0]
 
 
 def test_side_task_rejects_runtime_config_commands() -> None:

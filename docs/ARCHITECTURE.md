@@ -78,7 +78,7 @@ flowchart TB
 |---|---|---|---|
 | `cli.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
 | `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘、侧任务输入分发 | 与 CLI 解耦，依赖可注入 |
-| `side.py` | `SideTree` / `SideTask` | 内存侧任务树：创建、暂停、切换、关闭 | 不持久化、无 resume；close 丢弃子树 |
+| `side.py` | `SideTree` / `SideTask` | 主对话下的一层只读分支：创建、暂停、切换、关闭 | 不持久化、无 resume；退出丢弃所有分支 |
 | `chat_commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
 | `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复、只读模式 | 默认 25 步、连续编辑失败 3 次 |
 | `context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
@@ -326,25 +326,31 @@ flowchart LR
 
 ### 6.4 只读侧任务
 
-侧任务用于在主对话之外临时查资料，结构是内存树，根为主对话：
+侧任务用于在主对话之外临时查资料。结构是主对话下的一层内存分支，不支持
+分支再嵌套：
 
 ```mermaid
 flowchart LR
-    M[main] --> S1[s1 只读任务]
-    S1 --> S2[s2 嵌套任务]
+    M[main] --> S1[s1 只读分支]
+    M --> S2[s2 paused]
     M --> S3[s3 paused]
 ```
 
-- `SideTree` 只保存在当前进程；节点记录独立 Agent、父节点、问题与回合数。
-- `/back` 暂停并回到父节点，`/switch` 切到任意保留节点，`/close` 丢弃当前
-  节点及子树；程序退出即全部丢失，没有 `--resume`。
+- `SideTree` 只保存在当前进程；每个分支记录独立 Agent、问题与回合数。
+- 创建分支时 `Agent.inherit_context()` 深拷贝主 Agent 的 messages、TurnLedger、
+  SessionState 与 SnapshotStore；分支看到的是派生时刻的主对话上下文，之后
+  双方互不影响。主对话后续新增的回合不会回填到已创建的分支。
+- `/side` 只能在主 `You>` 提示符使用；分支内不支持再派生分支。`/back` 暂停
+  当前分支并回到主对话，`/switch` 切到任意保留分支，`/close` 丢弃当前分支。
+- 程序退出时所有分支一并丢弃，只有主对话写入 `SessionStore` 并可按原会话
+  恢复；侧任务没有 `--resume`。
 - 每个侧任务使用独立 `Agent`（messages / SessionState / TurnLedger /
   SnapshotStore），主 Agent 不被读写；侧任务回合不调用 `SessionStore`，
   不进入主回合摘要。
 - 侧任务 trace 写入本次 chat 的临时目录并在退出时清理，不写仓库 `traces/`。
-- 同一时刻只有一个活动节点；多个侧任务并存时只能切换，不做并行执行。
-- v1.9.0 的入口是主 `You>` 与 `side[id]>` 提示符；`ask_user`/confirm 等待
-  点暂不支持切入侧任务。
+- 同一时刻只有一个活动分支；多个侧任务并存时只能切换，不做并行执行。
+- 分支内只保留 `/sides`、`/back`、`/close`、`/switch`、`/help`、`/exit`；
+  运行时配置命令禁用。`ask_user`/confirm 等待点暂不支持切入侧任务。
 
 ## 7. 工具执行与权限
 
