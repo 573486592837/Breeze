@@ -34,6 +34,7 @@ _ReadMeta = tuple[str, int, int | None, int | None, bool]
 _MAX_DUPLICATE_READ_SUPPRESSIONS = 3
 # 单个用户回合内允许的提问次数：足以澄清需求，又不至于把任务拖成采访。
 _MAX_ASK_USER_QUESTIONS = 5
+AskUserCallback = Callable[[list[tuple[str, list[str] | None]]], list[str]]
 # 只读侧任务的全部工具：只读取/检索，不执行命令、不写文件。
 _READ_ONLY_TOOLS = frozenset({"list_files", "read_file", "grep"})
 
@@ -366,11 +367,13 @@ def _edit_limit_rule(limit: int) -> str:
 def _ask_user_rule() -> str:
     """生成 ask_user 的可用性说明；仅在交互式会话追加。"""
     return (
-        "17. 需求存在会改变实现、范围或验收标准的歧义时，用 ask_user 向用户确认；"
-        "能从仓库或工具确认的事实不要问，也不要用它请求执行许可或确认计划。"
-        "一次只问一个最关键的问题，可以把候选方案放进 options；"
-        f"本回合最多问 {_MAX_ASK_USER_QUESTIONS} 个。用户未回答时按最合理假设继续，"
-        "并在最终答案中说明假设。"
+        "17. 需要用户做项目决策或价值判断时（范围取舍、行为/兼容性选择、"
+        "验收标准等），用 ask_user 一次性提出 1-5 个相互独立的问题，让用户"
+        "在同一轮一并回答；每个问题可带最多 4 个候选方案。"
+        "能从仓库或工具确认的事实、可自行按最佳实践决定的实现细节不要问，"
+        "也不要用它请求执行许可或确认计划。"
+        f"本回合合计最多问 {_MAX_ASK_USER_QUESTIONS} 个。用户未回答的问题按最合理"
+        "假设继续，并在最终答案中说明假设。"
     )
 
 
@@ -540,7 +543,7 @@ class Agent:
         capabilities: Capabilities | None = None,
         permission_mode: str | None = None,
         confirm_command: Callable[[str], bool] | None = None,
-        ask_user: Callable[[str, list[str] | None], str] | None = None,
+        ask_user: AskUserCallback | None = None,
         read_only: bool = False,
     ) -> None:
         """初始化 Agent。
@@ -559,8 +562,8 @@ class Agent:
             capabilities: 环境能力；None 时探测 settings.repo_root。
             permission_mode: run_shell 权限模式（strict / confirm / open）。
             confirm_command: confirm 模式下询问用户是否允许命令的回调。
-            ask_user: 读取用户澄清回答的回调；None 表示非交互会话，不下发
-                ask_user 工具。
+            ask_user: 读取用户澄清回答的回调；接收问题列表并返回等长的答案列表，
+                None 表示非交互会话，不下发 ask_user 工具。
             read_only: 只读侧任务模式；只下发 list_files/read_file/grep，
                 忽略 ask_user 回调。
         """
@@ -1658,28 +1661,65 @@ class Agent:
         return (None if exception_error is not None else result), argument_error
 
     def _ask_user(self, arguments: dict[str, Any]) -> str:
-        """把模型的问题交给注入的回调，并把回答作为工具结果返回。"""
-        question = arguments.get("question")
-        if not isinstance(question, str) or not question.strip():
-            return "Error: ask_user requires a non-empty 'question' string."
-        raw_options = arguments.get("options")
-        options = None
-        if isinstance(raw_options, list):
-            options = [str(option) for option in raw_options[:4]]
+        """把一批项目决策问题交给注入的回调，并把回答作为工具结果返回。"""
+        raw_questions = arguments.get("questions")
+        if not isinstance(raw_questions, list) or not raw_questions:
+            return "Error: ask_user requires a non-empty 'questions' array."
+        if len(raw_questions) > _MAX_ASK_USER_QUESTIONS:
+            return f"Error: ask_user accepts at most {_MAX_ASK_USER_QUESTIONS} questions per call."
+
+        questions: list[tuple[str, list[str] | None]] = []
+        for index, item in enumerate(raw_questions, 1):
+            if not isinstance(item, dict):
+                return f"Error: ask_user question {index} must be an object with a 'question' field."
+            question = item.get("question")
+            if not isinstance(question, str) or not question.strip():
+                return f"Error: ask_user question {index} requires a non-empty 'question' string."
+            raw_options = item.get("options")
+            options = None
+            if isinstance(raw_options, list):
+                options = [str(option) for option in raw_options if str(option).strip()][:4]
+                if not options:
+                    options = None
+            questions.append((question.strip(), options))
+
         if self.ask_user is None:
             return "Error: ask_user is unavailable in this non-interactive session."
-        if self._questions_this_turn >= _MAX_ASK_USER_QUESTIONS:
+        remaining = _MAX_ASK_USER_QUESTIONS - self._questions_this_turn
+        if remaining <= 0:
             return (
                 f"Error: ask_user limit reached ({_MAX_ASK_USER_QUESTIONS} questions per turn); "
                 "proceed with the most reasonable assumption and state it in the final answer."
             )
 
-        self._questions_this_turn += 1
-        answer = str(self.ask_user(question.strip(), options) or "").strip()
-        self._clarifications.append((question.strip(), answer or "(no answer)"))
-        if not answer:
-            return "User did not answer. Proceed with the most reasonable assumption and state it in the final answer."
-        return f"User answer: {answer}"
+        omitted = max(len(questions) - remaining, 0)
+        if omitted:
+            questions = questions[:remaining]
+
+        self._questions_this_turn += len(questions)
+        raw_answers = self.ask_user(questions)
+        answers = [str(answer or "").strip() for answer in (raw_answers or [])]
+        answers.extend([""] * (len(questions) - len(answers)))
+
+        lines: list[str] = []
+        for index, (question, _) in enumerate(questions, 1):
+            answer = answers[index - 1]
+            self._clarifications.append((question, answer or "(no answer)"))
+            shown = answer or "(no answer)"
+            lines.append(f"{index}. {question} → {shown}")
+
+        result = "User answers:\n" + "\n".join(lines)
+        if omitted:
+            result += (
+                f"\n{omitted} question(s) were not asked because of the per-turn limit; "
+                "proceed with the most reasonable assumption for them and state it in the final answer."
+            )
+        if any(not answer for answer in answers):
+            result += (
+                "\nProceed with the most reasonable assumption for unanswered questions "
+                "and state it in the final answer."
+            )
+        return result
 
     def _execute_shell(self, arguments: dict[str, Any], step: int) -> str:
         """按权限模式执行 run_shell。

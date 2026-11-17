@@ -2368,59 +2368,156 @@ def test_agent_hides_ask_user_without_callback(trace: RunTrace) -> None:
 
 
 def test_agent_exposes_ask_user_with_callback(trace: RunTrace) -> None:
-    """注入回调后下发 ask_user，并把回答作为工具结果交回模型。"""
+    """注入回调后下发 ask_user，并把整批回答作为工具结果交回模型。"""
     llm = FakeLLMClient(
         [
             _tool_call(
                 "ask_user",
-                {"question": "用哪个数据库？", "options": ["SQLite", "Postgres"]},
+                {"questions": [{"question": "用哪个数据库？", "options": ["SQLite", "Postgres"]}]},
             ),
             _text("done"),
         ]
     )
-    asked: list[tuple[str, list[str] | None]] = []
+    asked: list[list[tuple[str, list[str] | None]]] = []
 
-    def answer(question: str, options: list[str] | None) -> str:
-        asked.append((question, options))
-        return "Postgres"
+    def answer(questions: list[tuple[str, list[str] | None]]) -> list[str]:
+        asked.append(questions)
+        return ["Postgres"]
 
     agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=answer)
     assert agent.run("加一个存储层") == "done"
 
     assert "ask_user" in _tool_names(llm)
-    assert asked == [("用哪个数据库？", ["SQLite", "Postgres"])]
+    assert asked == [[("用哪个数据库？", ["SQLite", "Postgres"])]]
     tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
-    assert tool_messages[-1] == "User answer: Postgres"
+    assert "User answers:\n1. 用哪个数据库？ → Postgres" in tool_messages[-1]
     assert agent.ledger.records[-1].clarifications == [("用哪个数据库？", "Postgres")]
     assert "clarified: 用哪个数据库？ → Postgres" in agent.ledger.render()
 
 
+def test_agent_ask_user_batches_questions(trace: RunTrace) -> None:
+    """一次调用可以提出多个问题，回答按问题顺序返回并逐条归档。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call(
+                "ask_user",
+                {
+                    "questions": [
+                        {"question": "用哪个数据库？", "options": ["SQLite", "Postgres"]},
+                        {"question": "是否保留旧接口？", "options": ["保留", "删除", "兼容层", "稍后定", "其他"]},
+                        {"question": "验收标准是什么？"},
+                    ]
+                },
+            ),
+            _text("done"),
+        ]
+    )
+    asked: list[list[tuple[str, list[str] | None]]] = []
+
+    def answer(questions: list[tuple[str, list[str] | None]]) -> list[str]:
+        asked.append(questions)
+        return ["Postgres", "兼容层", "现有测试通过"]
+
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=answer)
+    assert agent.run("设计存储层") == "done"
+
+    assert len(asked) == 1
+    assert [question for question, _ in asked[0]] == ["用哪个数据库？", "是否保留旧接口？", "验收标准是什么？"]
+    assert asked[0][1][1] == ["保留", "删除", "兼容层", "稍后定"]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "2. 是否保留旧接口？ → 兼容层" in tool_messages[-1]
+    assert "3. 验收标准是什么？ → 现有测试通过" in tool_messages[-1]
+    assert agent.ledger.records[-1].clarifications == [
+        ("用哪个数据库？", "Postgres"),
+        ("是否保留旧接口？", "兼容层"),
+        ("验收标准是什么？", "现有测试通过"),
+    ]
+
+
 def test_agent_ask_user_records_no_answer(trace: RunTrace) -> None:
     """用户跳过时明确告知模型按最合理假设继续，而不是等待。"""
-    llm = FakeLLMClient([_tool_call("ask_user", {"question": "选哪个？"}), _text("done")])
-    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=lambda *_: "")
+    llm = FakeLLMClient(
+        [
+            _tool_call("ask_user", {"questions": [{"question": "选哪个？"}]}),
+            _text("done"),
+        ]
+    )
+    agent = Agent(llm=llm, trace=trace, max_steps=5, capabilities=_caps(), ask_user=lambda *_: [""])
     agent.run("go")
 
     tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
-    assert "User did not answer" in tool_messages[-1]
+    assert "1. 选哪个？ → (no answer)" in tool_messages[-1]
+    assert "most reasonable assumption for unanswered questions" in tool_messages[-1]
     assert agent.ledger.records[-1].clarifications == [("选哪个？", "(no answer)")]
 
 
-def test_agent_limits_questions_per_turn(trace: RunTrace) -> None:
-    """超过每回合提问上限后拒绝继续提问，要求带假设继续执行。"""
-    responses = [_tool_call("ask_user", {"question": f"q{i}"}, call_id=f"c{i}") for i in range(6)]
-    responses.append(_text("done"))
-    llm = FakeLLMClient(responses)
-    asked: list[str] = []
+def test_agent_ask_user_rejects_invalid_batch(trace: RunTrace) -> None:
+    """空列表、缺少问题文本的项都返回可修正的参数错误，不触发回调。"""
+    llm = FakeLLMClient(
+        [
+            _tool_call("ask_user", {"questions": []}, call_id="c1"),
+            _tool_call("ask_user", {"questions": [{"options": ["x"]}]}, call_id="c2"),
+            _text("done"),
+        ]
+    )
+    asked: list[object] = []
 
-    def answer(question: str, options: list[str] | None) -> str:
-        asked.append(question)
-        return "ok"
+    agent = Agent(
+        llm=llm,
+        trace=trace,
+        max_steps=5,
+        capabilities=_caps(),
+        ask_user=lambda questions: asked.append(questions) or [],
+    )
+    assert agent.run("go") == "done"
+
+    assert asked == []
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "non-empty 'questions' array" in tool_messages[0]
+    assert "requires a non-empty 'question' string" in tool_messages[1]
+
+
+def test_agent_limits_questions_per_turn(trace: RunTrace) -> None:
+    """每回合按问题数量计数；超出上限的部分不再展示给用户。"""
+    responses = [
+        _tool_call("ask_user", {"questions": [{"question": f"q{i}"} for i in range(4)]}, call_id="c1"),
+        _tool_call("ask_user", {"questions": [{"question": f"q{i}"} for i in range(4, 7)]}, call_id="c2"),
+        _text("done"),
+    ]
+    llm = FakeLLMClient(responses)
+    asked: list[list[tuple[str, list[str] | None]]] = []
+
+    def answer(questions: list[tuple[str, list[str] | None]]) -> list[str]:
+        asked.append(questions)
+        return ["ok"] * len(questions)
 
     agent = Agent(llm=llm, trace=trace, max_steps=10, capabilities=_caps(), ask_user=answer)
     assert agent.run("go") == "done"
 
-    assert len(asked) == 5
+    assert [len(batch) for batch in asked] == [4, 1]
+    tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
+    assert "2 question(s) were not asked" in tool_messages[-1]
+    assert len(agent.ledger.records[-1].clarifications) == 5
+
+
+def test_agent_ask_user_rejects_after_turn_limit(trace: RunTrace) -> None:
+    """本回合问题数用完后，再次调用直接拒绝。"""
+    responses = [
+        _tool_call("ask_user", {"questions": [{"question": f"q{i}"} for i in range(5)]}, call_id="c1"),
+        _tool_call("ask_user", {"questions": [{"question": "q6"}]}, call_id="c2"),
+        _text("done"),
+    ]
+    llm = FakeLLMClient(responses)
+    asked: list[list[tuple[str, list[str] | None]]] = []
+
+    def answer(questions: list[tuple[str, list[str] | None]]) -> list[str]:
+        asked.append(questions)
+        return ["ok"] * len(questions)
+
+    agent = Agent(llm=llm, trace=trace, max_steps=10, capabilities=_caps(), ask_user=answer)
+    assert agent.run("go") == "done"
+
+    assert len(asked) == 1
     tool_messages = [m["content"] for m in agent.messages if m.get("role") == "tool"]
     assert "ask_user limit reached" in tool_messages[-1]
 
@@ -2433,6 +2530,8 @@ def test_default_system_prompt_mentions_ask_user_only_when_interactive() -> None
     automatic = default_system_prompt(_caps(), include_instructions=False)
 
     assert "ask_user" in interactive
+    assert "项目决策" in interactive
+    assert "一并回答" in interactive
     assert "最多问 5 个" in interactive
     assert "ask_user" not in automatic
 

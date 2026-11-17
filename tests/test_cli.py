@@ -1219,9 +1219,9 @@ def test_ask_user_callback_maps_numbered_choice() -> None:
     console = Console(file=StringIO(), force_terminal=False)
     ask = cli_module._ask_user_callback(console, lambda prompt: prompts.append(prompt) or "2")
 
-    answer = ask("用哪个数据库？", ["SQLite", "Postgres"])
+    answers = ask([("用哪个数据库？", ["SQLite", "Postgres"])])
 
-    assert answer == "Postgres"
+    assert answers == ["Postgres"]
     assert prompts == ["Answer> "]
 
 
@@ -1230,7 +1230,25 @@ def test_ask_user_callback_keeps_free_text() -> None:
     console = Console(file=StringIO(), force_terminal=False)
     ask = cli_module._ask_user_callback(console, lambda _: "用 DuckDB")
 
-    assert ask("用哪个数据库？", ["SQLite", "Postgres"]) == "用 DuckDB"
+    assert ask([("用哪个数据库？", ["SQLite", "Postgres"])]) == ["用 DuckDB"]
+
+
+def test_ask_user_callback_displays_batch_and_collects_answers() -> None:
+    """多个问题时先展示完整列表，再按 Q1/Q2 顺序收集答案。"""
+    prompts: list[str] = []
+    replies = iter(["2", "保留"])
+    output = StringIO()
+    console = Console(file=output, force_terminal=False)
+    ask = cli_module._ask_user_callback(console, lambda prompt: prompts.append(prompt) or next(replies))
+
+    answers = ask([("用哪个数据库？", ["SQLite", "Postgres"]), ("是否保留旧接口？", ["保留", "删除"])])
+
+    assert answers == ["Postgres", "保留"]
+    assert prompts == ["Q1> ", "Q2> "]
+    text = output.getvalue()
+    assert "Agent 提问（2 个）" in text
+    assert "1. 用哪个数据库？" in text
+    assert "2. 是否保留旧接口？" in text
 
 
 def test_chat_side_task_inherits_main_context(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

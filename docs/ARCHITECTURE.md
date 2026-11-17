@@ -99,7 +99,7 @@ flowchart TB
 | `tools/shell.py` | `run_shell` | `shell=False`、可执行文件/子命令/选项白名单 | 拒绝未加引号的串联/管道/重定向 |
 | `tools/edit.py` | 5 个工具 | 单点替换、建文件、删路径、回滚、pytest | 补丁大小、受保护路径、原子写入 |
 | `tools/plan.py` | `update_plan` | 计划写入 `SessionState.plan` | 最多 2000 字符 |
-| `tools/interaction.py` | `ask_user` | 向用户澄清需求；回答由 CLI 回调注入 | 仅交互式下发；每回合最多 5 个 |
+| `tools/interaction.py` | `ask_user` | 批量提出项目决策问题；回答由 CLI 回调注入 | 单次 1–5 个；每回合合计最多 5 个 |
 | `config.py` | `settings` | 默认值 → 用户 → 仓库 → 环境变量 → CLI 合并 | 安全白名单不可配置 |
 
 包内依赖方向固定为 `cli → chat → runtime → tools/config`；`llm.py` 与
@@ -399,9 +399,10 @@ flowchart TD
 `ToolArgumentError`，Agent 转成带 `Expected:` 列表的错误结果，并明确写工具没有
 写入目标文件。这样模型能直接修正参数，而不是面对一句 `TypeError` 再盲目重试。
 
-`ask_user` 与 `run_shell` 一样由 Agent 在执行前拦截：CLI 注入回调时回答直接
-作为工具结果返回，并计入每回合 5 次的上限；没有回调（管道、评估、测试）时
-该工具不会出现在 schema 中，模型只能按已有信息继续。
+`ask_user` 与 `run_shell` 一样由 Agent 在执行前拦截：CLI 注入回调时，一次
+调用把 1–5 个问题连同候选交给终端，先完整展示再逐题读取答案，回答按顺序
+作为工具结果返回；每回合按问题数量累计，最多 5 个。没有回调（管道、评估、
+测试）时该工具不会出现在 schema 中，模型只能按已有信息继续。
 
 执行前还会校验 `tc.name in self.tool_names`。被能力裁剪、非交互 `ask_user`
 或只读模式隐藏的工具，即使模型幻觉调用也直接返回
