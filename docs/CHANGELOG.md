@@ -1383,3 +1383,28 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 
 纯移动重构，不改变 CLI、提示词、trace 或持久化格式；全量 813 passed /
 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+
+## 噪音目录可配置且可见（未发布）
+
+`list_files` / `grep` 原来把缓存、构建产物、虚拟环境与 IDE 目录硬编码为
+静默忽略，Agent 感知不到这些目录存在，用户也无法在项目需要时让 Agent
+进入。现在改为三层：
+
+- **安全保护**：`.git` 与 `.env*` 仍然完全拒绝读取、列表中隐藏，不可配置。
+- **噪音目录**：默认列表移入 `[tools] ignore_dirs`（目录名或 glob，
+  `*.egg-info` 继续可用），可整体替换；`[]` 表示关闭噪音过滤。含路径
+  分隔符或非字符串条目在加载配置时直接报错。
+- **可见与可按需进入**：从仓库根扫描时，噪音目录输出一行
+  `name/ (ignored: tools.ignore_dirs|.gitignore)` 而不是完全消失；显式
+  指定 `path` 时起点总是被接受，起点内部的后代噪音目录仍折叠。`grep`
+  根扫描结果末尾提示被跳过的顶层目录，可直接用 `path='<dir>'` 搜索。
+
+`grep` 的 ripgrep 分支在显式 scope 下改为以搜索起点为工作目录，避免
+`--glob '!node_modules/'` 把起点本身排除；Python 回退只过滤后代目录，
+两种实现行为与路径格式保持一致。
+
+### 验证
+
+新增默认值/覆盖/空列表/去重/非法配置、折叠行与截断配额、显式目录进入、
+嵌套噪音折叠、grep 跳过提示与 rg/Python 两种显式 scope 测试；全量
+827 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。

@@ -440,7 +440,8 @@ CLI 参数之前生效；同一会话下次接续仍沿用这些值。
 - `[agent]`：max_steps、max_edit_failures（连续编辑失败上限）
 - `[shell]`：permission（strict / confirm / open，默认 strict）
 - `[tools]`：read_roots（只读参考目录；read_file/list_files/grep 可访问，
-  写工具仍限制在仓库内）
+  写工具仍限制在仓库内）、ignore_dirs（噪音目录名或 glob，默认折叠缓存/构建/
+  虚拟环境目录；空列表关闭过滤，显式 `path` 仍可进入）
 - `[context]`：enable、cross_turn（archive / append，默认 archive；append 保留全部
   历史，用于成本对照）、profile（压缩档位）、intra_turn_budget（回合软预算）、
   hard_budget（回合硬上限）、snapshot_max_files / snapshot_max_chars（跨回合
@@ -597,7 +598,9 @@ tests），而不是等到压缩发生才注入。这些事实来自真实工具
 
 这些是防御边界。改动会削弱安全模型，或导致模型感知与实际行为不一致。
 `read_file`、`list_files`、`grep` 也会拒绝读取 `.env*` 与 `.git/`，避免密钥
-进入 prompt 或完整 prompt 捕获文件。
+进入 prompt 或完整 prompt 捕获文件。`[tools] ignore_dirs` 只是默认噪音过滤，
+不是安全边界：它会折叠缓存/构建/虚拟环境目录但保留一行提示，显式 `path`
+仍可进入；需要完全关掉时把该列表设为 `[]`。
 
 `read_file` 遇到超过 `max_bytes` 的单行时会保留头部并标注原始字节数；
 `run_shell` 只拒绝未加引号的 `; | & < >`，引号内的同名符号按普通参数处理。

@@ -53,6 +53,31 @@ DEFAULT_API_KEY_ENV = "BREEZE_API_KEY"
 PERMISSION_MODES = ("strict", "confirm", "open")
 CROSS_TURN_MODES = ("archive", "append")
 
+# 默认噪音目录：缓存、构建产物、虚拟环境与 IDE 元数据。这些目录在
+# list_files/grep 中默认折叠为一行而不展开，但显式指定 path 时可访问。
+# 用户可以整体替换该列表（空列表表示只保留 .git/.env 安全保护）。
+DEFAULT_IGNORE_DIRS: tuple[str, ...] = (
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".coverage",
+    "htmlcov",
+    ".cache",
+    "build",
+    "dist",
+    "node_modules",
+    ".idea",
+    ".vscode",
+    ".ipynb_checkpoints",
+    "*.egg-info",
+)
+
 DEFAULTS: dict[str, dict[str, Any]] = {
     "llm": {
         "model": "openai/Pro/deepseek-ai/DeepSeek-V3.2",
@@ -72,6 +97,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     },
     "tools": {
         "read_roots": [],
+        "ignore_dirs": list(DEFAULT_IGNORE_DIRS),
     },
     "context": {
         "enable": True,
@@ -251,6 +277,37 @@ def _resolve_read_roots(root: Path, raw_roots: Any) -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _resolve_ignore_dirs(raw: Any) -> tuple[str, ...]:
+    """校验并归一化噪音目录配置。
+
+    条目按文件名 glob 解释（``fnmatch``），因此 ``*.egg-info`` 这类模式
+    可以直接写进配置。含路径分隔符的条目会被拒绝：忽略规则只作用于
+    目录名，不解析相对路径。
+
+    Args:
+        raw: 配置中的条目列表。
+
+    Returns:
+        去重并保持顺序的条目元组。空列表表示关闭噪音目录过滤。
+
+    Raises:
+        ValueError: 配置不是列表，或条目为空、不是字符串、含路径分隔符。
+    """
+    if not isinstance(raw, list):
+        raise ValueError("tools.ignore_dirs must be a list of directory names or glob patterns")
+
+    patterns: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"tools.ignore_dirs entries must be non-empty strings: {item!r}")
+        name = item.strip()
+        if "/" in name or "\\" in name:
+            raise ValueError(f"tools.ignore_dirs entries must be directory names, not paths: {item!r}")
+        if name not in patterns:
+            patterns.append(name)
+    return tuple(patterns)
+
+
 def _profile_preset(profile: str) -> dict[str, dict[str, Any]]:
     """返回档位对应的压缩参数。
 
@@ -393,6 +450,7 @@ class Settings:
         self.trace_capture_messages: bool = bool(cfg["trace"]["capture_messages"])
 
         self.tools_read_roots: tuple[Path, ...] = _resolve_read_roots(self.repo_root, cfg["tools"]["read_roots"])
+        self.tools_ignore_dirs: tuple[str, ...] = _resolve_ignore_dirs(cfg["tools"]["ignore_dirs"])
 
         self.chat_answer_preview: int = int(cfg["chat"]["answer_preview"])
         self.chat_max_records: int = int(cfg["chat"]["max_records"])

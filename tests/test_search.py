@@ -218,6 +218,83 @@ def test_grep_explicit_subdir_bypasses_gitignore(
     assert "needle" in out
 
 
+def test_grep_reports_skipped_ignored_dirs_from_root(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """根扫描末尾应提示被跳过的噪音目录，便于按需进入。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
+    (repo / "traces").mkdir()
+    (repo / "traces" / "run.jsonl").write_text("needle\n", encoding="utf-8")
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "index.js").write_text("needle\n", encoding="utf-8")
+    (repo / "README.md").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "."})
+
+    assert "README.md" in out
+    assert "run.jsonl" not in out
+    assert "index.js" not in out
+    assert "skipped ignored dirs: node_modules/, traces/" in out
+    assert "pass path='<dir>'" in out
+
+
+def test_grep_searches_explicit_ignored_dir(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式指向噪音目录时，起点被搜索而不是被排除。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "index.js").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "node_modules"})
+
+    assert "node_modules/pkg/index.js" in out
+
+
+def test_grep_skips_nested_noise_under_explicit_dir(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式目录内部的后代噪音目录仍不搜索。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+    (repo / "src").mkdir()
+    (repo / "src" / "a.js").write_text("needle\n", encoding="utf-8")
+    (repo / "src" / "node_modules" / "dep").mkdir(parents=True)
+    (repo / "src" / "node_modules" / "dep" / "index.js").write_text("needle\n", encoding="utf-8")
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "src"})
+
+    assert "src/a.js" in out
+    assert "dep/index.js" not in out
+
+
+def test_grep_rg_explicit_scope_uses_target_as_cwd(
+    sample: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rg 显式 scope 应以起点为 cwd，避免排除规则挡住起点本身。"""
+    import subprocess
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: "/fake/rg")
+
+    def _fake(cmd, **kwargs):
+        calls["cmd"] = cmd
+        calls["cwd"] = kwargs["cwd"]
+        return subprocess.CompletedProcess(cmd, 0, stdout="pkg/index.js:1:needle\n", stderr="")
+
+    monkeypatch.setattr("breeze.tools.search.subprocess.run", _fake)
+
+    out = registry.execute("grep", {"pattern": "needle", "path": "src"})
+
+    assert calls["cwd"] == str((sample / "src").resolve())
+    assert calls["cmd"][-2:] == ["needle", "."]
+    assert "src/pkg/index.js:1:needle" in out
+
+
 def test_grep_skips_env_from_root(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,

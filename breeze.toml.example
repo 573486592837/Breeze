@@ -44,6 +44,19 @@ permission = "strict"
 # may access these paths; write tools still operate only inside this repo.
 # Relative paths are resolved against the repository root.
 read_roots = []
+# Noise directories collapsed to a single "(ignored)" line instead of being
+# expanded in list_files/grep. Entries are directory-name glob patterns.
+# Explicitly passing path="<dir>" still lets the agent inspect them.
+# Set to [] to disable all noise filtering; .git and .env* protection is
+# separate and cannot be disabled.
+ignore_dirs = [
+  ".hg", ".svn",
+  "__pycache__", ".venv", "venv", ".tox", ".mypy_cache", ".ruff_cache",
+  ".pytest_cache", ".coverage", "htmlcov", ".cache",
+  "build", "dist", "node_modules",
+  ".idea", ".vscode", ".ipynb_checkpoints",
+  "*.egg-info",
+]
 
 [context]
 # Set to false to disable context management entirely.
