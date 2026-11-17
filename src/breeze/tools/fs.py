@@ -1,16 +1,23 @@
 """文件系统工具。
 
 提供 list_files 和 read_file，两者均通过 safe_path 限定在仓库根目录内。
+list_files 在文件后附行数与字节大小，便于模型决定全读还是定点读；
 噪音目录（缓存、构建产物、虚拟环境等）默认折叠成一行提示而不展开，
 显式指定 path 时仍可访问；具体列表由 ``[tools] ignore_dirs`` 配置。
 """
 
 import fnmatch
+from functools import lru_cache
 from pathlib import Path
 
 from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import ensure_readable, is_read_protected, safe_read_path
+
+# 计行需要读取文件；超过该大小的文件只显示字节大小，避免 list_files
+# 在大文件或依赖目录上产生过多 I/O。
+MAX_LINE_COUNT_BYTES = 256 * 1024
+_BINARY_SAMPLE_BYTES = 8192
 
 
 def is_ignored_dir_name(name: str) -> bool:
@@ -122,10 +129,51 @@ def is_ignored(
     return False
 
 
+def _format_size(size: int) -> str:
+    """把字节数格式化为紧凑的人类可读形式。"""
+    if size < 1024:
+        return f"{size}B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f}K"
+    return f"{size / (1024 * 1024):.1f}M"
+
+
+@lru_cache(maxsize=2048)
+def _file_summary(path_str: str, _mtime_ns: int, size: int) -> str:
+    """返回文件的行数与大小摘要。
+
+    大文件与二进制文件不读取内容，只返回大小，避免 list_files 为了
+    计行而扫描整个依赖目录。缓存键包含 mtime 与大小，文件被修改后
+    会重新计算。
+
+    Args:
+        path_str: 文件的绝对路径字符串。
+        _mtime_ns: 文件修改时间（纳秒），仅用于缓存失效。
+        size: 文件字节数。
+
+    Returns:
+        形如 ``123L, 4.2K``、``binary, 18.2K`` 或 ``1.2M`` 的摘要。
+    """
+    human = _format_size(size)
+    if size > MAX_LINE_COUNT_BYTES:
+        return human
+    try:
+        with Path(path_str).open("rb") as f:
+            data = f.read()
+    except OSError:
+        return human
+    if b"\x00" in data[:_BINARY_SAMPLE_BYTES]:
+        return f"binary, {human}"
+    lines = len(data.decode("utf-8", errors="replace").splitlines())
+    return f"{lines}L, {human}"
+
+
 @register(
     name="list_files",
     description=(
-        "列出仓库或只读参考目录内的文件。返回路径，每行一个。"
+        "列出仓库或只读参考目录内的文件。返回路径，每行一个；"
+        "文件后附行数与字节大小（如 '(123L, 4.2K)'），大文件与二进制文件只附大小，"
+        "用于判断全读还是用 read_file 的 start_line/end_line 定点读。"
         "从仓库根递归时，.gitignore 命中的路径与噪音目录（缓存、构建、虚拟环境等）"
         "折叠成一行 '(ignored: 来源)' 提示，不展开内容；"
         "显式指定子目录时列出其内容，起点即使属于噪音目录也会被列出。"
@@ -249,7 +297,13 @@ def list_files(
             if len(entries) >= max_entries:
                 truncated = True
                 return
-            entries.append(display(child))
+            try:
+                stat = child.stat()
+            except OSError:
+                entries.append(display(child))
+            else:
+                summary = _file_summary(str(child), stat.st_mtime_ns, stat.st_size)
+                entries.append(f"{display(child)} ({summary})")
             shown += 1
 
         if hidden > 0 and not truncated:

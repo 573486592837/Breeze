@@ -1430,4 +1430,22 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 
 新增默认值/覆盖/空列表/去重/非法配置、折叠行与截断配额、显式目录进入、
 嵌套噪音折叠、grep 跳过提示与 rg/Python 两种显式 scope 测试；全量
-827 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+831 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+
+## list_files 附带文件规模（未发布）
+
+`list_files` 的每个文件条目现在附带行数与字节大小，例如
+`src/breeze/runtime/agent.py (1658L, 62.4K)`：
+
+- 行数直接提示该全读还是用 `read_file` 的 `start_line/end_line` 定点读取；
+  大小用于在计行被跳过时仍能判断文件规模。
+- 超过 256KB 的文件与含 NUL 的二进制文件只显示大小（后者标记 `binary`），
+  避免为了计行扫描大文件或依赖目录。
+- 摘要按 `(路径, mtime, 大小)` 缓存，同一进程内重复列举不会重复读取；
+  文件修改后自动刷新。
+- 目录行保持原样，`(ignored: ...)` 折叠提示不变。
+
+### 验证
+
+新增行数/大小、空文件、二进制、大文件跳过计行与修改后刷新测试；全量
+835 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
