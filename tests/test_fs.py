@@ -38,10 +38,57 @@ def test_list_files_basic(repo: Path) -> None:
     out = registry.execute("list_files", {"path": ".", "max_depth": 1})
 
     assert "src/" in out
+    assert "src/ (" not in out
     assert "README.md" in out
     assert "__pycache__/ (ignored: tools.ignore_dirs)" in out
     assert "c.pyc" not in out
     assert ".git/" not in out
+
+
+def test_list_files_includes_line_count_and_size(repo: Path) -> None:
+    """文件行应附带行数与字节大小，便于决定全读还是定点读。"""
+    (repo / "x.py").write_bytes(b"a\nb\nc\n")
+    (repo / "empty.py").write_bytes(b"")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+
+    assert "x.py (3L, 6B)" in out
+    assert "empty.py (0L, 0B)" in out
+
+
+def test_list_files_marks_binary_files(repo: Path) -> None:
+    """二进制文件只显示标记与大小，不尝试计行。"""
+    (repo / "blob.bin").write_bytes(b"\x00\x01\x02")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+
+    assert "blob.bin (binary, 3B)" in out
+
+
+def test_list_files_large_file_skips_line_count(repo: Path) -> None:
+    """超过计行上限的文件只显示大小，避免大量 I/O。"""
+    from breeze.tools.fs import MAX_LINE_COUNT_BYTES
+
+    (repo / "big.txt").write_bytes(b"x" * (MAX_LINE_COUNT_BYTES + 1))
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1})
+    line = next(ln for ln in out.splitlines() if ln.startswith("big.txt "))
+
+    assert "L," not in line
+    assert "(256.0K)" in line
+
+
+def test_list_files_metadata_refreshes_after_edit(repo: Path) -> None:
+    """缓存键包含 mtime 与大小，文件修改后摘要应更新。"""
+    target = repo / "x.py"
+    target.write_bytes(b"a\n")
+    first = registry.execute("list_files", {"path": ".", "max_depth": 1})
+    assert "x.py (1L, 2B)" in first
+
+    target.write_bytes(b"a\nb\n")
+    second = registry.execute("list_files", {"path": ".", "max_depth": 1})
+
+    assert "x.py (2L, 4B)" in second
 
 
 def test_list_files_max_entries(repo: Path) -> None:
@@ -203,7 +250,7 @@ def test_list_files_hides_env_files(repo: Path) -> None:
     lines = out.splitlines()
 
     assert ".env" not in lines
-    assert ".env.example" in lines
+    assert any(line.startswith(".env.example") for line in lines)
 
 
 # ─── safe_path ───
