@@ -668,28 +668,46 @@ def _ask_user_callback(
     console: Console,
     read: Callable[[str], str],
     progress: _TurnProgress | None = None,
-) -> Callable[[str, list[str] | None], str]:
-    """构造 ask_user 的终端回调：展示问题与候选，返回选项文本或原始回答。"""
+) -> Callable[[list[tuple[str, list[str] | None]]], list[str]]:
+    """构造 ask_user 的终端回调：先展示整批问题，再逐题读取答案。"""
 
-    def ask(question: str, options: list[str] | None) -> str:
+    def ask(questions: list[tuple[str, list[str] | None]]) -> list[str]:
         # Agent 可能正显示状态行；提问前先收起，避免 input 与动态状态重叠。
         if progress is not None:
             progress.stop()
         console.print()
-        console.print("[cyan]Agent 提问：[/cyan]")
-        console.print(question, markup=False)
-        choices = [str(option) for option in (options or [])][:4]
-        for index, option in enumerate(choices, 1):
-            console.print(f"  {index}. {option}", markup=False)
-        try:
-            answer = read("Answer> ").strip()
-        except EOFError:
-            return ""
-        if choices and answer.isdigit():
-            picked = int(answer) - 1
-            if 0 <= picked < len(choices):
-                return choices[picked]
-        return answer
+        total = len(questions)
+        if total == 1:
+            console.print("[cyan]Agent 提问：[/cyan]")
+        else:
+            console.print(f"[cyan]Agent 提问（{total} 个）：[/cyan]")
+
+        choices_by_question: list[list[str]] = []
+        for index, (question, options) in enumerate(questions, 1):
+            prefix = f"{index}. " if total > 1 else ""
+            console.print(f"{prefix}{question}", markup=False)
+            choices = [str(option) for option in (options or [])][:4]
+            choices_by_question.append(choices)
+            indent = "   " if total > 1 else "  "
+            for option_index, option in enumerate(choices, 1):
+                console.print(f"{indent}{option_index}. {option}", markup=False)
+            if total > 1 and index < total:
+                console.print()
+
+        answers: list[str] = []
+        for index, choices in enumerate(choices_by_question, 1):
+            prompt = "Answer> " if total == 1 else f"Q{index}> "
+            try:
+                answer = read(prompt).strip()
+            except EOFError:
+                break
+            if choices and answer.isdigit():
+                picked = int(answer) - 1
+                if 0 <= picked < len(choices):
+                    answer = choices[picked]
+            answers.append(answer)
+        answers.extend([""] * (total - len(answers)))
+        return answers
 
     return ask
 
