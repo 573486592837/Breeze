@@ -5,10 +5,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from breeze import doctor
-from breeze.capabilities import Capabilities
-from breeze.cli import app
+from breeze.cli import app, doctor
 from breeze.llm import LLMResponse
+from breeze.runtime.capabilities import Capabilities
 
 runner = CliRunner()
 

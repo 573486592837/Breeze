@@ -87,7 +87,7 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"src/breeze/cli.py" = ["B008"]
+"src/breeze/cli/main.py" = ["B008"]
 "tests/*" = ["ARG001", "ARG002"]
 "scripts/*" = ["ARG002"]
 

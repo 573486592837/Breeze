@@ -10,7 +10,7 @@ import pytest
 from rich.console import Console
 from typer.testing import CliRunner
 
-from breeze import cli as cli_module
+import breeze.cli.main as cli_module
 from breeze.cli import app
 from breeze.llm import LLMResponse
 
@@ -674,8 +674,8 @@ def test_chat_list_sessions_without_llm(repo: Path, tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(cli_module, "LLMClient", NoLLM)
 
-    from breeze.session import SessionStore
-    from breeze.state import SessionState, TurnLedger
+    from breeze.chat.session import SessionStore
+    from breeze.runtime.state import SessionState, TurnLedger
 
     session_dir = tmp_path / "sessions"
     store = SessionStore(session_dir, "20260101T000000_aaa", repo_root=repo, model="fake-model")
@@ -701,8 +701,8 @@ def test_chat_list_sessions_empty(tmp_path: Path) -> None:
 
 def test_chat_list_search_filters_by_keyword(repo: Path, tmp_path: Path) -> None:
     """--list --search 只显示命中提问或回答的会话。"""
-    from breeze.session import SessionStore
-    from breeze.state import SessionState, TurnLedger
+    from breeze.chat.session import SessionStore
+    from breeze.runtime.state import SessionState, TurnLedger
 
     session_dir = tmp_path / "sessions"
     hit = SessionStore(session_dir, "20260101T000000_aaa", repo_root=repo, model="m")
@@ -1177,8 +1177,8 @@ class _FakeConsole:
 
 def test_turn_progress_shows_and_replaces_previous_reasoning() -> None:
     """等待模型时显示上一轮思考；进入下一步后替换而不是累积。"""
-    from breeze.agent import AgentEvent
-    from breeze.cli import _TurnProgress
+    from breeze.cli.main import _TurnProgress
+    from breeze.runtime.agent import AgentEvent
 
     console = _FakeConsole()
     progress = _TurnProgress(console)
@@ -1202,7 +1202,7 @@ def test_turn_progress_shows_and_replaces_previous_reasoning() -> None:
 
 def test_reasoning_preview_keeps_tail_and_caps_lines() -> None:
     """思考摘要只保留尾部若干行，避免多轮内容堆满状态栏。"""
-    from breeze.cli import _TurnProgress
+    from breeze.cli.main import _TurnProgress
 
     text = "\n".join(f"line {i}" for i in range(30))
 

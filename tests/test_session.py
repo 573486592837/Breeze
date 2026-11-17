@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from breeze.session import SessionStore
-from breeze.state import SessionState, TurnRecord
+from breeze.chat.session import SessionStore
+from breeze.runtime.state import SessionState, TurnRecord
 
 
 def _store(tmp_path: Path, session_id: str = "s1") -> SessionStore:

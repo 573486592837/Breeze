@@ -1366,3 +1366,20 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 与隔离、预算过半阈值、两种收尾消息、主会话/trace 隔离、侧任务内禁用配置
 命令与 close 后不可恢复测试；全量 813 passed / 2 skipped，`ruff check` 与
 `ruff format --check` 全绿；`breeze.__version__` 与 packaging 测试同步到 1.9.0。
+
+## 包结构整理（未发布）
+
+`src/breeze` 顶层文件收敛为 `config.py`、`llm.py` 与 `cli/`、`chat/`、
+`runtime/`、`tools/` 四个子包：
+
+- `cli/`：`main.py`（Typer 入口）、`doctor.py`、`update_check.py`；
+  `breeze.cli:app` 入口保持不变。
+- `chat/`：`loop.py`、`commands.py`、`input.py`、`session.py`、`side.py`；
+  `breeze.chat` 继续导出 `run_chat` / `HELP_TEXT`。
+- `runtime/`：`agent.py`、`context.py`、`state.py`、`snapshots.py`、
+  `capabilities.py`、`instructions.py`、`trace.py`；不依赖 CLI 或终端输入。
+- `tools/`、`config.py`、`llm.py` 保持原位置；依赖方向固定为
+  `cli → chat → runtime → tools/config`。
+
+纯移动重构，不改变 CLI、提示词、trace 或持久化格式；全量 813 passed /
+2 skipped，`ruff check` 与 `ruff format --check` 全绿。

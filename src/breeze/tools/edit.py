@@ -13,8 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from breeze.capabilities import is_git_repo, is_python_project
 from breeze.config import settings
+from breeze.runtime.capabilities import is_git_repo, is_python_project
 from breeze.tools.registry import register
 from breeze.tools.safety import safe_path
 from breeze.tools.shell import run_command

@@ -1,6 +1,6 @@
 """update_plan 工具的单元测试。"""
 
-from breeze.state import PLAN_MAX_CHARS, SessionState
+from breeze.runtime.state import PLAN_MAX_CHARS, SessionState
 from breeze.tools import registry
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from breeze.state import SessionState, TurnLedger
+from breeze.runtime.state import SessionState, TurnLedger
 
 
 def _state(max_entries: int = 8) -> SessionState:

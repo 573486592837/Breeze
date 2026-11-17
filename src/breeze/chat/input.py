@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - 依赖缺失时保留逐行输入
     Completion = None
     CompleteStyle = None
 
-from breeze.chat_commands import COMMANDS, CommandSpec
+from breeze.chat.commands import COMMANDS, CommandSpec
 
 if Completer is not None:
 

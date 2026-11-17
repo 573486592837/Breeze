@@ -3,9 +3,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from breeze.chat_commands import ChatController
+from breeze.chat.commands import ChatController
 from breeze.config import settings
-from breeze.state import SessionState, TurnLedger
+from breeze.runtime.state import SessionState, TurnLedger
 
 
 class FakeLLM:

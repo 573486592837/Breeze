@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from breeze import capabilities as capabilities_module
-from breeze.capabilities import Capabilities, detect, is_git_repo, is_python_project
+from breeze.runtime import capabilities as capabilities_module
+from breeze.runtime.capabilities import Capabilities, detect, is_git_repo, is_python_project
 
 
 def test_is_python_project_by_marker(tmp_path: Path) -> None:

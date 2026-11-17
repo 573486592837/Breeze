@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from breeze.context import (
+from breeze.runtime.context import (
     SPILL_TOOLS,
     ContextConfig,
     ContextManager,
@@ -55,7 +55,7 @@ def _code_lines(n: int, prefix: str = "def f") -> str:
 
 
 def _state(symbols: dict[str, str] | None = None):
-    from breeze.state import SessionState
+    from breeze.runtime.state import SessionState
 
     st = SessionState(max_entries=8)
     for name, loc in (symbols or {}).items():
@@ -366,7 +366,7 @@ def test_single_result_fallback_compaction() -> None:
 
 def test_count_text_tokens_prefers_tiktoken() -> None:
     """tiktoken 可用时给出真实计数；不可用时回退粗估。"""
-    import breeze.context as ctx
+    import breeze.runtime.context as ctx
 
     tokens = _count_text_tokens("def _check_options(tokens):")
     assert tokens > 0
@@ -379,7 +379,7 @@ def test_count_text_tokens_prefers_tiktoken() -> None:
 
 def test_count_tokens_fallback_without_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
     """编码器不可用时回退为 4 字符估算。"""
-    import breeze.context as ctx
+    import breeze.runtime.context as ctx
 
     monkeypatch.setattr(ctx, "_encoding", None)
     monkeypatch.setattr(ctx, "_encoding_failed", True)
@@ -388,7 +388,7 @@ def test_count_tokens_fallback_without_encoding(monkeypatch: pytest.MonkeyPatch)
 
 def test_overflow_spill_uses_fallback_when_monkeypatched(tmp_path, monkeypatch) -> None:
     """兜底估算路径下分级逻辑同样生效。"""
-    import breeze.context as ctx
+    import breeze.runtime.context as ctx
 
     monkeypatch.setattr(ctx, "_encoding", None)
     monkeypatch.setattr(ctx, "_encoding_failed", True)
@@ -852,7 +852,7 @@ def test_reasoning_counts_toward_prompt_tokens() -> None:
 
 
 def _prior_state():
-    from breeze.state import SessionState
+    from breeze.runtime.state import SessionState
 
     st = SessionState(max_entries=4)
     st.update(
@@ -893,7 +893,7 @@ def test_state_not_injected_without_turn_start_flag() -> None:
 
 def test_repeated_reads_injected_without_compression() -> None:
     """未触发压缩时也会注入重复读取警示。"""
-    from breeze.state import SessionState
+    from breeze.runtime.state import SessionState
 
     cm = ContextManager(ContextConfig(intra_turn_budget=100_000, hard_budget=100_000))
     state = SessionState()

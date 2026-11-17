@@ -6,8 +6,10 @@ from urllib.error import HTTPError
 import pytest
 from typer.testing import CliRunner
 
-from breeze import cli, update_check
-from breeze.update_check import UpdateResult
+import breeze.cli.main as cli
+from breeze.cli import app, update_check
+from breeze.cli.main import _maybe_notify_update
+from breeze.cli.update_check import UpdateResult
 
 runner = CliRunner()
 
@@ -102,7 +104,7 @@ def test_update_command_reports_newer_version(monkeypatch: pytest.MonkeyPatch) -
         lambda **_: UpdateResult(latest="9.9.9", url="https://example.com/release"),
     )
 
-    result = runner.invoke(cli.app, ["update"])
+    result = runner.invoke(app, ["update"])
 
     assert result.exit_code == 0
     assert "发现新版本" in result.stdout
@@ -116,7 +118,7 @@ def test_update_command_failure_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -
         lambda **_: UpdateResult(error="offline"),
     )
 
-    result = runner.invoke(cli.app, ["update"])
+    result = runner.invoke(app, ["update"])
 
     assert result.exit_code == 1
     assert "检查更新失败" in result.stdout or "检查更新失败" in result.stderr
@@ -129,7 +131,7 @@ def test_update_command_reports_current_version(monkeypatch: pytest.MonkeyPatch)
         lambda **_: UpdateResult(latest=update_check.__version__),
     )
 
-    result = runner.invoke(cli.app, ["update"])
+    result = runner.invoke(app, ["update"])
 
     assert result.exit_code == 0
     assert "当前已是最新版本" in result.stdout
@@ -150,7 +152,7 @@ def test_startup_notice_prints_new_version(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(cli, "console", fake)
     monkeypatch.setattr(cli, "check_for_update", lambda **_: UpdateResult(latest="9.9.9"))
 
-    cli._maybe_notify_update()
+    _maybe_notify_update()
 
     assert "发现新版本" in fake.lines[0]
 
@@ -160,6 +162,6 @@ def test_startup_notice_respects_opt_out(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("BREEZE_NO_UPDATE_CHECK", "1")
     monkeypatch.setattr(cli, "check_for_update", lambda **_: called.append(True))
 
-    cli._maybe_notify_update()
+    _maybe_notify_update()
 
     assert called == []

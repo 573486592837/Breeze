@@ -681,17 +681,26 @@ python scripts/report.py --input reports/quality_core.json --output reports/qual
 ```text
 breeze/
 ├── src/breeze/
-│   ├── agent.py          # ReAct 循环
-│   ├── chat.py           # 交互式多回合会话循环
-│   ├── chat_commands.py  # 会话内 /model /trace /profile /set
-│   ├── cli.py            # CLI 入口
+│   ├── runtime/          # 与界面无关的 Agent 运行时
+│   │   ├── agent.py      # ReAct 循环
+│   │   ├── context.py    # 上下文管理
+│   │   ├── state.py      # 跨压缩的会话事实索引
+│   │   ├── snapshots.py  # 回合间工作集快照
+│   │   ├── capabilities.py
+│   │   ├── instructions.py
+│   │   └── trace.py      # JSONL trace
+│   ├── chat/             # 交互式会话
+│   │   ├── loop.py       # 多回合循环
+│   │   ├── commands.py   # /model /trace /profile /set
+│   │   ├── input.py      # 终端输入 / 多行粘贴
+│   │   ├── session.py    # 会话持久化（~/.breeze/sessions）
+│   │   └── side.py       # 只读侧任务分支
+│   ├── cli/              # 命令层
+│   │   ├── main.py       # CLI 入口（breeze.cli:app）
+│   │   ├── doctor.py     # 环境诊断（breeze doctor）
+│   │   └── update_check.py
 │   ├── config.py         # 分层配置
-│   ├── context.py        # 上下文管理
-│   ├── doctor.py         # 环境诊断（breeze doctor）
 │   ├── llm.py            # LLM 客户端
-│   ├── session.py        # 会话持久化（~/.breeze/sessions）
-│   ├── state.py          # 跨压缩的会话事实索引
-│   ├── trace.py          # JSONL trace
 │   └── tools/
 │       ├── registry.py
 │       ├── safety.py

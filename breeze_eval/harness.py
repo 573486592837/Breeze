@@ -25,12 +25,12 @@ from typing import Any
 
 import yaml
 
-from breeze.agent import Agent
 from breeze.chat import run_chat
 from breeze.config import settings
 from breeze.llm import LLMClient
+from breeze.runtime.agent import Agent
+from breeze.runtime.trace import RunTrace
 from breeze.tools.shell import decode_process_output
-from breeze.trace import RunTrace
 
 # eval/setup 命令里的 {python} 替换为当前解释器，避免 PATH 上的 python
 # 与运行评估的 conda 环境不一致。
