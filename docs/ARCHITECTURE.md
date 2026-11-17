@@ -25,24 +25,24 @@ breeze ask ──> cli.ask ──> Agent.run ──┬─> ContextManager.build_
 flowchart TB
     subgraph L1["入口层"]
         direction LR
-        CLI["cli.py<br/>Typer：ask / chat"]
-        INPUT["chat_input.py<br/>终端输入 / 多行粘贴"]
-        CMD["chat_commands.py<br/>ChatController"]
+        CLI["cli/main.py<br/>Typer：ask / chat"]
+        INPUT["chat/input.py<br/>终端输入 / 多行粘贴"]
+        CMD["chat/commands.py<br/>ChatController"]
     end
 
     subgraph L2["编排层"]
         direction LR
-        CHAT["chat.py<br/>多回合循环"]
-        AGENT["agent.py<br/>ReAct Loop"]
-        CAP["capabilities.py<br/>环境能力探测"]
-        INS["instructions.py<br/>AGENTS.md 注入"]
+        CHAT["chat/loop.py<br/>多回合循环"]
+        AGENT["runtime/agent.py<br/>ReAct Loop"]
+        CAP["runtime/capabilities.py<br/>环境能力探测"]
+        INS["runtime/instructions.py<br/>AGENTS.md 注入"]
     end
 
     subgraph L3["上下文与记忆"]
         direction LR
-        CTX["context.py<br/>ContextManager"]
-        STATE["state.py<br/>SessionState / TurnLedger"]
-        SESSION["session.py<br/>SessionStore"]
+        CTX["runtime/context.py<br/>ContextManager"]
+        STATE["runtime/state.py<br/>SessionState / TurnLedger"]
+        SESSION["chat/session.py<br/>SessionStore"]
     end
 
     subgraph L4["执行层"]
@@ -55,7 +55,7 @@ flowchart TB
 
     subgraph L5["可观测与评估"]
         direction LR
-        TRACE["trace.py<br/>RunTrace JSONL"]
+        TRACE["runtime/trace.py<br/>RunTrace JSONL"]
         EVAL["breeze_eval/harness.py"]
         SCRIPTS["scripts/eval.py<br/>report.py"]
     end
@@ -76,16 +76,22 @@ flowchart TB
 
 | 文件 | 核心对象 | 职责 | 关键约束 |
 |---|---|---|---|
-| `cli.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
-| `chat.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘、侧任务输入分发 | 与 CLI 解耦，依赖可注入 |
-| `side.py` | `SideTree` / `SideTask` | 主对话下的一层只读分支：创建、暂停、切换、关闭 | 不持久化、无 resume；退出丢弃所有分支 |
-| `chat_commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
-| `agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复、只读模式 | 默认 25 步、连续编辑失败 3 次 |
-| `context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
-| `state.py` | `SessionState` / `TurnLedger` | 从真实工具结果提取事实；跨回合归档问答结论 | 不采信模型自述 |
-| `session.py` | `SessionStore` | append-only JSONL，恢复 ledger/state/config | 空会话不落盘 |
+| `cli/main.py` | `ask` / `chat` | 解析参数、切换 `settings.repo_root`、渲染答案与摘要 | 不需要模型的命令不校验 API Key |
+| `cli/doctor.py` | `run_checks` | 环境诊断；`--ping` 额外验证模型连通性 | 不输出密钥；离线检查不发请求 |
+| `cli/update_check.py` | `check_for_update` | 查询最新 release 并缓存 24 小时 | 只提示，不自动升级 |
+| `chat/loop.py` | `run_chat` | 多回合输入循环、每回合 trace、会话恢复与落盘、侧任务输入分发 | 与 CLI 解耦，依赖可注入 |
+| `chat/side.py` | `SideTree` / `SideTask` | 主对话下的一层只读分支：创建、暂停、切换、关闭 | 不持久化、无 resume；退出丢弃所有分支 |
+| `chat/commands.py` | `ChatController` | 运行中改模型/预算/权限/trace，写 config 事件 | 配置变更可被 `--resume` 恢复 |
+| `chat/input.py` | `make_chat_input` | 终端输入、多行粘贴合并提交 | 非 TTY 时按行读取 |
+| `chat/session.py` | `SessionStore` | append-only JSONL，恢复 ledger/state/config | 空会话不落盘 |
+| `runtime/agent.py` | `Agent` | ReAct 主循环、步数提醒、编辑失败上限、空答案恢复、只读模式 | 默认 25 步、连续编辑失败 3 次 |
+| `runtime/context.py` | `ContextManager` | 软/硬预算、按工具类别降级、前缀复用统计 | 软预算不动 `read_file` |
+| `runtime/state.py` | `SessionState` / `TurnLedger` | 从真实工具结果提取事实；跨回合归档问答结论 | 不采信模型自述 |
+| `runtime/snapshots.py` | `SnapshotStore` | 回合间工作集快照，供下一回合直接使用 | 按 mtime/size 校验，过期即丢弃 |
+| `runtime/trace.py` | `RunTrace` | `run_start / llm_call / tool_call / guard / permission / run_summary` | 每回合或固定文件追加 |
+| `runtime/capabilities.py` | `detect` | 按环境裁剪工具集与提示词 | 写操作后可能重新探测 |
+| `runtime/instructions.py` | AGENTS.md | 仓库级指引作为独立 system 消息注入 | 最多 8000 字符，不能放宽安全规则 |
 | `llm.py` | `LLMClient` | LiteLLM 调用、超时重试、参数不兼容回退、用量提取 | API Key 只来自环境变量 |
-| `trace.py` | `RunTrace` | `run_start / llm_call / tool_call / guard / permission / run_summary` | 每回合或固定文件追加 |
 | `tools/registry.py` | `TOOLS` | 装饰器注册、schema 导出、按名执行、参数校验 | 名称全局唯一；参数错误抛 `ToolArgumentError` |
 | `tools/safety.py` | `safe_path` | 仓库边界；`.env*`/`.git/` 读取保护 | 写操作只能用 `safe_path` |
 | `tools/fs.py` | `list_files` / `read_file` | 目录浏览、带行号读取、`start_line/end_line` 定点读 | 忽略缓存/构建目录与 `.gitignore` |
@@ -94,9 +100,10 @@ flowchart TB
 | `tools/edit.py` | 5 个工具 | 单点替换、建文件、删路径、回滚、pytest | 补丁大小、受保护路径、原子写入 |
 | `tools/plan.py` | `update_plan` | 计划写入 `SessionState.plan` | 最多 2000 字符 |
 | `tools/interaction.py` | `ask_user` | 向用户澄清需求；回答由 CLI 回调注入 | 仅交互式下发；每回合最多 5 个 |
-| `capabilities.py` | `detect` | 按环境裁剪工具集与提示词 | 写操作后可能重新探测 |
-| `instructions.py` | AGENTS.md | 仓库级指引作为独立 system 消息注入 | 最多 8000 字符，不能放宽安全规则 |
 | `config.py` | `settings` | 默认值 → 用户 → 仓库 → 环境变量 → CLI 合并 | 安全白名单不可配置 |
+
+包内依赖方向固定为 `cli → chat → runtime → tools/config`；`llm.py` 与
+`config.py` 作为基础模块被各层共享，不反向依赖上层。
 
 ## 3. 单轮 `breeze ask` 时序
 
@@ -517,7 +524,7 @@ flowchart TD
 ## 11. 扩展点
 
 - **新增工具**：在 `src/breeze/tools/` 下用 `@register(name=..., description=..., parameters=...)`
-  注册，函数返回字符串；若依赖环境能力，在 `capabilities.py` 增加探测并在
+  注册，函数返回字符串；若依赖环境能力，在 `runtime/capabilities.py` 增加探测并在
   `agent._enabled_tool_names()` 裁剪。
 - **调整压缩策略**：改 `ContextManager` 的 `POINTER_TOOLS`、`SPILL_TOOLS`、
   `READ_SPILL_MIN_CHARS`，或通过 `[context]` / 压缩档位改预算。

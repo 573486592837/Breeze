@@ -5,7 +5,7 @@ ContextManager 在每次调用 LLM 时重新渲染到系统提示之后，
 因此计划不会随轮数累计或回合内压缩被挤出上下文。
 """
 
-from breeze.state import PLAN_MAX_CHARS
+from breeze.runtime.state import PLAN_MAX_CHARS
 from breeze.tools.registry import register
 
 

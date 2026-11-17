@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from breeze.side import SideTree
+from breeze.chat.side import SideTree
 
 
 def test_branches_are_always_spawned_from_main() -> None:

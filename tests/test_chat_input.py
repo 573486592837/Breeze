@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from breeze import chat_input
+from breeze.chat import input as chat_input
 
 
 class _Stream:
@@ -105,7 +105,7 @@ def test_slash_completer_ignores_non_commands_and_arguments() -> None:
 def test_help_text_is_generated_from_command_metadata() -> None:
     """帮助文本与补全共用同一份命令元数据。"""
     from breeze.chat import HELP_TEXT
-    from breeze.chat_commands import COMMANDS, help_text
+    from breeze.chat.commands import COMMANDS, help_text
 
     assert help_text() == HELP_TEXT
     assert "/plan" in HELP_TEXT

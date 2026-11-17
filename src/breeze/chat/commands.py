@@ -19,8 +19,8 @@ from breeze.config import (
     context_profile_values,
     settings,
 )
-from breeze.context import ContextConfig, ContextManager
-from breeze.trace import normalize_trace_name
+from breeze.runtime.context import ContextConfig, ContextManager
+from breeze.runtime.trace import normalize_trace_name
 
 _ALLOWED_PROFILES = ", ".join([*CONTEXT_PROFILES, CUSTOM_PROFILE])
 _SET_KEYS = ("max_steps", "max_edit_failures", "temperature", "permission")

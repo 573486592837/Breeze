@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from breeze.trace import RunTrace
+from breeze.runtime.trace import RunTrace
 
 
 @pytest.fixture

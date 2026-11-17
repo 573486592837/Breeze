@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from breeze.chat import HELP_TEXT, run_chat
-from breeze.state import SessionState, TurnLedger
+from breeze.runtime.state import SessionState, TurnLedger
 
 
 class StubSnapshots:

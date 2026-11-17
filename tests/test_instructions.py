@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from breeze.instructions import (
+from breeze.runtime.instructions import (
     AGENTS_FILENAME,
     MAX_INSTRUCTIONS_CHARS,
     load_project_instructions,

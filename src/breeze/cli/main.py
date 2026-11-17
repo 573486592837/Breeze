@@ -22,23 +22,23 @@ from rich.panel import Panel
 from rich.table import Table
 
 from breeze import __version__
-from breeze.agent import Agent, AgentEvent
-from breeze.chat import run_chat
-from breeze.chat_commands import ChatController
-from breeze.chat_input import make_chat_input
+from breeze.chat.commands import ChatController
+from breeze.chat.input import make_chat_input
+from breeze.chat.loop import run_chat
+from breeze.chat.session import SessionStore
+from breeze.cli.doctor import Check, run_checks
+from breeze.cli.update_check import check_for_update
 from breeze.config import PERMISSION_MODES, settings
-from breeze.doctor import Check, run_checks
 from breeze.llm import LLMClient
-from breeze.session import SessionStore
-from breeze.trace import RunTrace
-from breeze.update_check import check_for_update
+from breeze.runtime.agent import Agent, AgentEvent
+from breeze.runtime.trace import RunTrace
 
 app = typer.Typer(
     name="breeze",
     help="Token-efficient coding agent.",
     epilog=(
         "Examples:\n"
-        '  breeze ask "解释 src/breeze/agent.py 的作用" --max-steps 4\n'
+        '  breeze ask "解释 src/breeze/runtime/agent.py 的作用" --max-steps 4\n'
         '  breeze ask "修复 bug" --trace-name fix-bug\n'
         "  breeze chat --resume latest\n"
         "  breeze chat --list --search safe_path\n"

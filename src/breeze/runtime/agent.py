@@ -12,16 +12,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from breeze.capabilities import Capabilities, detect
 from breeze.config import PERMISSION_MODES, settings
-from breeze.context import ContextManager
-from breeze.instructions import load_project_instructions, render_project_instructions
 from breeze.llm import LLMClient, LLMResponse
-from breeze.snapshots import SnapshotStore
-from breeze.state import SessionState, TurnLedger
+from breeze.runtime.capabilities import Capabilities, detect
+from breeze.runtime.context import ContextManager
+from breeze.runtime.instructions import load_project_instructions, render_project_instructions
+from breeze.runtime.snapshots import SnapshotStore
+from breeze.runtime.state import SessionState, TurnLedger
+from breeze.runtime.trace import RunTrace
 from breeze.tools import registry, shell
 from breeze.tools.registry import ToolArgumentError
-from breeze.trace import RunTrace
 
 _EDIT_TOOLS = frozenset({"apply_patch", "create_file", "delete_path", "git_restore"})
 _WRITE_TOOLS = frozenset({"apply_patch", "create_file", "delete_path"})

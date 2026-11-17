@@ -52,7 +52,7 @@ body:
     attributes:
       label: 运行命令
       render: bash
-      placeholder: breeze ask "解释 src/breeze/agent.py"
+      placeholder: breeze ask "解释 src/breeze/runtime/agent.py"
     validations:
       required: true
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from breeze.snapshots import SNAPSHOT_VERSION, SnapshotStore, select_paths
+from breeze.runtime.snapshots import SNAPSHOT_VERSION, SnapshotStore, select_paths
 
 
 def _write(root: Path, name: str, text: str) -> Path:

@@ -18,8 +18,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from breeze.chat_commands import COMMANDS, HELP_TEXT
-from breeze.side import SideTask, SideTree
+from breeze.chat.commands import COMMANDS, HELP_TEXT
+from breeze.chat.side import SideTask, SideTree
 
 _SIDE_COMMAND_NAMES = frozenset({"sides", "back", "close", "switch", "help", "exit"})
 

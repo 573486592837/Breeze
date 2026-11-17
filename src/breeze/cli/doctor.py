@@ -15,9 +15,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from breeze import __version__
-from breeze.capabilities import Capabilities, detect
 from breeze.config import find_dotenv_path, settings
 from breeze.llm import LLMClient
+from breeze.runtime.capabilities import Capabilities, detect
 
 STATUS_OK = "ok"
 STATUS_WARN = "warn"
