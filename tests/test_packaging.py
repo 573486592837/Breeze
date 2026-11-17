@@ -31,7 +31,13 @@ def sdist_tops(tmp_path_factory: pytest.TempPathFactory) -> set[str]:
 
 def test_wheel_ships_runtime_modules(wheel_names: set[str]) -> None:
     """Agent、CLI、工具与持久化都应在包里。"""
-    for member in ("breeze/cli.py", "breeze/agent.py", "breeze/chat.py", "breeze/session.py", "breeze/tools/shell.py"):
+    for member in (
+        "breeze/cli/main.py",
+        "breeze/chat/loop.py",
+        "breeze/chat/session.py",
+        "breeze/runtime/agent.py",
+        "breeze/tools/shell.py",
+    ):
         assert member in wheel_names, member
 
 
