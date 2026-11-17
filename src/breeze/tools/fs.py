@@ -1,6 +1,8 @@
 """文件系统工具。
 
 提供 list_files 和 read_file，两者均通过 safe_path 限定在仓库根目录内。
+噪音目录（缓存、构建产物、虚拟环境等）默认折叠成一行提示而不展开，
+显式指定 path 时仍可访问；具体列表由 ``[tools] ignore_dirs`` 配置。
 """
 
 import fnmatch
@@ -10,48 +12,43 @@ from breeze.config import settings
 from breeze.tools.registry import register
 from breeze.tools.safety import ensure_readable, is_read_protected, safe_read_path
 
-IGNORED_DIRS: frozenset[str] = frozenset(
-    {
-        # 版本控制
-        ".git",
-        ".hg",
-        ".svn",
-        # Python 缓存与虚拟环境
-        "__pycache__",
-        ".venv",
-        "venv",
-        ".env",
-        ".tox",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-        ".coverage",
-        "htmlcov",
-        ".cache",
-        # 构建产物
-        "build",
-        "dist",
-        "node_modules",
-        # IDE
-        ".idea",
-        ".vscode",
-        ".ipynb_checkpoints",
-    }
-)
-
-IGNORED_PATTERNS: frozenset[str] = frozenset({"*.egg-info"})
-
 
 def is_ignored_dir_name(name: str) -> bool:
-    """判断目录名是否属于缓存、构建或版本控制目录。
+    """判断目录名是否命中噪音目录配置。
 
     Args:
         name: 目录名，不含路径。
 
     Returns:
-        命中固定名称或 glob 模式时返回 True。
+        命中 ``settings.tools_ignore_dirs`` 中的名称或 glob 模式时返回 True。
     """
-    return name in IGNORED_DIRS or any(fnmatch.fnmatch(name, pat) for pat in IGNORED_PATTERNS)
+    return any(fnmatch.fnmatch(name, pat) for pat in settings.tools_ignore_dirs)
+
+
+def ignore_reason(
+    path: Path,
+    root: Path,
+    patterns: list[str],
+    *,
+    explicit_scope: bool,
+) -> str | None:
+    """返回目录被忽略的原因，用于折叠行提示。
+
+    Args:
+        path: 目录的绝对路径。
+        root: 仓库根目录。
+        patterns: ``.gitignore`` 归一化后的模式列表。
+        explicit_scope: 是否显式指定了起始目录；此时不套用 .gitignore。
+
+    Returns:
+        命中时返回配置来源（``tools.ignore_dirs`` 或 ``.gitignore``），
+        未命中返回 None。
+    """
+    if is_ignored_dir_name(path.name):
+        return "tools.ignore_dirs"
+    if not explicit_scope and is_ignored(path, root, patterns):
+        return ".gitignore"
+    return None
 
 
 DEFAULT_MAX_ENTRIES = 200
@@ -129,8 +126,9 @@ def is_ignored(
     name="list_files",
     description=(
         "列出仓库或只读参考目录内的文件。返回路径，每行一个。"
-        "从仓库根递归时忽略 .gitignore 与常见缓存、构建目录；"
-        "显式指定子目录时完整列出（缓存目录仍跳过）。"
+        "从仓库根递归时，.gitignore 命中的路径与噪音目录（缓存、构建、虚拟环境等）"
+        "折叠成一行 '(ignored: 来源)' 提示，不展开内容；"
+        "显式指定子目录时列出其内容，起点即使属于噪音目录也会被列出。"
         "每个目录下的文件数默认限制为 20 个，可通过 max_files_per_dir 放宽。"
     ),
     parameters={
@@ -221,13 +219,20 @@ def list_files(
         for child in dirs:
             if truncated:
                 return
-            if is_ignored_dir_name(child.name) or is_read_protected(child):
+            if is_read_protected(child):
                 continue
-            if not explicit_scope and is_ignored(child, repo_root, gitignore_patterns):
-                continue
+            reason = ignore_reason(
+                child,
+                repo_root,
+                gitignore_patterns,
+                explicit_scope=explicit_scope,
+            )
             if len(entries) >= max_entries:
                 truncated = True
                 return
+            if reason is not None:
+                entries.append(f"{display(child)}/ (ignored: {reason})")
+                continue
             entries.append(f"{display(child)}/")
             walk(child, depth + 1)
 

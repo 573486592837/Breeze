@@ -187,6 +187,74 @@ def test_tools_read_roots_missing_dir_raises(tmp_path: Path) -> None:
         Settings(repo_root=tmp_path)
 
 
+def test_tools_ignore_dirs_defaults() -> None:
+    """默认噪音目录包含常见缓存与构建产物，但不含安全保护路径。"""
+    defaults = DEFAULTS["tools"]["ignore_dirs"]
+    assert "node_modules" in defaults
+    assert "__pycache__" in defaults
+    assert "*.egg-info" in defaults
+    assert ".git" not in defaults
+    assert ".env" not in defaults
+
+
+def test_tools_ignore_dirs_override(tmp_path: Path) -> None:
+    """仓库配置可以整体替换默认噪音目录列表。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[tools]\nignore_dirs = ["build", "*.egg-info"]\n',
+        encoding="utf-8",
+    )
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.tools_ignore_dirs == ("build", "*.egg-info")
+
+
+def test_tools_ignore_dirs_empty_disables_filter(tmp_path: Path) -> None:
+    """空列表表示关闭噪音目录过滤。"""
+    (tmp_path / "breeze.toml").write_text(
+        "[tools]\nignore_dirs = []\n",
+        encoding="utf-8",
+    )
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.tools_ignore_dirs == ()
+
+
+def test_tools_ignore_dirs_dedupes(tmp_path: Path) -> None:
+    """重复条目去重并保持顺序。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[tools]\nignore_dirs = ["build", "dist", "build"]\n',
+        encoding="utf-8",
+    )
+
+    s = Settings(repo_root=tmp_path)
+
+    assert s.tools_ignore_dirs == ("build", "dist")
+
+
+def test_tools_ignore_dirs_rejects_paths(tmp_path: Path) -> None:
+    """忽略规则只作用于目录名，含路径分隔符的条目应报错。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[tools]\nignore_dirs = ["src/build"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="directory names"):
+        Settings(repo_root=tmp_path)
+
+
+def test_tools_ignore_dirs_rejects_non_list(tmp_path: Path) -> None:
+    """ignore_dirs 必须是列表。"""
+    (tmp_path / "breeze.toml").write_text(
+        '[tools]\nignore_dirs = "build"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be a list"):
+        Settings(repo_root=tmp_path)
+
+
 def test_defaults_context_fields() -> None:
     """context section 的字段齐全。"""
     ctx = DEFAULTS["context"]

@@ -33,13 +33,14 @@ def _make_tree(root: Path) -> None:
 
 
 def test_list_files_basic(repo: Path) -> None:
-    """基础功能：返回相对路径，忽略 __pycache__ 与 .git。"""
+    """基础功能：返回相对路径，噪音目录折叠成一行，.git 不出现。"""
     _make_tree(repo)
     out = registry.execute("list_files", {"path": ".", "max_depth": 1})
 
     assert "src/" in out
     assert "README.md" in out
-    assert "__pycache__" not in out
+    assert "__pycache__/ (ignored: tools.ignore_dirs)" in out
+    assert "c.pyc" not in out
     assert ".git/" not in out
 
 
@@ -269,14 +270,14 @@ def test_write_tools_still_reject_read_root(read_root: tuple[Path, Path]) -> Non
 
 
 def test_list_files_hides_gitignored_traces_from_root(repo: Path) -> None:
-    """从仓库根列出时，被 gitignore 的 traces 不应淹没有用信息。"""
+    """从仓库根列出时，被 gitignore 的 traces 只保留一行提示。"""
     (repo / ".gitignore").write_text("traces/\n", encoding="utf-8")
     (repo / "traces").mkdir()
     (repo / "traces" / "20261008.jsonl").write_text("{}", encoding="utf-8")
     (repo / "README.md").write_text("x", encoding="utf-8")
 
     out = registry.execute("list_files", {"path": ".", "max_depth": 2})
-    assert "traces" not in out
+    assert "traces/ (ignored: .gitignore)" in out
     assert "20261008.jsonl" not in out
 
 
@@ -290,6 +291,56 @@ def test_list_files_explicit_subdir_bypasses_gitignore(repo: Path) -> None:
     assert "20261008.jsonl" in out
 
 
+def test_list_files_explicit_ignored_dir_lists_contents(repo: Path) -> None:
+    """显式指定噪音目录时，起点被接受，其内容正常列出。"""
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "index.js").write_text("x", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": "node_modules", "max_depth": 2})
+
+    assert "node_modules/pkg/" in out
+    assert "node_modules/pkg/index.js" in out
+
+
+def test_list_files_collapses_nested_noise_under_explicit_dir(repo: Path) -> None:
+    """显式目录内部的后代噪音目录仍折叠，不展开。"""
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "pkg" / "__pycache__").mkdir()
+    (repo / "pkg" / "__pycache__" / "mod.pyc").write_bytes(b"\x00")
+
+    out = registry.execute("list_files", {"path": "pkg", "max_depth": 2})
+
+    assert "pkg/mod.py" in out
+    assert "pkg/__pycache__/ (ignored: tools.ignore_dirs)" in out
+    assert "mod.pyc" not in out
+
+
+def test_list_files_empty_ignore_list_disables_noise_filter(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ignore_dirs 为空时只保留安全保护，噪音目录正常展开。"""
+    monkeypatch.setattr(settings, "tools_ignore_dirs", ())
+    _make_tree(repo)
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 2})
+
+    assert "__pycache__/" in out
+    assert "c.pyc" in out
+    assert ".git/" not in out
+
+
+def test_list_files_collapsed_line_counts_toward_max_entries(repo: Path) -> None:
+    """折叠行也消耗 max_entries 配额，避免忽略目录绕过输出上限。"""
+    (repo / "node_modules").mkdir()
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    out = registry.execute("list_files", {"path": ".", "max_depth": 1, "max_entries": 1})
+
+    assert "node_modules/ (ignored: tools.ignore_dirs)" in out
+    assert "src/" not in out
+    assert "truncated to 1 entries" in out
+
+
 def test_list_files_reports_dir_not_special(repo: Path) -> None:
     """reports 不再是全局忽略目录。"""
     (repo / "reports").mkdir()
@@ -301,16 +352,17 @@ def test_list_files_reports_dir_not_special(repo: Path) -> None:
 
 
 def test_list_files_ignores_egg_info_pattern(repo: Path) -> None:
-    """*.egg-info 应作为 glob 模式匹配。"""
+    """*.egg-info 应作为 glob 模式匹配并折叠成一行。"""
     (repo / "demo.egg-info").mkdir()
     (repo / "demo.egg-info" / "PKG-INFO").write_text("x", encoding="utf-8")
 
     out = registry.execute("list_files", {"path": ".", "max_depth": 2})
-    assert "demo.egg-info" not in out
+    assert "demo.egg-info/ (ignored: tools.ignore_dirs)" in out
+    assert "PKG-INFO" not in out
 
 
 def test_list_files_respects_gitignore(repo: Path) -> None:
-    """.gitignore 中的模式应被忽略。"""
+    """.gitignore 中的模式应被忽略，命中目录折叠成一行。"""
     (repo / ".gitignore").write_text("data/\n*.log\n", encoding="utf-8")
     (repo / "data").mkdir()
     (repo / "data" / "dump.csv").write_text("x", encoding="utf-8")
@@ -318,7 +370,8 @@ def test_list_files_respects_gitignore(repo: Path) -> None:
     (repo / "README.md").write_text("x", encoding="utf-8")
 
     out = registry.execute("list_files", {"path": ".", "max_depth": 2})
-    assert "data/" not in out
+    assert "data/ (ignored: .gitignore)" in out
+    assert "dump.csv" not in out
     assert "debug.log" not in out
     assert "README.md" in out
 

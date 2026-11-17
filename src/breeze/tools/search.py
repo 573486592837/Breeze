@@ -13,8 +13,6 @@ from pathlib import Path
 
 from breeze.config import settings
 from breeze.tools.fs import (
-    IGNORED_DIRS,
-    IGNORED_PATTERNS,
     is_ignored,
     is_ignored_dir_name,
     load_gitignore_patterns,
@@ -27,6 +25,36 @@ MAX_LINE_CHARS = 200
 RG_TIMEOUT_SECONDS = 30
 
 _RG_LINE_RE = re.compile(r"^(.*?):(\d+):(.*)$")
+
+
+def _skipped_ignored_dirs(root: Path) -> list[str]:
+    """列出仓库根下存在但被跳过搜索的顶层目录。
+
+    用于在根扫描结果末尾提示 Agent 这些目录确实存在、可用 ``path`` 进入，
+    避免它们因为被过滤而从感知中彻底消失。
+
+    Args:
+        root: 仓库根目录。
+
+    Returns:
+        形如 ``node_modules/`` 的目录名列表，按名称排序。
+    """
+    patterns = load_gitignore_patterns(root)
+    names: list[str] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return names
+    for child in children:
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue
+        if not is_dir or is_read_protected(child):
+            continue
+        if is_ignored_dir_name(child.name) or is_ignored(child, root, patterns):
+            names.append(f"{child.name}/")
+    return names
 
 
 def _normalize_rg_line(line: str) -> str:
@@ -54,8 +82,9 @@ def _normalize_rg_line(line: str) -> str:
     name="grep",
     description=(
         "在仓库或只读参考目录内搜索匹配正则表达式的行。返回 文件路径:行号:内容 格式的结果。"
-        "从仓库根搜索时遵循 .gitignore；显式指定子目录时搜索其全部文件"
-        "（缓存目录仍跳过）。"
+        "从仓库根搜索时遵循 .gitignore，结果末尾会提示被跳过的噪音目录；"
+        "显式指定子目录时搜索其全部文件，起点即使属于噪音目录也会被搜索"
+        "（其内部的噪音目录仍跳过）。"
         "定位符号的首选工具：先用 grep 得到 文件:行号，再用 read_file 的 "
         "start_line/end_line 精确读取该范围，比通读整个文件更省上下文。"
         "建议用 path='.' 和合适的 glob（如 '*.py'、'*.js'、'*.ts'、'*.go'）"
@@ -123,8 +152,13 @@ def grep(
     else:
         lines = _grep_with_python(regex, target, glob, max_results, explicit_scope)
 
+    skipped = [] if explicit_scope else _skipped_ignored_dirs(target)
+
     if not lines:
-        return "No matches found."
+        result = "No matches found."
+        if skipped:
+            result += _skipped_note(skipped)
+        return result
 
     budget = settings.context_tool_result_max_bytes
     out: list[str] = []
@@ -145,7 +179,17 @@ def grep(
         result += f"\n... (dropped {dropped} lines: output budget {budget} bytes reached)"
     elif len(lines) >= max_results:
         result += f"\n... (max results reached: {max_results})"
+    if skipped:
+        result += _skipped_note(skipped)
     return result
+
+
+def _skipped_note(skipped: list[str]) -> str:
+    """渲染被跳过目录的提示行，最多列出 3 个。"""
+    shown = ", ".join(skipped[:3])
+    if len(skipped) > 3:
+        shown += f" and {len(skipped) - 3} more"
+    return f"\n(skipped ignored dirs: {shown}; pass path='<dir>' to search inside)"
 
 
 def _grep_with_rg(
@@ -168,29 +212,33 @@ def _grep_with_rg(
         匹配行列表。执行出错时返回单元素列表，内容为错误说明。
     """
     root = settings.repo_root.resolve()
+    # 显式 scope 以 target 为工作目录执行：rg 的 --glob '!node_modules/'
+    # 只匹配相对工作目录的路径，这样搜索起点本身（即使就叫 node_modules）
+    # 不会被自己的排除规则挡掉，而后代同名目录仍会被跳过。
+    base = target if target.is_dir() else target.parent
+    search_arg = "." if target.is_dir() else target.name
     try:
-        rel_target = target.relative_to(root).as_posix()
+        rel_base = base.relative_to(root).as_posix()
     except ValueError:
-        rel_target = target.as_posix()
+        rel_base = base.as_posix()
+    prefix = "" if rel_base in ("", ".") else f"{rel_base.rstrip('/')}/"
 
     cmd = ["rg", "--line-number", "--no-heading", "--with-filename", "--color", "never"]
     if explicit_scope:
         # rg 默认遵循 .gitignore；显式指定范围时应看到被忽略的文件。
         cmd.append("--no-ignore")
-    for ignored in IGNORED_DIRS:
-        cmd.extend(["--glob", f"!{ignored}/"])
-    for ignored in IGNORED_PATTERNS:
+    for ignored in settings.tools_ignore_dirs:
         cmd.extend(["--glob", f"!{ignored}/"])
     if target.is_dir():
         cmd.extend(["--glob", "!.env", "--glob", "!.env.*"])
     if glob_pattern:
         cmd.extend(["--glob", glob_pattern])
-    cmd.extend(["--", pattern, rel_target])
+    cmd.extend(["--", pattern, search_arg])
 
     try:
         proc = subprocess.run(
             cmd,
-            cwd=str(root),
+            cwd=str(base),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -208,7 +256,13 @@ def _grep_with_rg(
     if proc.returncode not in (0, 1):
         return [f"ripgrep exited with code {proc.returncode}: {proc.stderr.strip()[:500]}"]
 
-    return [_normalize_rg_line(ln) for ln in proc.stdout.strip().splitlines()[:max_results]]
+    lines: list[str] = []
+    for raw in proc.stdout.strip().splitlines()[:max_results]:
+        line = _normalize_rg_line(raw)
+        if prefix and (m := _RG_LINE_RE.match(line)):
+            line = f"{prefix}{m.group(1)}:{m.group(2)}:{m.group(3)}"
+        lines.append(line)
+    return lines
 
 
 def _grep_with_python(
