@@ -13,7 +13,7 @@ body:
     attributes:
       label: Breeze 版本
       description: 运行 `breeze --version`，或写明安装的 tag / commit。
-      placeholder: v1.9.0
+      placeholder: v1.10.0
     validations:
       required: true
 
