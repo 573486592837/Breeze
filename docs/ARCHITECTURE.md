@@ -95,7 +95,7 @@ flowchart TB
 | `tools/registry.py` | `TOOLS` | 装饰器注册、schema 导出、按名执行、参数校验 | 名称全局唯一；参数错误抛 `ToolArgumentError` |
 | `tools/safety.py` | `safe_path` | 仓库边界；`.env*`/`.git/` 读取保护 | 写操作只能用 `safe_path` |
 | `tools/fs.py` | `list_files` / `read_file` | 目录浏览、带行号读取、`start_line/end_line` 定点读 | 文件附行数/大小、噪音目录折叠为一行、显式 `path` 可进入、`.gitignore` 只在根扫描生效 |
-| `tools/search.py` | `grep` | `文件:行号:内容`；rg 优先，Python 回退 | 结果行数与字节双上限；根扫描提示被跳过的噪音目录 |
+| `tools/search.py` | `grep` | `文件:行号:内容`；rg 优先，Python 回退 | content/files/count 三种输出模式、可选上下文行、结果行数与字节双上限、根扫描提示被跳过的噪音目录 |
 | `tools/shell.py` | `run_shell` | `shell=False`、可执行文件/子命令/选项白名单 | 拒绝未加引号的串联/管道/重定向 |
 | `tools/edit.py` | 5 个工具 | 单点替换、建文件、删路径、回滚、pytest | 补丁大小、受保护路径、原子写入 |
 | `tools/plan.py` | `update_plan` | 计划写入 `SessionState.plan` | 最多 2000 字符 |
