@@ -1367,7 +1367,13 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 命令与 close 后不可恢复测试；全量 813 passed / 2 skipped，`ruff check` 与
 `ruff format --check` 全绿；`breeze.__version__` 与 packaging 测试同步到 1.9.0。
 
-## 包结构整理（未发布）
+## 工具集细化与包结构整理 (v1.10.0)
+
+v1.9.0 之后的一批改进：`src/breeze` 整理为子包；`ask_user` 支持一次提出
+多个项目决策问题；噪音目录可配置且保持可见；`list_files` 附带文件规模；
+`grep` 增加输出模式与上下文。CLI 与配置保持向后兼容。
+
+### 包结构整理
 
 `src/breeze` 顶层文件收敛为 `config.py`、`llm.py` 与 `cli/`、`chat/`、
 `runtime/`、`tools/` 四个子包：
@@ -1381,16 +1387,13 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 - `tools/`、`config.py`、`llm.py` 保持原位置；依赖方向固定为
   `cli → chat → runtime → tools/config`。
 
-纯移动重构，不改变 CLI、提示词、trace 或持久化格式；全量 813 passed /
-2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+纯移动重构，不改变 CLI、提示词、trace 或持久化格式。
 
-## ask_user 批量决策提问（未发布）
+### ask_user 批量决策提问
 
 `ask_user` 从“遇到歧义就问”收窄为“由用户做项目决策”：只在会改变实现、
 范围或验收标准且答案取决于用户偏好/判断时提问，能从仓库或工具确认的事实、
 按最佳实践就能决定的实现细节不再问，也不用来请求执行许可或确认计划。
-
-### 一次问多个问题
 
 - 工具参数改为 `questions: [{question, options?}]`，一次调用可提交 1–5 个
   独立问题，每题最多 4 个候选；每回合问题总数上限仍为 5。
@@ -1402,12 +1405,7 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 - 无问题、问题非字符串、批量超过 5 个或交互式回调缺失时拒绝调用，
   不消耗本回合配额。
 
-### 验证
-
-新增批量提问、候选截断、非法批量拒绝、超限截断与逐题输入测试；全量
-817 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
-
-## 噪音目录可配置且可见（未发布）
+### 噪音目录可配置且可见
 
 `list_files` / `grep` 原来把缓存、构建产物、虚拟环境与 IDE 目录硬编码为
 静默忽略，Agent 感知不到这些目录存在，用户也无法在项目需要时让 Agent
@@ -1426,13 +1424,20 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 `--glob '!node_modules/'` 把起点本身排除；Python 回退只过滤后代目录，
 两种实现行为与路径格式保持一致。
 
-### 验证
+### list_files 附带文件规模
 
-新增默认值/覆盖/空列表/去重/非法配置、折叠行与截断配额、显式目录进入、
-嵌套噪音折叠、grep 跳过提示与 rg/Python 两种显式 scope 测试；全量
-831 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+`list_files` 的每个文件条目现在附带行数与字节大小，例如
+`src/breeze/runtime/agent.py (1658L, 62.4K)`：
 
-## grep 输出模式与上下文（未发布）
+- 行数直接提示该全读还是用 `read_file` 的 `start_line/end_line` 定点读取；
+  大小用于在计行被跳过时仍能判断文件规模。
+- 超过 256KB 的文件与含 NUL 的二进制文件只显示大小（后者标记 `binary`），
+  避免为了计行扫描大文件或依赖目录。
+- 摘要按 `(路径, mtime, 大小)` 缓存，同一进程内重复列举不会重复读取；
+  文件修改后自动刷新。
+- 目录行保持原样，`(ignored: ...)` 折叠提示不变。
+
+### grep 输出模式与上下文
 
 `grep` 新增 `output_mode` 与 `context`，把“定位文件 → 估计热点 → 看细节”
 拆成不同成本的三步：
@@ -1448,24 +1453,5 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 
 ### 验证
 
-新增 files/count 两种模式（rg 与 Python 回退）、非法 output_mode、上下文行
-格式、匹配计数不占上下文配额、context 上限裁剪测试；全量
-839 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
-
-## list_files 附带文件规模（未发布）
-
-`list_files` 的每个文件条目现在附带行数与字节大小，例如
-`src/breeze/runtime/agent.py (1658L, 62.4K)`：
-
-- 行数直接提示该全读还是用 `read_file` 的 `start_line/end_line` 定点读取；
-  大小用于在计行被跳过时仍能判断文件规模。
-- 超过 256KB 的文件与含 NUL 的二进制文件只显示大小（后者标记 `binary`），
-  避免为了计行扫描大文件或依赖目录。
-- 摘要按 `(路径, mtime, 大小)` 缓存，同一进程内重复列举不会重复读取；
-  文件修改后自动刷新。
-- 目录行保持原样，`(ignored: ...)` 折叠提示不变。
-
-### 验证
-
-新增行数/大小、空文件、二进制、大文件跳过计行与修改后刷新测试；全量
-835 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+合并后全量 843 passed / 2 skipped，`ruff check` 与 `ruff format --check`
+全绿；`breeze.__version__` 与 packaging 测试同步到 1.10.0。
