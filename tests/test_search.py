@@ -284,7 +284,7 @@ def test_grep_rg_explicit_scope_uses_target_as_cwd(
     def _fake(cmd, **kwargs):
         calls["cmd"] = cmd
         calls["cwd"] = kwargs["cwd"]
-        return subprocess.CompletedProcess(cmd, 0, stdout="pkg/index.js:1:needle\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="pkg/index.js\x001:needle\n", stderr="")
 
     monkeypatch.setattr("breeze.tools.search.subprocess.run", _fake)
 
@@ -293,6 +293,121 @@ def test_grep_rg_explicit_scope_uses_target_as_cwd(
     assert calls["cwd"] == str((sample / "src").resolve())
     assert calls["cmd"][-2:] == ["needle", "."]
     assert "src/pkg/index.js:1:needle" in out
+
+
+# ─── grep output_mode 与 context ───
+
+
+def test_grep_output_mode_files_with_matches(sample: Path) -> None:
+    """files_with_matches 只返回文件路径，不带行号。"""
+    out = registry.execute("grep", {"pattern": "foo", "path": ".", "output_mode": "files_with_matches"})
+    lines = out.splitlines()
+
+    assert "src/a.py" in lines
+    assert "README.md" in lines
+    assert not any(":" in line for line in lines)
+
+
+def test_grep_output_mode_count(sample: Path) -> None:
+    """count 返回每个文件的匹配行数。"""
+    out = registry.execute(
+        "grep",
+        {"pattern": "return", "path": "src", "output_mode": "count"},
+    )
+
+    assert "src/a.py:2" in out
+    assert "src/b.py:1" in out
+
+
+def test_grep_output_mode_rejects_unknown_value(sample: Path) -> None:
+    """未知 output_mode 应给出明确错误。"""
+    with pytest.raises(ValueError, match="output_mode"):
+        registry.execute("grep", {"pattern": "foo", "output_mode": "summary"})
+
+
+def test_grep_files_and_count_python_fallback(
+    sample: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python 回退也应支持 files_with_matches 与 count。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+
+    files = registry.execute(
+        "grep",
+        {"pattern": "return", "path": "src", "output_mode": "files_with_matches"},
+    )
+    counts = registry.execute(
+        "grep",
+        {"pattern": "return", "path": "src", "output_mode": "count"},
+    )
+
+    assert set(files.splitlines()) == {"src/a.py", "src/b.py"}
+    assert set(counts.splitlines()) == {"src/a.py:2", "src/b.py:1"}
+
+
+def test_grep_context_lines(sample: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """context 返回匹配行前后的内容，上下文行用 '-' 分隔。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+
+    out = registry.execute(
+        "grep",
+        {"pattern": "def bar", "path": "src/a.py", "context": 1},
+    )
+
+    assert "src/a.py:4:def bar():" in out
+    assert "src/a.py-5-    return foo()" in out
+    assert "src/a.py-3-" in out
+
+
+def test_grep_context_counts_matches_not_context_lines(
+    sample: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """max_results 限制匹配行数，上下文行不占配额。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+
+    out = registry.execute(
+        "grep",
+        {"pattern": "return", "path": "src/a.py", "context": 1, "max_results": 1},
+    )
+
+    assert "src/a.py:2:    return 1" in out
+    assert "src/a.py:5:" not in out
+
+
+def test_grep_context_is_clamped(sample: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """context 超过上限时按 5 处理，而不是报错。"""
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: None)
+
+    out = registry.execute(
+        "grep",
+        {"pattern": "def foo", "path": "src/a.py", "context": 99},
+    )
+
+    assert "src/a.py:1:def foo():" in out
+    assert "src/a.py-5-    return foo()" in out
+
+
+def test_grep_rg_context_formatting(sample: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """rg 的 --null 上下文输出应解析为统一格式并带 -C 参数。"""
+    import subprocess
+
+    calls: dict[str, object] = {}
+    stdout = "src/a.py\x003-\nsrc/a.py\x004:def bar(\nsrc/a.py\x005-    foo\n--\n"
+    monkeypatch.setattr("breeze.tools.search.shutil.which", lambda _name: "/fake/rg")
+
+    def _fake(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("breeze.tools.search.subprocess.run", _fake)
+
+    out = registry.execute("grep", {"pattern": "def bar", "path": "src", "context": 1})
+
+    assert "-C" in calls["cmd"]
+    assert "src/a.py-3-" in out
+    assert "src/a.py:4:def bar(" in out
+    assert "src/a.py-5-    foo" in out
 
 
 def test_grep_skips_env_from_root(

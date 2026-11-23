@@ -1430,4 +1430,24 @@ Agent 新增 `read_only`：工具集只保留 `list_files` / `read_file` / `grep
 
 新增默认值/覆盖/空列表/去重/非法配置、折叠行与截断配额、显式目录进入、
 嵌套噪音折叠、grep 跳过提示与 rg/Python 两种显式 scope 测试；全量
-827 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+831 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
+
+## grep 输出模式与上下文（未发布）
+
+`grep` 新增 `output_mode` 与 `context`，把“定位文件 → 估计热点 → 看细节”
+拆成不同成本的三步：
+
+- `output_mode="content"`（默认）保持 `path:lineno:content`；
+  `files_with_matches` 只返回匹配文件路径；`count` 返回 `path:count`。
+  `max_results` 在 content 模式按匹配行计数，其余按文件计数。
+- `context`（0–5，默认 0）为 content 模式附带匹配行前后各 N 行；匹配行用
+  `:`，上下文行用 `-`，重叠区间合并。上下文行不占用 `max_results` 配额。
+- rg 分支加 `--null`，用 NUL 分隔路径与行号，避免上下文行的 `-` 与文件名
+  中的 `-`/`:` 混淆；`files_with_matches` 的 NUL 记录单独切分。
+- Python 回退实现相同的三种模式与上下文，路径格式与 rg 保持一致。
+
+### 验证
+
+新增 files/count 两种模式（rg 与 Python 回退）、非法 output_mode、上下文行
+格式、匹配计数不占上下文配额、context 上限裁剪测试；全量
+839 passed / 2 skipped，`ruff check` 与 `ruff format --check` 全绿。
